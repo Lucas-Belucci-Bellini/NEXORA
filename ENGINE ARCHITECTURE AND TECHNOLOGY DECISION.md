@@ -1,12 +1,32 @@
 # NEXORA — ENGINE ARCHITECTURE / TECHNOLOGY DECISION
 
-> This document defines what NEXORA needs from an engine/runtime architecture before selecting implementation languages and libraries. It is inspired by proven industry patterns, not copied source code or proprietary implementations.
+> This document defines what NEXORA needs from an engine/runtime architecture and how implementation languages are assigned to responsibilities. It is inspired by proven industry patterns, not copied source code or proprietary implementations.
 
 ## 1. Decision status
 
-**Language selection: NOT YET FINAL.**
+**Architecture direction: MULTI-LANGUAGE BY RESPONSIBILITY.**
 
-The project must choose technology only after the architecture contracts below are stable enough to evaluate real implementation trade-offs.
+**Final language selection: NOT YET LOCKED.**
+
+NEXORA should not force every subsystem into one language. The architectural boundary is defined first; each responsibility is then assigned to the language/runtime that best satisfies its requirements.
+
+The preferred current hypothesis is:
+
+```text
+RUST
+→ core engine + high-cost runtime + simulation + server + world
+
+C / C++ / RUST
+→ platform and graphics backend integration where native GPU/API access justifies it
+
+TYPESCRIPT + RUST
+→ editor + SDK + developer tooling + user-facing tools
+
+PYTHON
+→ research + generation experiments + analysis + offline automation
+```
+
+This is a **working architecture hypothesis**, not a premature final commitment. A benchmark must validate the boundaries before the implementation stack is frozen.
 
 ## 2. What NEXORA needs
 
@@ -28,122 +48,430 @@ Large Voxel World
 + High Performance
 ```
 
-## 3. Architectural inspirations
+## 3. Core principle — split by responsibility, not by fashion
 
-NEXORA may borrow **ideas and architectural lessons**, never protected implementation or proprietary code.
-
-### Unreal Engine 5 lessons
-Useful concepts to study include:
-- World Partition-style spatial streaming and hierarchical LOD;
-- Large World Coordinates / explicit large-world precision;
-- data-oriented Mass Entity for high population simulation;
-- Gameplay Ability / Attribute / Effect separation;
-- contextual input mapping;
-- mature editor/tooling separation.
-
-These are architectural references. NEXORA must implement its own contracts and code.
-
-### Open 3D Engine lessons
-O3DE is particularly relevant to NEXORA's modular goal because it organizes functionality as modular components/Gems, uses a data-driven asset pipeline, has a modular multi-threaded renderer, entity-component architecture, networking, scripting and editor tooling.
-
-### Bevy-style lessons
-A data-oriented ECS, explicit systems, query-based processing and strong ownership boundaries are useful ideas for large simulation. NEXORA does not need to copy Bevy's API or runtime design.
-
-### Godot-style lessons
-Clear separation between scene-level objects, engine servers/subsystems and low-level platform drivers is useful for keeping rendering/audio/physics backend details out of gameplay.
-
-## 4. Preliminary conclusion
-
-For NEXORA, the strongest target is **not to select one existing engine and imitate it literally**.
-
-The preferred architecture is a **hybrid design**:
+The project must not start with:
 
 ```text
-UE5
-├── large-world concepts
-├── world streaming / HLOD concepts
-├── gameplay framework patterns
-└── mature tool separation
-
-O3DE
-├── modular engine/component philosophy
-├── asset pipeline
-├── engine extensibility
-└── editor/runtime separation
-
-Data-oriented ECS
-├── batch simulation
-├── cache-friendly hot data
-├── scalable populations
-└── deterministic parallel processing
-
-Godot-style separation
-├── platform abstraction
-├── subsystem boundaries
-└── clean runtime drivers
-
-NEXORA
-└── original implementation + original public APIs
+"Rust because Rust is fast"
+"C++ because engines use C++"
+"TypeScript because the editor is easy"
 ```
 
-## 5. Language-neutral requirements
-
-Before choosing language, the implementation must support or provide equivalents for:
-
-- deterministic simulation where required;
-- high-performance data-oriented storage;
-- safe concurrency and a job system;
-- explicit memory ownership/lifetime;
-- low-overhead serialization;
-- native graphics API access through an RHI abstraction;
-- native file/IO access;
-- asynchronous streaming;
-- server/headless builds;
-- tooling/editor applications;
-- scripting/runtime embedding;
-- C-compatible or equivalent stable plugin boundary if useful;
-- debugging/profiling integrations;
-- cross-platform build and packaging.
-
-## 6. Architecture layers
+Instead:
 
 ```text
-PLATFORM
-  ↓
-RHI / AUDIO / INPUT / FILESYSTEM
-  ↓
-FOUNDATION
-  ↓
-JOB / RESOURCE / TIME / SPATIAL
-  ↓
-RUNTIME SERVICES
-  ↓
-DATA-ORIENTED SIMULATION
-  ↓
-WORLD / GAMEPLAY
-  ↓
-SOCIETY / WORLD SIMULATION
-  ↓
-PRESENTATION / EDITOR / TOOLING
+Architecture contract
+        ↓
+Responsibility / workload
+        ↓
+Performance + safety + tooling requirements
+        ↓
+Language/runtime selection
 ```
 
-## 7. Engine boundary
+A language boundary is justified only when it provides a meaningful engineering advantage without creating excessive FFI, build, debugging, deployment or maintenance cost.
 
-Core engine owns:
-- lifecycle;
-- memory/resource abstractions;
-- jobs;
-- platform abstraction;
-- time;
-- spatial coordinates;
-- serialization primitives;
-- registries;
-- event/command infrastructure;
-- rendering/audio/input interfaces.
+## 4. Proposed language responsibility map
 
-Gameplay content must remain above these contracts.
+### 4.1 Rust — primary NEXORA runtime
 
-## 8. Runtime modes
+Rust is the strongest current candidate for the main engine/runtime because NEXORA needs large amounts of concurrent, persistent, data-oriented simulation with explicit ownership and long-term safety.
+
+Planned Rust responsibility areas:
+
+```text
+Rust Runtime
+├── Engine Core
+├── ECS / Data-Oriented Runtime
+├── Job / Task System
+├── Registry
+├── Event Bus
+├── Command System
+├── Save / Persistence
+├── Serialization / Migration
+├── Resource / Asset Runtime
+├── Streaming
+├── Time / Calendar
+├── Spatial / Coordinate Runtime
+├── Voxel / Chunk Runtime
+├── World Generation
+├── Biomes
+├── Caves / Deep World
+├── Climate / Atmosphere
+├── Water / Fluid Simulation
+├── Vegetation Simulation
+├── Lighting Simulation
+├── Physics
+├── AI / Perception
+├── Navigation / Pathfinding
+├── Vehicles
+├── Railway
+├── Machines / Automation
+├── Energy / Fluid Networks
+├── World Events
+├── Economy Simulation
+├── Industry Simulation
+├── Civilization Simulation
+├── Population Simulation
+├── Social / Faction Simulation
+├── Research / Knowledge Simulation
+├── Networking Core
+├── Dedicated Server
+├── Headless Runtime
+├── Mod Runtime Host
+├── Script Runtime Host
+└── Security / Authority Enforcement
+```
+
+The objective is that **the expensive, continuously running simulation lives in one coherent runtime domain** instead of crossing multiple language boundaries every frame/tick.
+
+## 5. Graphics and platform boundary
+
+Graphics are different from gameplay simulation because native APIs and platform SDKs can require C/C++ interfaces or specialized low-level bindings.
+
+Preferred architecture:
+
+```text
+Gameplay / Simulation
+        ↓
+Renderer API
+        ↓
+Render Graph
+        ↓
+RHI
+        ↓
+Native graphics abstraction
+        ↓
+Vulkan / DirectX / Metal / platform API
+        ↓
+GPU
+```
+
+The implementation may use:
+
+```text
+Rust
++ C ABI
++ selected C/C++ bindings where necessary
+```
+
+The rule is **not** "NEXORA must contain C++". The rule is:
+
+> Use C/C++ only where its native ecosystem or API boundary creates a measurable advantage.
+
+If Rust provides a clean and sufficiently mature path for a subsystem, avoid adding another language merely for tradition.
+
+## 6. TypeScript — editor and development experience
+
+TypeScript is a strong candidate for high-level tooling where rapid iteration, rich UI frameworks and developer productivity matter more than hot-loop execution.
+
+Planned responsibilities:
+
+```text
+TypeScript
+├── Editor UI
+├── World Editor UI
+├── Structure / Prefab Editor UI
+├── Project Manager
+├── Mod SDK UI
+├── Asset Browser
+├── Inspector / Property Panels
+├── Debug Dashboards
+├── Profiling UI
+├── Documentation Tools
+├── Content Authoring Tools
+├── Launcher UI where appropriate
+└── Development Services
+```
+
+When tooling needs high-performance native processing, it should call a Rust tool/backend rather than reimplementing engine logic in TypeScript.
+
+## 7. Python — research and offline automation
+
+Python should normally stay outside the critical runtime path.
+
+Planned responsibilities:
+
+```text
+Python
+├── Procedural-generation experiments
+├── Dataset generation
+├── Simulation analysis
+├── Benchmark analysis
+├── World statistics
+├── AI / ML experimentation
+├── Asset processing helpers
+├── Validation scripts
+├── Content-generation utilities
+├── Test orchestration
+└── Developer automation
+```
+
+Typical flow:
+
+```text
+Python experiment
+      ↓
+Generated parameters / dataset / test case
+      ↓
+Rust runtime
+      ↓
+Real NEXORA simulation
+      ↓
+Telemetry / results
+      ↓
+Python analysis
+```
+
+Python must not become the hidden dependency for core gameplay execution.
+
+## 8. Native boundary rules
+
+The architecture must avoid arbitrary chains such as:
+
+```text
+Rust → C++ → Python → TypeScript → Rust
+```
+
+Instead, each language should have a clear boundary:
+
+```text
+                 PUBLIC CONTRACT
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+       Rust        Native API      TypeScript
+        │              │              │
+     Runtime        Graphics       Tools/UI
+        │
+       FFI
+        │
+   platform/native
+
+Python
+  ↑
+offline analysis / research
+```
+
+Prefer stable contracts based on:
+
+```text
+C-compatible ABI
+or
+versioned IPC
+or
+well-defined network protocol
+or
+serialized artifact/data format
+```
+
+The chosen boundary depends on latency and lifecycle requirements.
+
+## 9. What must NOT cross the boundary frequently
+
+Avoid crossing language boundaries inside hot loops such as:
+
+```text
+per-entity simulation
+per-voxel updates
+per-particle updates
+per-frame gameplay calls
+per-tick physics calls
+per-cell AI updates
+```
+
+Hot data should remain in the owning runtime.
+
+For example:
+
+```text
+GOOD
+Rust ECS
+→ processes 100,000 entities
+→ emits aggregated telemetry
+→ TypeScript visualizes telemetry
+
+BAD
+Rust ECS
+→ calls TypeScript once per entity
+→ TypeScript returns state
+→ Rust resumes simulation
+```
+
+## 10. Ownership rule
+
+Every subsystem must have one authoritative owner.
+
+Example:
+
+```text
+Physics
+→ owns physical state transition
+
+AI
+→ owns decision generation
+
+Navigation
+→ owns route computation
+
+Economy
+→ owns economic simulation
+
+Renderer
+→ owns graphical representation
+
+Editor
+→ owns authoring state before runtime commit
+```
+
+Another language may inspect or request operations, but it must not create a second competing source of truth.
+
+## 11. Runtime architecture
+
+```text
+                         NEXORA
+                            │
+                  ┌─────────┴─────────┐
+                  │     RUNTIME       │
+                  └─────────┬─────────┘
+                            │
+                           Rust
+                            │
+        ┌───────────────────┼────────────────────┐
+        │                   │                    │
+      WORLD              SIMULATION           SERVER
+        │                   │                    │
+     Voxel             ECS / Jobs          Networking
+     Terrain            Physics            Authority
+     Biomes             AI                 Security
+     Caves              Economy             Persistence
+     Dimensions         Civilization        Replication
+
+                            │
+                           APIs
+                            │
+             ┌──────────────┼──────────────┐
+             │                             │
+         Graphics / Platform            Tools
+             │                             │
+       Rust / C / C++                 TS + Rust
+                                             │
+                                           Editor
+                                           SDK
+                                           Debug
+
+                            │
+                         Offline
+                            │
+                         Python
+                            │
+                  Research / Analysis
+```
+
+## 12. Modding architecture
+
+Mod support must not assume that every mod uses the engine language.
+
+Target trust levels:
+
+```text
+DATA-ONLY
+  ↓
+SANDBOXED SCRIPT / WASM / MANAGED
+  ↓
+TRUSTED NATIVE
+```
+
+Possible implementation model:
+
+```text
+Rust engine
+    ↓
+Mod API / ABI / sandbox boundary
+    ↓
+mod runtime
+    ├── data
+    ├── script
+    └── native extension
+```
+
+Native extensions must never bypass server authority, resource limits, security policy or lifecycle management merely because they are native.
+
+## 13. Editor architecture
+
+The editor should consume the same contracts as the runtime wherever practical.
+
+```text
+Editor
+  ↓
+Public NEXORA APIs
+  ↓
+Rust services
+  ↓
+World / Registry / Resource / Prefab systems
+```
+
+Avoid creating a second incompatible world model solely for the editor.
+
+TypeScript is the preferred current candidate for the UI layer, while heavy world queries, asset operations and simulation previews can be delegated to Rust.
+
+## 14. Build architecture
+
+The repository should make language boundaries explicit:
+
+```text
+engine/
+  core/                 Rust
+  world/                Rust
+  simulation/           Rust
+  server/               Rust
+  networking/           Rust
+  renderer/             Rust + native bindings where required
+
+platform/
+  native/               Rust/C/C++ as required
+
+editor/
+  ui/                   TypeScript
+  backend/              Rust
+
+scripts/
+  research/             Python
+  automation/           Python
+
+tools/
+  native/               Rust
+  ui/                   TypeScript
+```
+
+Exact repository paths can evolve; the important requirement is explicit ownership and dependency direction.
+
+## 15. Dependency direction
+
+The dependency graph should remain one-way:
+
+```text
+Platform / Native
+        ↓
+RHI / Audio / Input / Filesystem
+        ↓
+Foundation
+        ↓
+Runtime Services
+        ↓
+Simulation / World
+        ↓
+Gameplay
+        ↓
+Society
+        ↓
+Presentation / Editor / Tools
+```
+
+Tooling can inspect lower layers, but lower layers must not depend on the editor UI.
+
+## 16. Runtime modes
 
 The selected technology must support:
 
@@ -159,96 +487,11 @@ BENCHMARK RUNNER
 REPLAY RUNNER
 ```
 
-## 9. Rendering target
+## 17. Language selection gate
 
-Renderer should use a backend-neutral RHI and a render graph. Required long-term features include:
-- modern GPU APIs;
-- deferred/forward paths as appropriate;
-- virtualized/streamed geometry where justified;
-- physically based materials;
-- large-world precision;
-- GPU-driven batching where useful;
-- headless/null rendering backend.
+The final stack must be validated by building the same vertical slice in the strongest candidate combinations.
 
-## 10. Simulation target
-
-NEXORA must be able to process:
-
-```text
-voxel worlds
-10k+ active entities
-100k+ abstract entities
-large NPC populations
-large civilization counts
-large industrial networks
-```
-
-without requiring all state to exist as heavyweight object instances.
-
-## 11. Modding target
-
-The technology must support three trust levels:
-
-```text
-DATA-ONLY
-SANDBOXED SCRIPT / WASM / MANAGED
-TRUSTED NATIVE
-```
-
-The exact runtime implementation is a later decision.
-
-## 12. Editor target
-
-The editor should consume the same public resource/registry/world contracts used by runtime where possible. Avoid creating a second incompatible world model only for tools.
-
-## 13. Selection criteria
-
-Each candidate stack will be scored against:
-
-| Criterion | Required |
-|---|---|
-| large-world precision | yes |
-| voxel streaming | yes |
-| data-oriented simulation | yes |
-| multithreaded jobs | yes |
-| custom renderer/RHI | yes |
-| headless server | yes |
-| native mod boundary | yes |
-| scripting | yes |
-| editor/tooling | yes |
-| deterministic persistence | yes |
-| cross-platform | yes |
-| profiling/debugging | yes |
-| long-term maintainability | yes |
-
-## 14. Important rule
-
-Do **not** choose a language because it is fashionable or because another engine uses it. Choose based on whether the language/runtime can satisfy the NEXORA architecture without creating unacceptable complexity in memory, concurrency, tooling, graphics, modding or iteration speed.
-
-## 15. Current recommendation
-
-Do not lock the language yet.
-
-First lock:
-
-```text
-Architecture
-→ data model
-→ threading model
-→ memory model
-→ RHI boundary
-→ asset model
-→ plugin boundary
-→ scripting boundary
-→ editor boundary
-→ server boundary
-```
-
-Then benchmark a small vertical slice in the strongest candidate stacks.
-
-## 16. Required benchmark before final language decision
-
-Build the same prototype in candidate stacks:
+Minimum benchmark:
 
 ```text
 window
@@ -262,35 +505,115 @@ window
 → save/load
 → 8 worker jobs
 → headless server
+→ one cross-language tool call
 ```
 
 Measure:
-- build times;
-- iteration speed;
-- memory;
-- frame time;
-- simulation time;
-- job overhead;
-- serialization speed;
-- debugging quality;
-- tooling effort;
-- code complexity.
 
-The benchmark result, not preference alone, should choose the implementation stack.
+```text
+build time
+iteration time
+memory
+frame time
+simulation time
+job overhead
+serialization
+FFI / IPC overhead
+debugging quality
+tooling effort
+binary size
+startup time
+code complexity
+```
 
-## 17. IP rule
+The benchmark must compare **architecture + language boundary cost**, not just synthetic CPU speed.
 
-NEXORA may study Unreal Engine, O3DE, Bevy, Godot and other public documentation for architectural lessons. It must not copy source code, proprietary assets or distinctive implementation details protected by license or copyright.
+## 18. Architectural rule for final language lock
 
-## 18. References
+NEXORA should only lock the final implementation stack when all of the following are proven:
 
-Official architecture references consulted during this decision:
-- Unreal Engine World Partition / HLOD documentation
-- Unreal Engine Large World Coordinates documentation
-- Unreal Engine Mass Entity documentation
-- Unreal Engine Gameplay Ability System documentation
-- Unreal Engine Enhanced Input documentation
-- Open 3D Engine architecture, Gems, Atom Renderer and component documentation
-- Godot architecture documentation
+```text
+✓ Core ownership is explicit
+✓ Hot loops do not cross language boundaries
+✓ RHI boundary is stable
+✓ Serialization/versioning is stable
+✓ Mod boundary is stable
+✓ Editor/runtime boundary is stable
+✓ Server/headless build works
+✓ Job system works
+✓ Streaming works
+✓ Persistence works
+✓ Benchmark results are acceptable
+✓ Build/debug/tooling cost is sustainable
+```
 
-This file is a technology-study document, not a commitment to any specific engine or language.
+## 19. Current recommendation
+
+The current preferred direction is:
+
+```text
+                 NEXORA
+                   │
+        ┌──────────┼──────────┐
+        │          │          │
+      RUST      NATIVE      TYPESCRIPT
+        │       GFX/API         │
+        │       layer        Editor
+        │                     Tools
+        │
+   Core + Simulation
+   World + Server
+   Persistence
+   Networking
+   Mod Runtime
+
+                   │
+                PYTHON
+                   │
+        Research / Analysis
+```
+
+This preserves a coherent high-performance runtime while allowing specialized languages where they are genuinely stronger.
+
+## 20. Architectural inspirations
+
+NEXORA may study:
+
+### Unreal Engine 5 lessons
+- World Partition-style spatial streaming and hierarchical LOD;
+- Large World Coordinates / explicit large-world precision;
+- data-oriented Mass Entity for high population simulation;
+- Gameplay Ability / Attribute / Effect separation;
+- contextual input mapping;
+- mature editor/tooling separation.
+
+### Open 3D Engine lessons
+- modular engine/component philosophy;
+- asset pipeline;
+- engine extensibility;
+- editor/runtime separation;
+- networking and profiling architecture.
+
+### Data-oriented ECS lessons
+- batch simulation;
+- cache-friendly hot data;
+- scalable populations;
+- explicit system ownership;
+- deterministic parallel processing where required.
+
+### Godot-style separation lessons
+- platform abstraction;
+- subsystem boundaries;
+- clean runtime drivers.
+
+NEXORA implements its own architecture, code, APIs and data model.
+
+## 21. IP rule
+
+NEXORA may study public documentation for Unreal Engine, O3DE, Bevy, Godot and other projects for architectural lessons. It must not copy source code, proprietary assets or protected implementation details in ways that violate their licenses or copyright.
+
+## 22. Final principle
+
+> **One world, one authoritative simulation, multiple languages only where they create a real architectural advantage.**
+
+The objective is not to build a multilingual project for its own sake. The objective is to keep the NEXORA runtime coherent and fast while allowing specialized tooling and native integration to use the most appropriate technology.
