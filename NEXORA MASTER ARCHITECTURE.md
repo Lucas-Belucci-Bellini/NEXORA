@@ -20,6 +20,8 @@ GAMEPLAY
   ↓
 SOCIETY
   ↓
+HISTORY / KNOWLEDGE / LORE
+  ↓
 PRESENTATION / EDITOR / TOOLS
   ↓
 DISTRIBUTION
@@ -49,11 +51,126 @@ Player, Input, Items, Inventory/Equipment, Tools/Weapons, Crafting, Combat, Attr
 ## Society
 Social/Factions, Economy, Advanced Industry, Advanced Civilization, Research/Knowledge and related communication/civilization systems.
 
+## History / information / narrative
+
+```text
+World Events
+    ↓
+History System
+    ↓
+Knowledge and Information System
+    ↓
+Lore System
+    ↓
+Archive and Historical Evidence System
+```
+
+Responsibilities:
+
+```text
+World Events
+→ represent persistent world-changing occurrences.
+
+History
+→ record what actually happened and preserve causal relationships.
+
+Knowledge
+→ model who knows, remembers, suspects, discovers or believes information.
+
+Lore
+→ represent narratives, interpretations, traditions, myths, propaganda and cultural memory.
+
+Archive / Evidence
+→ preserve physical and documentary traces that can support or challenge historical claims.
+```
+
+Critical rule:
+
+```text
+WORLD TRUTH
+≠
+NPC KNOWLEDGE
+≠
+PLAYER KNOWLEDGE
+≠
+LORE
+```
+
+The history layer must never require the player to be present. Each world instance can develop a different historical trajectory from the same ruleset.
+
+## World continuity / player independence
+
+The world is autonomous:
+
+```text
+PLAYER ONLINE
+≠
+WORLD ACTIVE
+```
+
+Civilizations, populations, markets, institutions, ecology and political systems continue through simulation LOD when the player is absent.
+
+The player is an agent inside the world, not a hidden authority over it.
+
+A relevant consequence pipeline is:
+
+```text
+PLAYER / NPC / WORLD ACTION
+        ↓
+COMMAND / DOMAIN SYSTEM
+        ↓
+STATE CHANGE
+        ↓
+EVENT
+        ↓
+CONSEQUENCE
+        ↓
+HISTORY
+        ↓
+KNOWLEDGE
+        ↓
+LORE / CULTURAL RESPONSE
+```
+
+Information must have a path. NPCs cannot receive global telepathic knowledge simply to create surprise.
+
+## Emergent narrative model
+
+NEXORA does not use one mandatory linear history.
+
+```text
+UNIVERSE CANON
+    ↓
+WORLD RULES
+    ↓
+SIMULATION
+    ↓
+WORLD HISTORY
+    ↓
+KNOWLEDGE
+    ↓
+WORLD LORE
+    ↓
+PLAYER EXPERIENCE
+```
+
+The same universe can produce different world histories:
+
+```text
+WORLD A → empire survives
+WORLD B → empire collapses
+WORLD C → empire never forms
+```
+
+Major outcomes should emerge from interacting systems instead of fixed protagonist scripts whenever practical.
+
 ## Rendering / presentation
-Renderer/Graphics, RHI, Material/Shader, Lighting, VFX/Particles, Animation, Audio, Camera, UI, Menus, Localization, Accessibility, Trading UI, Civilization UI, Research UI and Social UI.
+Renderer/Graphics, RHI, Material/Shader, Lighting, VFX/Particles, Animation, Audio, Camera, UI, Menus, Localization, Accessibility, Trading UI, Civilization UI, Research UI, Social UI and History/Lore/Archive presentation.
 
 ## Modding and authoring
 Mod API, Mod Runtime, Mod SDK, Resource Packs, Content Pipeline, Prefab/Assembly, World/Structure Editors and Tooling.
+
+Mods may extend event types, cultures, narrative forms, evidence formats and lore generation under permission, provenance and persistence contracts.
 
 ## Platform / distribution
 Launcher, Installer/Updater, Mod Distribution, Dedicated Server, Release Artifacts, Diagnostics and Replay/History.
@@ -76,6 +193,8 @@ Gameplay
       ↓
 Society
       ↓
+History / Knowledge / Lore / Archive
+      ↓
 Presentation / Tools
 ```
 
@@ -90,6 +209,9 @@ Simulation → result
 Event Bus → communication
 Persistence → durability
 Networking → transport
+History → authoritative world record
+Knowledge → authorized information state
+Lore → derived/cultural representation
 ```
 
 ## LOD
@@ -97,6 +219,8 @@ Networking → transport
 FULL → REGIONAL → ABSTRACT → UNRESIDENT
 ```
 Logical existence and persistent identity survive representation changes.
+
+History and major knowledge must also survive LOD transitions through detail retention, aggregation and causal compression.
 
 ## Required cross-cutting contracts
 
@@ -117,6 +241,18 @@ resource budget
 observability
 mod/script boundary
 tests / vertical slice
+```
+
+For History/Knowledge/Lore systems additionally define:
+
+```text
+truth boundary
+provenance
+causality
+information visibility
+confidence
+retention policy
+compression policy
 ```
 
 ## Technology decision gate
@@ -183,12 +319,14 @@ G Crafting + Machines + Energy + Fluid + Automation
 H AI + Navigation + Vehicles + Railway
 I Economy + Research + Technology + Civilization + Social
 J World Events + Communication + Sensors + Cartography
-K Multiplayer + Server hardening
-L Mod Runtime + Scripting + SDK + Content Pipeline
-M Editors + Launcher + Distribution
-N Farming + Fishing + Hunting + Magic + additional gameplay
-O Content expansion
-P Production hardening / benchmark / release
+K History + Knowledge + Archive + Lore foundations
+L Multiplayer + Server hardening
+M Mod Runtime + Scripting + SDK + Content Pipeline
+N Editors + Launcher + Distribution
+O Farming + Fishing + Hunting + Magic + additional gameplay
+P Dynamic narrative expansion + historical UI + culture systems
+Q Content expansion
+R Production hardening / benchmark / release
 ```
 
 ## Golden integration loop
@@ -201,6 +339,9 @@ Generate world
 → command validated
 → system changes state
 → event emitted
+→ world consequences
+→ history record
+→ knowledge propagation
 → save dirty state
 → network replication
 → render/audio/VFX presentation
@@ -211,6 +352,21 @@ Generate world
 
 ## Completion criteria
 A system is architecturally complete when responsibilities, non-responsibilities, state ownership, API, commands/events, persistence, networking, security limits, LOD, threading/budget policy, tests and integration slices are documented.
+
+For history/narrative systems, architectural completion additionally requires:
+
+```text
+fact/event separation
+causal model
+truth boundary
+knowledge model
+information propagation
+archive/evidence model
+lore derivation model
+player-independence behavior
+LOD continuity
+history retention/compression
+```
 
 ## Architecture exit criteria
 The project may move from architecture into implementation-language selection when:
@@ -224,7 +380,8 @@ The project may move from architecture into implementation-language selection wh
 - serialization/versioning model is defined;
 - content/mod/script boundaries are defined;
 - editor/runtime relationship is defined;
-- benchmark harness is defined.
+- benchmark harness is defined;
+- world continuity and historical boundaries are defined.
 
 ## Final principle
-> **The Core provides rules and contracts. Systems provide capabilities. Content uses those capabilities. The world changes through validated operations and keeps living through simulation.**
+> **The Core provides rules and contracts. Systems provide capabilities. Content uses those capabilities. The world changes through validated operations and keeps living through simulation. Its history records what really happened; its inhabitants remember only what they can know; its cultures tell stories about the past; and none of this requires the player to be present.**
