@@ -1,18 +1,15 @@
 # NEXORA — JOB / TASK SYSTEM
 
-> The Job System provides bounded parallel execution for engine, world, simulation, streaming, generation and IO work. It schedules work; domain systems own the rules.
+> Bounded parallel execution for engine, world, simulation, streaming, generation and IO work.
 
-## Core model
-`System → Job/Task → Queue → Scheduler → Worker → Result/continuation`.
+## Pipeline
+`System → Job/Task → Queue → Scheduler → Worker → Result/Continuation`.
 
 ## Responsibilities
-Worker pools, dependency DAGs, priorities, budgets, cancellation, shutdown, async IO, background compilation and deterministic simulation barriers.
-
-## States
-`CREATED → QUEUED → RUNNING → COMPLETED` with `CANCELLED`, `FAILED`, `TIMEOUT`, `ABORTED` terminal paths.
+Worker pools, task DAGs, priorities, budgets, cancellation, shutdown, async IO and simulation barriers.
 
 ## Rules
-No unbounded worker creation, domain rules outside scheduler, explicit backpressure, deterministic authoritative results and observable queue state.
+No unbounded worker creation; domain rules remain in domain systems; queues use backpressure; authoritative results cannot depend on worker order.
 
 ## API
 ```ts
@@ -26,7 +23,7 @@ interface IJobSystem {
 ```
 
 ## Integration
-WorldGen, Streaming, Persistence, Renderer and Simulation submit work. Mods/Scripts use scheduler services and quotas rather than unrestricted threads.
+WorldGen, Streaming, Persistence, Renderer and Simulation. Mods/Scripts use scheduler services and quotas.
 
 ## Tests
-Dependency ordering, cancellation, shutdown, starvation, worker-count determinism, queue backpressure and mod quota enforcement.
+Dependency ordering, cancellation, shutdown, starvation, deterministic results and quotas.
