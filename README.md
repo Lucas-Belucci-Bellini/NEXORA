@@ -2,10 +2,4 @@
 
 ## MASTER PLAN — V1.0
 
-> NEXORA é um sandbox voxel independente, modular e extensível, projetado desde o primeiro dia para possuir um sistema de conteúdo/mods nativo.
-
-A arquitetura completa está centralizada em `NEXORA MASTER ARCHITECTURE.md`.
-
-## Documentação
-
-O repositório mantém documentos separados para os sistemas do engine, mundo, simulação, gameplay, sociedade, apresentação, modding e plataforma. O Master Architecture define dependências, limites de responsabilidade, autoridade, LOD e ordem de implementação.
+A arquitetura completa está em `NEXORA MASTER ARCHITECTURE.md`. O projeto mantém especificações separadas para foundation, runtime, world, simulation, gameplay, society, presentation, modding e platform.
