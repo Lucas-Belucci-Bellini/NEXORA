@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "experiment": "nexora:rock-material-lab",
+  "generator": "RockGenerator",
+  "provenance": "procedural-local",
+  "materials": [
+    {
+      "id": "nexora:rock_natural_prototype",
+      "displayName": "Rock A — Pedra natural",
+      "baseColor": [137, 112, 88],
+      "roughness": 0.78,
+      "detailScale": 0.58,
+      "erosion": 0.34,
+      "mineralVariation": 0.48,
+      "features": ["irregular-surface", "tonal-variation", "mineral-grain", "subtle-imperfections"]
+    },
+    {
+      "id": "nexora:rock_granite_prototype",
+      "displayName": "Rock B — Granito compacto",
+      "baseColor": [126, 134, 133],
+      "roughness": 0.64,
+      "detailScale": 0.62,
+      "erosion": 0.18,
+      "mineralVariation": 0.72,
+      "features": ["compact-silhouette", "mineral-inclusions", "cool-tonal-range", "microdetail"]
+    },
+    {
+      "id": "nexora:rock_eroded_prototype",
+      "displayName": "Rock C — Pedra erodida",
+      "baseColor": [130, 111, 92],
+      "roughness": 0.81,
+      "detailScale": 0.55,
+      "erosion": 0.66,
+      "mineralVariation": 0.41,
+      "features": ["weathering", "cavities", "edge-wear", "exposure-contrast"]
+    }
+  ],
+  "methods": [
+    { "id": "texture", "label": "A — Textura tradicional", "runtimeMemoryMb": 2.4, "shaderLayers": 0 },
+    { "id": "procedural", "label": "B — Material procedural / shader", "runtimeMemoryMb": 0.0, "shaderLayers": 8 },
+    { "id": "hybrid", "label": "C — Procedural + máscara + geometria", "runtimeMemoryMb": 0.5, "shaderLayers": 5 }
+  ]
+}

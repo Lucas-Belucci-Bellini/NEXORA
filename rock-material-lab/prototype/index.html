@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="NEXORA Rock Material Lab — experimento visual reproduzível de materiais de pedra." />
+    <title>NEXORA · Rock Material Lab</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">N</span>
+          <div>
+            <p class="eyebrow">NEXORA / PROTOTYPE 01</p>
+            <h1>Rock Material Lab</h1>
+          </div>
+        </div>
+        <div class="topbar-meta">
+          <span class="status-dot"></span>
+          <span>isolado do core</span>
+          <span class="mono" id="seed-readout">seed 1847</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow accent">EXPERIMENTO VISUAL · NÃO É IMPLEMENTAÇÃO DEFINITIVA</p>
+            <h2>Encontrar a linguagem geológica do NEXORA.</h2>
+            <p class="lede">
+              Três famílias de pedra, três estratégias de aparência e uma pergunta prática:
+              quanto detalhe entrega leitura mineral sem transformar cada rocha em um custo invisível?
+            </p>
+            <div class="hero-actions">
+              <button class="primary-button" id="regenerate" type="button">Gerar nova amostra <span>↗</span></button>
+              <button class="quiet-button" id="randomize" type="button">Variar parâmetros</button>
+            </div>
+          </div>
+          <div class="hero-note">
+            <div class="note-index">01</div>
+            <div>
+              <p class="eyebrow">HIPÓTESE DE TRABALHO</p>
+              <p>Material procedural + máscara + geometria deve equilibrar identidade, variação determinística e memória de textura.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-panel" aria-labelledby="controls-title">
+          <div class="section-heading compact-heading">
+            <div>
+              <p class="eyebrow">01 · CONTROLES DE EXPERIMENTO</p>
+              <h3 id="controls-title">Parâmetros reproduzíveis</h3>
+            </div>
+            <span class="chip mono">RockGenerator(seed, type, scale, erosion, mineral_variation)</span>
+          </div>
+          <div class="controls-grid">
+            <label class="control-field wide-field">
+              <span>Seed <output id="seed-value">1847</output></span>
+              <input id="seed" type="range" min="1" max="9999" value="1847" />
+            </label>
+            <label class="control-field">
+              <span>Escala do detalhe <output id="detail-value">58%</output></span>
+              <input id="detail" type="range" min="10" max="100" value="58" />
+            </label>
+            <label class="control-field">
+              <span>Rugosidade <output id="roughness-value">66%</output></span>
+              <input id="roughness" type="range" min="0" max="100" value="66" />
+            </label>
+            <label class="control-field">
+              <span>Erosão <output id="erosion-value">34%</output></span>
+              <input id="erosion" type="range" min="0" max="100" value="34" />
+            </label>
+            <label class="control-field">
+              <span>Variação mineral <output id="mineral-value">48%</output></span>
+              <input id="mineral" type="range" min="0" max="100" value="48" />
+            </label>
+          </div>
+          <div class="view-controls">
+            <div class="method-tabs" role="group" aria-label="Método de material">
+              <button class="method-tab" data-method="texture" type="button"><span class="method-letter">A</span> Textura tradicional</button>
+              <button class="method-tab" data-method="procedural" type="button"><span class="method-letter">B</span> Procedural / shader</button>
+              <button class="method-tab active" data-method="hybrid" type="button"><span class="method-letter">C</span> Híbrido recomendado</button>
+            </div>
+            <div class="distance-tabs" role="group" aria-label="Distância da câmera">
+              <span class="eyebrow">CÂMERA</span>
+              <button class="distance-tab" data-distance="close" type="button">Close</button>
+              <button class="distance-tab active" data-distance="mid" type="button">Médio</button>
+              <button class="distance-tab" data-distance="far" type="button">Distante</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="section-heading" aria-labelledby="samples-title">
+          <div>
+            <p class="eyebrow">02 · FAMÍLIAS DE FORMA</p>
+            <h3 id="samples-title">A mesma pipeline, três leituras</h3>
+          </div>
+          <p class="section-aside">Amostras geradas localmente · sem textura externa</p>
+        </section>
+
+        <section class="rock-grid" aria-label="Amostras de pedra">
+          <article class="rock-card" data-rock="natural">
+            <div class="card-topline"><span class="card-code">ROCK A</span><span class="card-tag">natural</span></div>
+            <div class="canvas-wrap"><canvas id="rock-natural" width="720" height="520" aria-label="Amostra de pedra natural"></canvas><span class="canvas-distance">MÉDIO</span></div>
+            <div class="rock-info"><div><h4>Pedra natural</h4><p>Camadas suaves, grão irregular e pequenas imperfeições.</p></div><span class="swatch natural-swatch"></span></div>
+            <div class="card-foot"><span>Forma: irregular</span><span>Grão: mineral</span></div>
+          </article>
+          <article class="rock-card" data-rock="granite">
+            <div class="card-topline"><span class="card-code">ROCK B</span><span class="card-tag">granito</span></div>
+            <div class="canvas-wrap"><canvas id="rock-granite" width="720" height="520" aria-label="Amostra de granito"></canvas><span class="canvas-distance">MÉDIO</span></div>
+            <div class="rock-info"><div><h4>Granito compacto</h4><p>Base sólida com inclusões minerais pontuais e frias.</p></div><span class="swatch granite-swatch"></span></div>
+            <div class="card-foot"><span>Forma: compacta</span><span>Grão: inclusões</span></div>
+          </article>
+          <article class="rock-card" data-rock="eroded">
+            <div class="card-topline"><span class="card-code">ROCK C</span><span class="card-tag">erodida</span></div>
+            <div class="canvas-wrap"><canvas id="rock-eroded" width="720" height="520" aria-label="Amostra de pedra erodida"></canvas><span class="canvas-distance">MÉDIO</span></div>
+            <div class="rock-info"><div><h4>Pedra erodida</h4><p>Cavidades, desgaste de borda e contraste de exposição.</p></div><span class="swatch eroded-swatch"></span></div>
+            <div class="card-foot"><span>Forma: desgastada</span><span>Grão: cavidades</span></div>
+          </article>
+        </section>
+
+        <section class="analysis-grid">
+          <div class="comparison-panel">
+            <div class="section-heading compact-heading"><div><p class="eyebrow">03 · LEITURA COMPARATIVA</p><h3>O que muda por abordagem</h3></div></div>
+            <div class="comparison-table" role="table" aria-label="Comparação entre métodos">
+              <div class="table-row table-header" role="row"><span>Método</span><span>Força</span><span>Trade-off</span></div>
+              <div class="table-row" role="row"><span><b class="table-letter">A</b> Textura</span><span>Leitura previsível</span><span>Repetição e memória</span></div>
+              <div class="table-row" role="row"><span><b class="table-letter">B</b> Procedural</span><span>Variação e escala</span><span>Ruído / custo de shader</span></div>
+              <div class="table-row recommended-row" role="row"><span><b class="table-letter">C</b> Híbrido <i>✓</i></span><span>Silhueta + material</span><span>Pipeline mais elaborada</span></div>
+            </div>
+          </div>
+          <aside class="decision-panel">
+            <p class="eyebrow accent">SINAL DA AMOSTRA</p>
+            <div class="decision-score"><span id="score-value">86</span><small>/100</small></div>
+            <h3 id="decision-title">Híbrido preserva o detalhe útil.</h3>
+            <p id="decision-copy">A geometria sustenta a silhueta no médio alcance; o material procedural acrescenta variação sem carregar um atlas por pedra.</p>
+            <div class="decision-bar"><span id="decision-bar-fill"></span></div>
+            <p class="mono decision-meta" id="decision-meta">consistência 0.86 · custo controlado</p>
+          </aside>
+        </section>
+
+        <section class="metrics-panel" aria-labelledby="metrics-title">
+          <div class="section-heading compact-heading"><div><p class="eyebrow">04 · PERFIL DE PERFORMANCE</p><h3 id="metrics-title">Qualidade / variedade / custo</h3></div><span class="live-badge"><i></i> estimativa ao vivo</span></div>
+          <div class="metrics-grid">
+            <div class="metric"><span class="metric-label">Polígonos / amostra</span><strong id="metric-polygons">1.8k</strong><span class="metric-note">geometria de protótipo</span></div>
+            <div class="metric"><span class="metric-label">Memória de textura</span><strong id="metric-memory">0.0 MB</strong><span class="metric-note">sem bitmap externo</span></div>
+            <div class="metric"><span class="metric-label">Custo do material</span><strong id="metric-shader">baixo</strong><span class="metric-note" id="metric-shader-note">5 camadas de ruído</span></div>
+            <div class="metric"><span class="metric-label">Draw calls</span><strong id="metric-calls">3</strong><span class="metric-note">um por família</span></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer"><span>ROCK MATERIAL LAB · protótipo isolado</span><span class="mono">NEXORA / experimento-visual / v0.1</span></footer>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
+
+<!-- Origem: todo o conteúdo visual é gerado proceduralmente no navegador; não há asset externo. -->
