@@ -1,0 +1,25 @@
+[package]
+name = "nexora-headless"
+description = "NEXORA headless runner: the Phase 0 vertical slice, with no window and no renderer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_headless"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexora-headless"
+path = "src/main.rs"
+
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+nexora-persistence.workspace = true
+nexora-world.workspace = true
+
+[lints]
+workspace = true
