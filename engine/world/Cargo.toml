@@ -1,0 +1,16 @@
+[package]
+name = "nexora-world"
+description = "NEXORA world runtime: voxel storage, chunk lifecycle and world persistence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+nexora-persistence.workspace = true
+
+[lints]
+workspace = true
