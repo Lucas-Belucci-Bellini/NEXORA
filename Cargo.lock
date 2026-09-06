@@ -6,10 +6,20 @@ version = 4
 name = "nexora-benchmark"
 version = "0.0.1"
 dependencies = [
+ "nexora-entity",
  "nexora-foundation",
  "nexora-persistence",
  "nexora-runtime",
  "nexora-world",
+]
+
+[[package]]
+name = "nexora-entity"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+ "nexora-persistence",
+ "nexora-runtime",
 ]
 
 [[package]]

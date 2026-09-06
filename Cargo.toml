@@ -20,6 +20,7 @@ members = [
     "engine/runtime",
     "engine/persistence",
     "engine/world",
+    "engine/entity",
     "engine/headless",
     "engine/benchmark",
 ]
@@ -36,6 +37,7 @@ nexora-foundation = { path = "engine/foundation", version = "0.0.1" }
 nexora-runtime = { path = "engine/runtime", version = "0.0.1" }
 nexora-persistence = { path = "engine/persistence", version = "0.0.1" }
 nexora-world = { path = "engine/world", version = "0.0.1" }
+nexora-entity = { path = "engine/entity", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

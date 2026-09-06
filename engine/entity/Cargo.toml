@@ -1,0 +1,19 @@
+[package]
+name = "nexora-entity"
+description = "NEXORA entity foundation: identity, lifecycle, components, queries and persistence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Data Runtime layer: Foundation, Job, Resource per NEXORA DEPENDENCY MATRIX.md.
+# Deliberately does NOT depend on nexora-world - entities and the voxel world are
+# siblings, composed by the layer above. Cargo enforces that.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+nexora-persistence.workspace = true
+
+[lints]
+workspace = true
