@@ -12,7 +12,6 @@
 use std::collections::BTreeMap;
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
-use nexora_foundation::hashing::Fnv1a64;
 use nexora_foundation::ident::Identifier;
 use nexora_foundation::rng::{positional_rng, ReproductionKey, SeedStream};
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape};
@@ -29,22 +28,7 @@ use crate::voxel::{BlockStateId, Section, AIR};
 /// guaranteed to reproduce a world under the same generator version.
 pub const GENERATOR_VERSION: GeneratorVersion = GeneratorVersion(1);
 
-/// A world's persistent identity.
-///
-/// Independent of any loaded chunk or process, so it survives a restart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WorldId(pub u64);
-
-impl WorldId {
-    /// Derive a stable id from a world's name and seed.
-    #[must_use]
-    pub fn derive(name: &str, seed: u64) -> Self {
-        let mut hasher = Fnv1a64::new();
-        hasher.write_str(name);
-        hasher.write_u64(seed);
-        Self(hasher.finish())
-    }
-}
+pub use nexora_foundation::ident::WorldId;
 
 /// The vertical extent of a dimension, in blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -586,13 +570,6 @@ mod tests {
         // detection silently starts counting air as solid.
         let world = world(1);
         assert_eq!(block(&world, "nexora:block/air"), AIR);
-    }
-
-    #[test]
-    fn a_world_identity_is_stable_for_the_same_name_and_seed() {
-        assert_eq!(WorldId::derive("alpha", 7), WorldId::derive("alpha", 7));
-        assert_ne!(WorldId::derive("alpha", 7), WorldId::derive("alpha", 8));
-        assert_ne!(WorldId::derive("alpha", 7), WorldId::derive("beta", 7));
     }
 
     #[test]

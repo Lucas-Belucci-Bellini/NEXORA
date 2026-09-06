@@ -8,6 +8,7 @@
 use core::fmt;
 
 use crate::error::{Domain, Error, Recovery, Result};
+use crate::hashing::Fnv1a64;
 
 /// Namespace reserved for first-party NEXORA content.
 pub const NEXORA_NAMESPACE: &str = "nexora";
@@ -160,6 +161,35 @@ impl fmt::Display for Identifier {
     }
 }
 
+/// A world's persistent identity.
+///
+/// Independent of any loaded chunk or process, so it survives a restart
+/// (`NEXORA WORLD STATE LIFECYCLE.md`, "World identity").
+///
+/// Lives in Foundation rather than in the world crate because more than one
+/// layer needs it — the world owns worlds, entities belong to one, and history
+/// and networking will both reference it. `NEXORA NAMING AND TERMINOLOGY.md`
+/// forbids one concept wearing two names, so it is defined once, here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WorldId(pub u64);
+
+impl WorldId {
+    /// Derive a stable id from a world's name and seed.
+    #[must_use]
+    pub fn derive(name: &str, seed: u64) -> Self {
+        let mut hasher = Fnv1a64::new();
+        hasher.write_str(name);
+        hasher.write_u64(seed);
+        Self(hasher.finish())
+    }
+}
+
+impl fmt::Display for WorldId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "world:{:016x}", self.0)
+    }
+}
+
 fn validate_path(path: &str) -> Result<()> {
     if path.is_empty() {
         return Err(invalid("path", path, "path must not be empty"));
@@ -240,6 +270,16 @@ mod tests {
 
         let long_ns = "n".repeat(MAX_NAMESPACE_LEN + 1);
         assert!(Namespace::parse(&long_ns).is_err());
+    }
+
+    #[test]
+    fn world_ids_are_stable_for_the_same_name_and_seed() {
+        assert_eq!(WorldId::derive("alpha", 7), WorldId::derive("alpha", 7));
+        assert_ne!(WorldId::derive("alpha", 7), WorldId::derive("alpha", 8));
+        assert_ne!(WorldId::derive("alpha", 7), WorldId::derive("beta", 7));
+        assert!(WorldId::derive("alpha", 7)
+            .to_string()
+            .starts_with("world:"));
     }
 
     #[test]

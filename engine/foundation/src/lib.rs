@@ -37,7 +37,9 @@ pub mod time;
 pub mod version;
 
 pub use error::{Domain, Error, Recovery, Result, Severity};
-pub use ident::{Identifier, Namespace};
-pub use spatial::{BlockPos, ChunkCoord, ChunkShape, LocalPos, RegionCoord, SectionCoord};
+pub use ident::{Identifier, Namespace, WorldId};
+pub use spatial::{
+    BlockPos, ChunkCoord, ChunkShape, LocalPos, RegionCoord, SectionCoord, WorldPosition,
+};
 pub use time::{CalendarConfig, WorldClock, WorldDuration, WorldTime};
 pub use version::{EngineVersion, VersionSet, ENGINE_VERSION};

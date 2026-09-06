@@ -77,6 +77,112 @@ impl BlockPos {
     }
 }
 
+/// A continuous position in world space.
+///
+/// `SPATIAL AND COORDINATE SYSTEM.md` warns against assuming one numeric type
+/// suffices for every subsystem: voxel identity is exact and integral, but an
+/// entity standing between two blocks is not. Blocks use [`BlockPos`]; anything
+/// that moves continuously uses this.
+///
+/// `f64` rather than `f32` because the coordinate range is large: at the
+/// engine's limits an `f32` mantissa cannot resolve single blocks, which is the
+/// precision collapse the document's "high precision world transforms"
+/// requirement exists to avoid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldPosition {
+    /// East-west axis.
+    pub x: f64,
+    /// Vertical axis.
+    pub y: f64,
+    /// North-south axis.
+    pub z: f64,
+}
+
+impl WorldPosition {
+    /// The world origin.
+    pub const ORIGIN: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+
+    /// Construct a continuous world position.
+    #[must_use]
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    /// The block that contains this position.
+    ///
+    /// Floors rather than truncates: `-0.5` is inside block `-1`, not block `0`.
+    /// Truncation here would place everything in the negative half-space one
+    /// block too high, which is the same defect as truncating chunk division.
+    #[must_use]
+    pub fn to_block_pos(self) -> BlockPos {
+        BlockPos::new(
+            self.x.floor() as i64,
+            self.y.floor() as i64,
+            self.z.floor() as i64,
+        )
+    }
+
+    /// The centre of a block.
+    #[must_use]
+    pub fn from_block_center(block: BlockPos) -> Self {
+        Self::new(
+            block.x as f64 + 0.5,
+            block.y as f64 + 0.5,
+            block.z as f64 + 0.5,
+        )
+    }
+
+    /// Offset by a delta.
+    #[must_use]
+    pub const fn offset(self, dx: f64, dy: f64, dz: f64) -> Self {
+        Self::new(self.x + dx, self.y + dy, self.z + dz)
+    }
+
+    /// Squared distance to another position.
+    ///
+    /// Squared, so a radius comparison needs no square root.
+    #[must_use]
+    pub fn distance_squared(self, other: Self) -> f64 {
+        let (dx, dy, dz) = (self.x - other.x, self.y - other.y, self.z - other.z);
+        dx * dx + dy * dy + dz * dz
+    }
+
+    /// Distance to another position.
+    #[must_use]
+    pub fn distance(self, other: Self) -> f64 {
+        self.distance_squared(other).sqrt()
+    }
+
+    /// Whether every component is finite.
+    ///
+    /// A NaN position would silently poison every distance comparison it
+    /// touches, so callers validate at the boundary instead.
+    #[must_use]
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
+    }
+
+    /// Reject a non-finite position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any component is NaN or infinite.
+    pub fn require_finite(self) -> Result<Self> {
+        if self.is_finite() {
+            return Ok(self);
+        }
+        Err(
+            Error::new(Domain::Spatial, "world-position", "position is not finite")
+                .with_recovery(Recovery::Reject)
+                .with_context("position", format!("{},{},{}", self.x, self.y, self.z)),
+        )
+    }
+}
+
 /// A chunk column address: the `(x, z)` footprint shared by a stack of sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChunkCoord {
@@ -610,6 +716,78 @@ mod tests {
             RegionCoord::new(-2, -2)
         );
         assert!(RegionShape::new(0).is_err());
+    }
+
+    #[test]
+    fn continuous_positions_floor_into_the_right_block() {
+        // The same defect class as truncating chunk division: truncation puts
+        // -0.5 in block 0, one block too high across the whole negative side.
+        assert_eq!(
+            WorldPosition::new(0.0, 0.0, 0.0).to_block_pos(),
+            BlockPos::new(0, 0, 0)
+        );
+        assert_eq!(
+            WorldPosition::new(0.9, 0.9, 0.9).to_block_pos(),
+            BlockPos::new(0, 0, 0)
+        );
+        assert_eq!(
+            WorldPosition::new(-0.5, -0.5, -0.5).to_block_pos(),
+            BlockPos::new(-1, -1, -1)
+        );
+        assert_eq!(
+            WorldPosition::new(-1.0, -1.0, -1.0).to_block_pos(),
+            BlockPos::new(-1, -1, -1)
+        );
+        assert_eq!(
+            WorldPosition::new(-1.1, -1.1, -1.1).to_block_pos(),
+            BlockPos::new(-2, -2, -2)
+        );
+    }
+
+    #[test]
+    fn block_centres_round_trip_to_their_block() {
+        for block in [
+            BlockPos::new(0, 0, 0),
+            BlockPos::new(-1, -1, -1),
+            BlockPos::new(37, -412, 9_001),
+            BlockPos::new(-1_000_000, 64, -7),
+        ] {
+            assert_eq!(
+                WorldPosition::from_block_center(block).to_block_pos(),
+                block
+            );
+        }
+    }
+
+    #[test]
+    fn distances_are_euclidean_and_squared_avoids_the_root() {
+        let a = WorldPosition::new(0.0, 0.0, 0.0);
+        let b = WorldPosition::new(3.0, 4.0, 0.0);
+        assert!((a.distance(b) - 5.0).abs() < 1e-12);
+        assert!((a.distance_squared(b) - 25.0).abs() < 1e-12);
+        assert!((a.distance(a)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn non_finite_positions_are_rejected() {
+        assert!(WorldPosition::new(f64::NAN, 0.0, 0.0)
+            .require_finite()
+            .is_err());
+        assert!(WorldPosition::new(0.0, f64::INFINITY, 0.0)
+            .require_finite()
+            .is_err());
+        assert!(WorldPosition::new(0.0, 0.0, f64::NEG_INFINITY)
+            .require_finite()
+            .is_err());
+        assert!(WorldPosition::new(1.0, 2.0, 3.0).require_finite().is_ok());
+    }
+
+    #[test]
+    fn offsets_accumulate() {
+        let moved = WorldPosition::ORIGIN
+            .offset(1.5, -2.0, 0.25)
+            .offset(0.5, 2.0, 0.75);
+        assert_eq!(moved, WorldPosition::new(2.0, 0.0, 1.0));
     }
 
     #[test]

@@ -50,6 +50,19 @@ impl Writer {
         self.buffer.extend_from_slice(&value.to_le_bytes());
     }
 
+    /// Append an `f32` by its IEEE-754 bit pattern.
+    ///
+    /// Written as bits rather than through a text form so the value that comes
+    /// back is the same value, not the nearest one a decimal round trip allows.
+    pub fn f32(&mut self, value: f32) {
+        self.u32(value.to_bits());
+    }
+
+    /// Append an `f64` by its IEEE-754 bit pattern.
+    pub fn f64(&mut self, value: f64) {
+        self.u64(value.to_bits());
+    }
+
     /// Append raw bytes with no length prefix.
     pub fn raw(&mut self, bytes: &[u8]) {
         self.buffer.extend_from_slice(bytes);
@@ -175,6 +188,24 @@ impl<'a> Reader<'a> {
         Ok(self.u64()? as i64)
     }
 
+    /// Read an `f32` from its bit pattern.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input is truncated.
+    pub fn f32(&mut self) -> Result<f32> {
+        Ok(f32::from_bits(self.u32()?))
+    }
+
+    /// Read an `f64` from its bit pattern.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input is truncated.
+    pub fn f64(&mut self) -> Result<f64> {
+        Ok(f64::from_bits(self.u64()?))
+    }
+
     /// Read a length-prefixed byte string.
     ///
     /// # Errors
@@ -292,6 +323,68 @@ mod tests {
         for expected in [i64::MIN, -1, 0, 1, i64::MAX] {
             assert_eq!(reader.i64().unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn floats_survive_the_round_trip_bit_for_bit() {
+        // Bit-pattern encoding, so these come back identical rather than
+        // "close enough" - including the values a decimal round trip mangles.
+        let doubles = [
+            0.0f64,
+            -0.0,
+            1.0,
+            -1.0,
+            0.1,
+            -0.5,
+            f64::MIN,
+            f64::MAX,
+            f64::EPSILON,
+            1e308,
+            -1e-308,
+        ];
+        let singles = [0.0f32, -0.0, 1.0, 0.1, f32::MIN, f32::MAX, f32::EPSILON];
+
+        let mut writer = Writer::new();
+        for value in doubles {
+            writer.f64(value);
+        }
+        for value in singles {
+            writer.f32(value);
+        }
+        let encoded = writer.finish();
+
+        let mut reader = Reader::new(&encoded);
+        for expected in doubles {
+            let found = reader.f64().unwrap();
+            assert_eq!(
+                found.to_bits(),
+                expected.to_bits(),
+                "f64 {expected} changed"
+            );
+        }
+        for expected in singles {
+            let found = reader.f32().unwrap();
+            assert_eq!(
+                found.to_bits(),
+                expected.to_bits(),
+                "f32 {expected} changed"
+            );
+        }
+        reader.expect_exhausted().unwrap();
+    }
+
+    #[test]
+    fn non_finite_floats_round_trip_rather_than_being_silently_normalised() {
+        let mut writer = Writer::new();
+        writer.f64(f64::NAN);
+        writer.f64(f64::INFINITY);
+        writer.f64(f64::NEG_INFINITY);
+        let encoded = writer.finish();
+
+        let mut reader = Reader::new(&encoded);
+        assert!(reader.f64().unwrap().is_nan());
+        assert_eq!(reader.f64().unwrap(), f64::INFINITY);
+        assert_eq!(reader.f64().unwrap(), f64::NEG_INFINITY);
     }
 
     #[test]
