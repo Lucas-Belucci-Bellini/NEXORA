@@ -106,7 +106,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Observability | [x] | [x] | `foundation::diagnostics` |
 | Testing strategy | [x] | [x] | 187 tests; unit, integration, property, determinism, corruption |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
-| Technology benchmark | [x] | [ ] | **the open gate** — plan exists, measurement not run (DEBT-0008) |
+| Technology benchmark | [x] | [~] | harness built and the reference stack measured ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
 
 ## Final gate
 
@@ -116,9 +116,13 @@ contracts.
 
 **Not met.** Two blockers stand out:
 
-1. **The technology benchmark has not run** (DEBT-0008). ADR-0001 keeps the
-   language gate open on purpose; freezing the architecture before measuring
-   would settle by default the question the gate exists to ask.
+1. **The technology benchmark is only a third done** (DEBT-0008). The reference
+   stack is now measured — see
+   [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md)
+   — but no *second* stack has been, and rule 5 of the plan forbids deciding
+   from one. ADR-0001 keeps the language gate open on purpose; freezing the
+   architecture before that comparison would settle by default the question the
+   gate exists to ask.
 2. **The RHI and presentation boundary is unbuilt.** It is specified, but no
    implementation has ever run, so nothing has tested whether the boundary
    survives contact with a real renderer.

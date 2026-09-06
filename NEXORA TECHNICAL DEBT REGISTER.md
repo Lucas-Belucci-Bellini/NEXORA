@@ -118,13 +118,21 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `CHUNK & VOXEL ENGINE.md` §3 ("não deixar o código inteiro assumir que o chunk
   sempre possui o mesmo tamanho"). Isso impede substituir divisão por shift.
 - **IMPACT:** Cada conversão bloco→seção é uma divisão inteira real.
-- **RISK:** Desconhecido — **não medido**. A Phase 0 não trocou correção por uma
-  otimização sem evidência.
-- **PROPOSED REMEDIATION:** Medir primeiro. Se aparecer no perfil, guardar
-  máscara e deslocamento pré-calculados em `ChunkShape` para extensões potência
-  de dois, mantendo o caminho geral.
-- **TARGET STAGE:** Phase 9 (Scale / Hardening)
-- **STATUS:** OPEN
+- **RISK:** Nenhum. **Medido** em
+  [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md).
+- **MEASUREMENT:** a divisão custa **1,7 ns**. O atalho por deslocamento que este
+  débito propunha custa **6,7 ns**, e mesmo com largura constante em tempo de
+  compilação custa **6,8 ns** — cerca de **4× mais lento** do que aquilo que ele
+  deveria melhorar. A explicação provável é que `section_of` é `const fn` e o
+  compilador já dobra a divisão numa sequência ótima; a explicação é hipótese, a
+  medição não é.
+- **PROPOSED REMEDIATION:** nenhuma. Implementar a "otimização" seria uma
+  regressão.
+- **RE-OPEN TRIGGER:** profiling mostrar `section_of` quente num ponto de chamada
+  onde o `ChunkShape` é opaco ao otimizador (atrás de trait object, ou lido de um
+  save em runtime) — caso que esta medição não cobre.
+- **TARGET STAGE:** —
+- **STATUS:** WONT FIX (medido em 2026-09-06)
 
 ### DEBT-0006 — Verificação de leitura em toda escrita de save
 
@@ -135,10 +143,15 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   demonstrável e não apenas pretendida (ADR-0004).
 - **IMPACT:** Toda escrita custa uma leitura e uma decodificação a mais.
 - **RISK:** Baixo hoje; cresce com o tamanho do save.
-- **PROPOSED REMEDIATION:** Manter por padrão. Tornar configurável só com
-  medição e ADR, porque desligar remove uma garantia de integridade.
+- **MEASUREMENT:** escrita a **37 MiB/s** contra leitura a **96 MiB/s** — a
+  garantia custa cerca de **2,6×** na escrita, ou 4,35 ms para um save de
+  152 KiB.
+- **PROPOSED REMEDIATION:** Manter. O custo em milissegundos compra "nunca
+  substituir um save válido por dados parciais" como propriedade demonstrável, e
+  não como intenção. Reavaliar só quando o save for grande o bastante para a
+  releitura dominar — e aí com ADR.
 - **TARGET STAGE:** Phase 9
-- **STATUS:** OPEN
+- **STATUS:** OPEN (quantificado em 2026-09-06)
 
 ### DEBT-0007 — Event Bus só entrega fatos
 
@@ -165,7 +178,37 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **IMPACT:** O stack final continua sem lock. Quanto mais código nascer antes
   da medição, mais caro fica trocar.
 - **RISK:** Alto — este é o débito mais caro da lista.
-- **PROPOSED REMEDIATION:** Instrumentar a fatia headless com as métricas do §17
-  e executar o plano de `NEXORA TECHNOLOGY BENCHMARK PLAN.md`.
+- **PROGRESS (2026-09-06):** o harness existe (`engine/benchmark`) e a linha de
+  base da implementação de referência está registrada em
+  [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md).
+  Cobre aproximadamente um terço do gate: chunk, jobs, save/load, headless,
+  memória, tamanho de binário e determinismo. As nove etapas restantes da fatia
+  do plano estão **declaradas como não medidas**, com motivo, em vez de omitidas.
+- **PROPOSED REMEDIATION:** falta o essencial — **uma segunda stack medida sob o
+  mesmo workload**. A regra 5 do plano proíbe decidir por um microcaso único, e
+  números absolutos de uma stack só não comparam nada. Próximos incrementos
+  mensuráveis, nesta ordem: entity system (não precisa de hardware) e depois RHI
+  (impossível de medir em container headless).
 - **TARGET STAGE:** antes da Phase 2
+- **STATUS:** IN PROGRESS
+
+### DEBT-0009 — Job system custa ~8,8 µs por submissão
+
+- **SYSTEM:** `engine/runtime::jobs`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** descoberto pela medição, não por suspeita.
+  [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md)
+  mede **8,84 µs** para enfileirar um job e **8,85 ms** para 1.000 jobs triviais
+  num pool de 4 workers — cerca de **113.000 jobs/s**, quase tudo overhead de
+  escalonamento.
+- **IMPACT:** irrelevante na granularidade de chunk (0,7% do custo de gerar um
+  chunk). Fatal por entidade: 10.000 entidades como jobs individuais custariam
+  88 ms só de overhead, antes de qualquer simulação. Na prática o tamanho mínimo
+  útil de um job hoje é da ordem de um milissegundo.
+- **RISK:** Alto a partir da Phase 5, quando trabalho por entidade chega.
+- **PROPOSED REMEDIATION:** causa provável é um futex wake por `notify_one` a
+  cada submissão, somado à contenção de todos os workers num único mutex.
+  Candidatos: API de submissão em lote, ou filas por worker com work-stealing
+  para que o produtor não acorde o pool a cada job. Medir de novo depois.
+- **TARGET STAGE:** antes da Phase 5 (Entity + AI Foundation)
 - **STATUS:** OPEN

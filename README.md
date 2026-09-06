@@ -63,6 +63,21 @@ doing its job: solid rock costs nothing to hold.
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
 ```
 
+## Measuring it
+
+The language selection gate needs evidence, so the reference implementation is
+measured rather than asserted:
+
+```bash
+cargo run --release -p nexora-benchmark
+```
+
+Results and analysis:
+[`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md).
+Highlights — 18.3 million blocks held in 144 KiB, 7.0 MiB peak resident memory,
+and a measurement that closed `DEBT-0005` by showing the "optimization" it
+proposed would have been **4× slower** than the code it was meant to improve.
+
 ## Layout
 
 The crate graph *is* the dependency matrix — Cargo rejects cycles, so a layering
@@ -96,10 +111,16 @@ document disagree, the document wins until an ADR says otherwise
 
 ## What comes next
 
-The open gate is the **technology benchmark** (`DEBT-0008`). The reference slice
-now exists to measure; `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md` §17
-defines the workload and §18 the criteria for locking the stack. Nothing large
-should be built on top of the foundation until that measurement has run.
+The open gate is still the **technology benchmark** (`DEBT-0008`), now about a
+third complete: the reference stack is measured, but rule 5 of
+`NEXORA TECHNOLOGY BENCHMARK PLAN.md` forbids deciding from a single stack, and
+no second one has been measured. The next measurable increments are the **entity
+system** (needs no hardware) and then the **RHI** (cannot be measured headless at
+all).
+
+Measurement also opened `DEBT-0009`: the job system costs ~8.8 µs per
+submission, which is 0.7% overhead at chunk granularity and fatal per entity —
+worth fixing before Phase 5 rather than discovering under 10,000 entities.
 
 ## Originality
 
