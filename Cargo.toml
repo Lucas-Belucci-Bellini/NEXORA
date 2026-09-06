@@ -1,0 +1,56 @@
+# NEXORA workspace.
+#
+# Layout follows "ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md" §14: language
+# boundaries are explicit directories, and the dependency direction documented in
+# "NEXORA DEPENDENCY MATRIX.md" is enforced by the crate graph itself:
+#
+#     foundation  -> (nothing)
+#     persistence -> foundation
+#     runtime     -> foundation
+#     world       -> foundation, runtime, persistence
+#     headless    -> all of the above
+#
+# A crate cannot depend "upwards", because Cargo rejects cycles. The matrix is
+# therefore checked by the build rather than by review alone.
+
+[workspace]
+resolver = "2"
+members = [
+    "engine/foundation",
+    "engine/runtime",
+    "engine/persistence",
+    "engine/world",
+    "engine/headless",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Lucas-Belucci-Bellini/NEXORA"
+
+[workspace.dependencies]
+nexora-foundation = { path = "engine/foundation", version = "0.0.1" }
+nexora-runtime = { path = "engine/runtime", version = "0.0.1" }
+nexora-persistence = { path = "engine/persistence", version = "0.0.1" }
+nexora-world = { path = "engine/world", version = "0.0.1" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+unimplemented = "warn"
+panic_in_result_fn = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1

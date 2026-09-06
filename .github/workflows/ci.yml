@@ -1,0 +1,93 @@
+# NEXORA continuous integration.
+#
+# Stage order follows "NEXORA BUILD CI AND RELEASE ARCHITECTURE.md". Stages that
+# have no code to run yet (package, migration) are absent rather than stubbed
+# green: a check that always passes is worse than a missing one, because it
+# reads as coverage.
+
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: format, lint, test, build, smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the version, so the action installs exactly it.
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt clippy
+          rustc --version && cargo --version
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # STAGE: FORMAT
+      - name: Format
+        run: cargo fmt --all --check
+
+      # STAGE: LINT / STATIC ANALYSIS
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # STAGE: UNIT + INTEGRATION + DETERMINISM + SAVE TESTS
+      # The determinism and save/load suites live alongside the units they
+      # cover; the whole workspace runs as one gate.
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      - name: Documentation tests
+        run: cargo test --workspace --doc
+
+      # STAGE: BUILD
+      - name: Build (release)
+        run: cargo build --workspace --release
+
+      # STAGE: SMOKE TEST
+      # Runs the Phase 0 vertical slice against the release binary and fails the
+      # build if the world does not survive a save and reload.
+      - name: Smoke test the headless vertical slice
+        run: |
+          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv"
+
+      # A second run at a different worker count must produce an identical save.
+      - name: Determinism smoke test
+        run: |
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 1 \
+            --save "${RUNNER_TEMP}/det-a.nxsv"
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 8 \
+            --save "${RUNNER_TEMP}/det-b.nxsv"
+          cmp "${RUNNER_TEMP}/det-a.nxsv" "${RUNNER_TEMP}/det-b.nxsv"
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build documentation
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"

@@ -1,0 +1,7 @@
+/target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# Local run artifacts produced by the headless runner.
+/run/
+/saves/
