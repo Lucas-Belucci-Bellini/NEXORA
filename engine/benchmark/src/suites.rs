@@ -6,10 +6,18 @@
 
 use std::path::Path;
 
+use nexora_entity::components::{Bounds, TagSet, Velocity};
+use nexora_entity::id::EntityTypeId;
+use nexora_entity::persist as entity_persist;
+use nexora_entity::query::{EntityFilter, Query};
+use nexora_entity::store::{EntityStore, SpawnContext, SpawnReason};
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
+use nexora_foundation::ident::WorldId;
+use nexora_foundation::spatial::WorldPosition;
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, SectionCoord};
 use nexora_foundation::time::CalendarConfig;
+use nexora_foundation::time::WorldDuration;
 use nexora_persistence::SaveContainer;
 use nexora_runtime::jobs::{JobSystem, Priority};
 use nexora_world::persist;
@@ -445,6 +453,211 @@ pub fn persistence(budget: Budget, scratch: &Path) -> Result<Vec<Measurement>> {
     Ok(out)
 }
 
+/// Entities: the plan's "1,000 entities" stage.
+///
+/// The population size is the one `NEXORA TECHNOLOGY BENCHMARK PLAN.md` names,
+/// so these numbers slot straight into the gate.
+///
+/// # Errors
+///
+/// Returns an error when a population cannot be built.
+pub fn entities(budget: Budget) -> Result<Vec<Measurement>> {
+    const POPULATION: usize = 1_000;
+    const TICKS_PER_SECOND: u32 = 20;
+
+    let world = WorldId::derive("benchmark", BENCH_SEED);
+    let entity_type = EntityTypeId::parse("nexora:entity/bench")?;
+    let living = Identifier::parse("nexora:tag/living")?;
+
+    let populate = |count: usize| -> Result<EntityStore> {
+        let mut store = EntityStore::new(world);
+        for index in 0..count {
+            let position = WorldPosition::new(
+                (index % 64) as f64,
+                64.0 + (index / 64) as f64,
+                (index % 37) as f64,
+            );
+            store.spawn(
+                SpawnContext::new(entity_type.clone(), position, SpawnReason::WorldGen)
+                    .with_velocity(Velocity::new(0.5, 0.0, -0.25)?)
+                    .with_bounds(Bounds::new(0.4, 0.9, 0.4)?)
+                    .with_tags(TagSet::from_iter_sorted([living.clone()])),
+            )?;
+        }
+        Ok(store)
+    };
+
+    let mut out = Vec::new();
+
+    let mut spawn_store = EntityStore::new(world);
+    let spawn_type = entity_type.clone();
+    out.push(measure(
+        "entity.spawn",
+        "Create one entity: slot allocation, component writes, persistent id",
+        Budget {
+            iterations_per_sample: 500,
+            ..budget
+        },
+        || {
+            let id = spawn_store
+                .spawn(SpawnContext::new(
+                    spawn_type.clone(),
+                    WorldPosition::ORIGIN,
+                    SpawnReason::Spawner,
+                ))
+                .expect("spawn");
+            consume(id);
+        },
+    ));
+
+    let mut churn = populate(POPULATION)?;
+    let churn_type = entity_type.clone();
+    out.push(measure(
+        "entity.spawn_despawn_cycle",
+        "Spawn then destroy: the slot reuse path a busy world runs constantly",
+        Budget {
+            iterations_per_sample: 500,
+            ..budget
+        },
+        || {
+            let id = churn
+                .spawn(SpawnContext::new(
+                    churn_type.clone(),
+                    WorldPosition::ORIGIN,
+                    SpawnReason::Spawner,
+                ))
+                .expect("spawn");
+            churn.despawn(id).expect("despawn");
+        },
+    ));
+
+    let resolve_store = populate(POPULATION)?;
+    let handle = resolve_store
+        .iter()
+        .nth(POPULATION / 2)
+        .expect("a live entity");
+    out.push(measure(
+        "entity.resolve_handle",
+        "Validate one handle: world, range, generation and liveness",
+        Budget {
+            iterations_per_sample: 20_000,
+            ..budget
+        },
+        || {
+            consume(resolve_store.resolve(consume(handle)).expect("resolves"));
+        },
+    ));
+
+    let mut stepping = populate(POPULATION)?;
+    out.push(measure(
+        "entity.step_1000",
+        "Advance 1,000 entities by one tick: the batch walk over dense columns",
+        Budget {
+            iterations_per_sample: 100,
+            ..budget
+        },
+        || {
+            consume(
+                stepping
+                    .step(WorldDuration::from_ticks(1), TICKS_PER_SECOND)
+                    .expect("step"),
+            );
+        },
+    ));
+
+    let queried = populate(POPULATION)?;
+    let query_type = entity_type.clone();
+    out.push(measure(
+        "entity.query_type_1000",
+        "Linear scan of 1,000 entities filtering by type (no spatial index yet)",
+        Budget {
+            iterations_per_sample: 200,
+            ..budget
+        },
+        || {
+            consume(Query::by_type(&queried, query_type.clone()).len());
+        },
+    ));
+
+    let tag_for_query = living.clone();
+    out.push(measure(
+        "entity.query_tag_1000",
+        "Linear scan of 1,000 entities filtering by tag",
+        Budget {
+            iterations_per_sample: 200,
+            ..budget
+        },
+        || {
+            consume(Query::by_tag(&queried, tag_for_query.clone()).len());
+        },
+    ));
+
+    out.push(measure(
+        "entity.query_radius_1000",
+        "Nearest-first radius query over 1,000 entities, including the sort",
+        Budget {
+            iterations_per_sample: 100,
+            ..budget
+        },
+        || {
+            consume(
+                Query::within_radius(
+                    &queried,
+                    WorldPosition::new(32.0, 70.0, 18.0),
+                    16.0,
+                    &EntityFilter::new(),
+                )
+                .len(),
+            );
+        },
+    ));
+
+    let to_save = populate(POPULATION)?;
+    let mut sizing = SaveContainer::new();
+    entity_persist::save(&to_save, &mut sizing)?;
+    let section_bytes = sizing
+        .get(&Identifier::parse(entity_persist::SECTION_ENTITIES)?)
+        .map_or(0, <[u8]>::len) as u64;
+
+    out.push(measure_throughput(
+        "entity.save_1000",
+        "Serialize 1,000 entities as logical state",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        section_bytes,
+        || {
+            let mut container = SaveContainer::new();
+            entity_persist::save(&to_save, &mut container).expect("save");
+            consume(container.len());
+        },
+    ));
+
+    out.push(measure_throughput(
+        "entity.load_1000",
+        "Restore 1,000 entities, re-resolving every persistent id",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        section_bytes,
+        || {
+            let mut restored = EntityStore::new(world);
+            entity_persist::load(&mut restored, &sizing).expect("load");
+            consume(restored.len());
+        },
+    ));
+
+    out.push(record_bytes(
+        "entity.save_size_1000",
+        "Bytes of save section for 1,000 entities",
+        section_bytes,
+    ));
+
+    Ok(out)
+}
+
 /// Cold start: process ready to a simulating world.
 ///
 /// # Errors
@@ -589,6 +802,7 @@ mod tests {
             .expect("persistence")
             .is_empty());
         assert!(!startup(budget).expect("startup").is_empty());
+        assert!(!entities(budget).expect("entities").is_empty());
 
         let _ = std::fs::remove_dir_all(&scratch);
     }
