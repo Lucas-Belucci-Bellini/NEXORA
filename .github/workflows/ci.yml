@@ -70,6 +70,15 @@ jobs:
         run: |
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv"
 
+      # The benchmark harness is code too: run a minimal pass so it cannot rot.
+      # Deliberately NOT gated on timings - a shared runner's numbers would
+      # produce false failures, and a performance gate that cries wolf gets
+      # disabled. Real numbers come from a deliberate run on known hardware.
+      - name: Smoke test the benchmark harness
+        run: |
+          ./target/release/nexora-benchmark --smoke \
+            --scratch "${RUNNER_TEMP}/bench" > /dev/null
+
       # A second run at a different worker count must produce an identical save.
       - name: Determinism smoke test
         run: |

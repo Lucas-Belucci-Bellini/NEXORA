@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "nexora-benchmark"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+ "nexora-persistence",
+ "nexora-runtime",
+ "nexora-world",
+]
+
+[[package]]
 name = "nexora-foundation"
 version = "0.0.1"
 

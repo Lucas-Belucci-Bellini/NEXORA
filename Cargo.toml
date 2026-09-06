@@ -21,6 +21,7 @@ members = [
     "engine/persistence",
     "engine/world",
     "engine/headless",
+    "engine/benchmark",
 ]
 
 [workspace.package]
