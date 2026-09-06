@@ -85,6 +85,26 @@ Em conflito, um documento inferior não substitui silenciosamente uma regra supe
 
 O repositório também contém as especificações individuais de Core, World, Voxel, Biomes, Caves, Climate, Water/Fluid, Vegetation, Physics, Lighting, Renderer/Graphics, Player, Combat, Tools/Weapons, Crafting, Machines, Energy, Inventory, Items, Entities, Registry, Event Bus, Persistence, Animation, Audio, UI, Dimensions, Structures, Networking, Server, Mod Runtime, Scripting, Commands, Security, Progression, Quest, Social/Factions, Research/Knowledge, Space, Vehicles, World Events, Industry, Civilization e demais sistemas do projeto.
 
+## Implementação
+
+A Phase 0 existe como código. O mapa entre documento normativo e crate:
+
+| Camada | Crate | Documentos que implementa |
+| --- | --- | --- |
+| Foundation | `engine/foundation` | CORE.md §14–§15, NAMING AND TERMINOLOGY, SPATIAL AND COORDINATE SYSTEM, TIME AND CALENDAR SYSTEM, WORLD GENERATION SEED AND REPRODUCIBILITY, DIAGNOSTICS AND OBSERVABILITY, OBSERVABILITY DATA MODEL, CONFIGURATION AND SETTINGS SYSTEM |
+| Persistence | `engine/persistence` | SAVE FORMAT AND COMPATIBILITY, SECURITY THREAT MODEL (entrada não confiável) |
+| Runtime | `engine/runtime` | RUNTIME LIFECYCLE, ENGINE MODULE SYSTEM, Registry System, Event Bus, JOB SYSTEM, THREADING AND CONCURRENCY MODEL |
+| World | `engine/world` | CHUNK & VOXEL ENGINE, WORLD STATE LIFECYCLE, WORLD GENERATION |
+| Slice | `engine/headless` | DEFINITION OF DONE (verificação executável), TESTING AND VALIDATION STRATEGY |
+
+Decisões que sustentam esse código estão em [`docs/adr/`](docs/adr/). O estado
+real de cada contrato — definido versus construído — está em
+[`NEXORA ARCHITECTURE FREEZE CHECKLIST.md`](NEXORA%20ARCHITECTURE%20FREEZE%20CHECKLIST.md).
+
+Regra em vigor: **um arquivo de código nomeia o documento cujo contrato
+implementa.** Quando os dois divergem, o documento vence até que um ADR diga o
+contrário.
+
 ## Regra de atualização
 
 Este índice deve ser atualizado quando:
