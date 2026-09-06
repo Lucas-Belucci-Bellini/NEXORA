@@ -52,6 +52,9 @@ and states plainly what it does not implement.
 | World lifecycle and deterministic generation | `world::world` |
 | Identifier-remapped world persistence | `world::persist` |
 | Headless vertical slice, verified end to end | `headless` |
+| Entity identity, lifecycle, components, queries | `entity` (added by ADR-0006) |
+| Entity persistence by logical state | `entity::persist` (added by ADR-0006) |
+| Measurement harness for the language gate | `benchmark` |
 
 ### Deliberately not implemented
 
@@ -63,9 +66,8 @@ with something that pretends to work.
 | RHI, window, renderer, camera | No display or GPU available to verify against |
 | Input system | Meaningless without a window |
 | Audio | Same |
-| ECS / data-oriented runtime | `ECS AND DATA ORIENTED RUNTIME.md` separates entity identity from storage; neither is needed to prove the world slice, and both deserve the benchmark first |
-| Entity system | Depends on the ECS decision above |
-| Physics | Depends on entities |
+| Archetype ECS, query planner, system scheduler | Superseded in part by ADR-0006: a component store exists; the archetype layer still has no measured need |
+| Physics | Entities now carry boundary boxes, but collision *response* does not exist |
 | Networking, server | Phase 6 |
 | Mod runtime, scripting | Phase 7 |
 | Streaming manager, simulation LOD | Contracts exist; the slice loads chunks explicitly |
@@ -86,6 +88,14 @@ without having run.
 - The next contributor knows exactly where the edge is.
 - The renderer slice remains outstanding and must be completed on hardware that
   can run it before Phase 2 can close.
+
+## Amendment, 2026-09-06
+
+The entity system moved from "deliberately not implemented" to implemented, for
+the reason this ADR gave for deferring it: it *"deserve[d] the benchmark first"*,
+and the benchmark now exists. Entities need no hardware, so they were the next
+measurable stage of the language gate. See ADR-0006 for the identity/storage
+decision, and `docs/benchmarks/PHASE-0-BASELINE.md` for the numbers.
 
 ## Migration
 

@@ -206,3 +206,131 @@ cargo run --release -p nexora-benchmark -- --smoke    # minimal pass, used by CI
 CI runs `--smoke` so the harness cannot rot unnoticed. It does not gate on
 timings: a shared runner's numbers would produce false failures, and a
 performance gate that cries wolf gets disabled.
+
+---
+
+# Appendix A — entity increment (2026-09-06, later run)
+
+The entity system landed after the measurements above, adding the benchmark
+plan's **"1,000 entities"** stage. These numbers come from a **separate, later
+run**, recorded separately rather than merged into the table above.
+
+## Why separate, and a warning about reading across the two
+
+Measurements that the entity work does not touch moved uniformly between the two
+runs:
+
+| unchanged code | first run | this run |
+| --- | ---: | ---: |
+| `worldgen.chunk_32` | 1.29 ms | 2.47 ms |
+| `voxel.first_write_to_uniform` | 54.4 ns | 89.6 ns |
+| `jobs.submit_only` | 8.84 µs | 13.02 µs |
+
+Entities do not touch world generation, voxel storage or the job queue. A
+uniform ~2× shift across unrelated measurements is the **shared container being
+busier**, not a regression. Merging the two runs into one table would have
+manufactured a regression that did not happen.
+
+**Compare within a run, never across these two.** The ratios below are all taken
+from a single execution.
+
+## Entity measurements
+
+| measurement | median | p95 | rel. σ |
+| --- | ---: | ---: | ---: |
+| `entity.resolve_handle` | **2.6 ns** | 2.7 ns | 0.0% |
+| `entity.spawn_despawn_cycle` | 151.7 ns | 152.5 ns | 0.5% |
+| `entity.spawn` | 199.1 ns | 568.2 ns | 59.3% |
+| `entity.step_1000` | **2.95 µs** | 3.49 µs | 7.0% |
+| `entity.query_type_1000` | 18.73 µs | 19.47 µs | 1.7% |
+| `entity.query_radius_1000` | 18.73 µs | 18.82 µs | 0.9% |
+| `entity.query_tag_1000` | 22.06 µs | 22.34 µs | 0.6% |
+| `entity.save_1000` | 780 MiB/s | 193.90 µs | 4.3% |
+| `entity.load_1000` | 186 MiB/s | 822.67 µs | 4.1% |
+| `entity.save_size_1000` | 141.6 KiB | — | — |
+
+## Findings
+
+### 6. The dense column layout works, and the safety property is free
+
+Advancing 1,000 entities costs **2.95 µs** — about **3 ns per entity** for a
+linear walk over parallel `Vec` columns. Validating a handle costs **2.6 ns**,
+so the generational check that makes a destroyed entity unaddressable
+(ADR-0006) is not a cost worth discussing.
+
+`entity.spawn` has a 59% relative σ against `entity.spawn_despawn_cycle`'s 0.5%.
+That is the difference between growing the columns and reusing a freed slot:
+the spawn benchmark keeps allocating, so it periodically pays for a `Vec`
+reallocation, while the cycle benchmark reaches steady state. Both numbers are
+real; they answer different questions.
+
+### 7. `DEBT-0009` now has a number, and it is worse than expected
+
+Measured in the same run:
+
+| | |
+| --- | ---: |
+| simulate 1,000 entities (`entity.step_1000`) | **2.95 µs** |
+| submit 1,000 jobs and barrier (`jobs.batch_1000_barrier`) | **14.48 ms** |
+| ratio | **≈ 4,900×** |
+
+Scheduling one job per entity would cost roughly **four thousand nine hundred
+times** the simulation it schedules. The earlier estimate — "0.7% overhead at
+chunk granularity, fatal per entity" — understated it.
+
+This is not an argument against the job system; it is a measurement of its
+correct granularity. `NEXORA THREADING AND CONCURRENCY MODEL.md` asks for heavy
+work to be divided into independent jobs, and a chunk at ~2.5 ms is exactly
+that. **One job per entity is an anti-pattern with a number attached**, which is
+worth more than the same advice as an opinion.
+
+### 8. Queries have a measured expiry date
+
+A linear scan over 1,000 entities costs **18.7 µs** by type, **22.1 µs** by tag —
+roughly **19 ns per entity examined**. `Entity System.md` §34 specifies a spatial
+index; ADR-0006 defers it. Extrapolating that per-entity cost:
+
+| population | one full scan |
+| ---: | ---: |
+| 1 000 | ~19 µs |
+| 10 000 | ~190 µs |
+| 100 000 | ~1.9 ms |
+
+At 1,000 entities an index would be premature. At 100,000, a single query eats a
+large fraction of a tick, and AI that queries per entity is finished long before
+that. Recorded as **`DEBT-0010`** with that trigger point, so the index gets
+built on evidence instead of on the day someone guesses it is time.
+
+Tag queries cost ~18% more than type queries — the binary search through a
+`TagSet` against a single comparison. Small enough that the `Vec`-backed tag set
+(chosen over an interned bitset precisely to avoid an unmeasured optimization)
+is holding up.
+
+### 9. Entities are cheap to persist and cost more to load
+
+**780 MiB/s** out, **186 MiB/s** back — loading is ~4× slower because it
+re-resolves every persistent id and rebuilds the lookup map, which is the price
+of not writing slot indices to disk. At **~145 bytes per entity**, 100,000
+entities would be a ~14 MiB save section: large but not alarming, and compressible.
+
+## Gate progress
+
+| requirement (plan §17-§18) | status |
+| --- | --- |
+| **1,000 entities** | **done** — this appendix |
+| Serialization, save/load | done |
+| Job overhead | done |
+| Memory, binary size, startup | done |
+| Deterministic simulation | done |
+| Physics | missing — boundary boxes exist, collision response does not |
+| Same workload on a second candidate stack | **missing** — still the blocker |
+| RHI, window, camera, mesh generation | missing — needs hardware |
+| Streaming | missing |
+| FFI / IPC boundary cost | missing |
+| Build and iteration time | not captured by this harness |
+
+Roughly half the gate, up from a third. The remaining measurable-without-hardware
+item is physics; everything else needs either a GPU or a second language in the
+build. **The gate still cannot close** — rule 5 forbids deciding from one stack,
+and there is still only one.
+

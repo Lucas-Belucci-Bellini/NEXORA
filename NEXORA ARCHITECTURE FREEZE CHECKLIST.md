@@ -48,8 +48,8 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 
 | Contract | Defined | Built | Where |
 | --- | :---: | :---: | --- |
-| ECS / data model | [x] | [ ] | `ECS AND DATA ORIENTED RUNTIME.md` |
-| Physics ownership | [x] | [ ] | depends on entities |
+| ECS / data model | [x] | [~] | entity identity, lifecycle, components, queries and persistence built as a dense component store (`engine/entity`, ADR-0006); the archetype/query-planner layer is deferred with no measured need |
+| Physics ownership | [x] | [ ] | entities now carry boundary boxes, but collision *response* does not exist |
 | AI decision pipeline | [x] | [ ] | `NEXORA AI DECISION ARCHITECTURE.md` |
 | LOD transitions | [x] | [ ] | `WORLD CONTINUITY AND PLAYER INDEPENDENCE.md` |
 | Performance budgets | [x] | [~] | storage and counters are measurable; no budgets enforced |
@@ -106,7 +106,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Observability | [x] | [x] | `foundation::diagnostics` |
 | Testing strategy | [x] | [x] | 187 tests; unit, integration, property, determinism, corruption |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
-| Technology benchmark | [x] | [~] | harness built and the reference stack measured ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
+| Technology benchmark | [x] | [~] | harness built; the reference stack is measured through roughly half the plan's slice, entities included ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
 
 ## Final gate
 
@@ -116,7 +116,7 @@ contracts.
 
 **Not met.** Two blockers stand out:
 
-1. **The technology benchmark is only a third done** (DEBT-0008). The reference
+1. **The technology benchmark is only about half done** (DEBT-0008). The reference
    stack is now measured — see
    [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md)
    — but no *second* stack has been, and rule 5 of the plan forbids deciding

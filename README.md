@@ -75,8 +75,10 @@ cargo run --release -p nexora-benchmark
 Results and analysis:
 [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md).
 Highlights — 18.3 million blocks held in 144 KiB, 7.0 MiB peak resident memory,
-and a measurement that closed `DEBT-0005` by showing the "optimization" it
-proposed would have been **4× slower** than the code it was meant to improve.
+a measurement that closed `DEBT-0005` by showing the "optimization" it proposed
+would have been **4× slower** than the code it was meant to improve, and the
+number behind `DEBT-0009`: scheduling one job per entity costs **~4,900× the
+simulation it schedules**.
 
 ## Layout
 
@@ -90,6 +92,8 @@ engine/foundation    errors, versions, identifiers, space, time, determinism,
 engine/persistence   versioned, checksummed, atomic save container
 engine/runtime       lifecycle, engine modules, registries, event bus, jobs
 engine/world         voxel storage, chunks, world lifecycle, generation
+engine/entity        identity, lifecycle, components, queries, persistence
+engine/benchmark     the measurement harness for the language gate
 engine/headless      the Phase 0 vertical slice
 docs/adr/            architecture decision records
 ```
@@ -112,15 +116,17 @@ document disagree, the document wins until an ADR says otherwise
 ## What comes next
 
 The open gate is still the **technology benchmark** (`DEBT-0008`), now about a
-third complete: the reference stack is measured, but rule 5 of
+half complete: the reference stack is measured through the chunk, job,
+save/load and 1,000-entity stages, but rule 5 of
 `NEXORA TECHNOLOGY BENCHMARK PLAN.md` forbids deciding from a single stack, and
 no second one has been measured. The next measurable increments are the **entity
 system** (needs no hardware) and then the **RHI** (cannot be measured headless at
 all).
 
-Measurement also opened `DEBT-0009`: the job system costs ~8.8 µs per
-submission, which is 0.7% overhead at chunk granularity and fatal per entity —
-worth fixing before Phase 5 rather than discovering under 10,000 entities.
+Measurement also opened `DEBT-0009` and `DEBT-0010`: the job system costs
+~4,900× the work when used per entity (it is a chunk-granularity tool), and
+entity queries are linear scans that stop being free somewhere above 10,000
+entities. Both have trigger points rather than guesses.
 
 ## Originality
 

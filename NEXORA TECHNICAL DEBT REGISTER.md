@@ -205,10 +205,41 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   chunk). Fatal por entidade: 10.000 entidades como jobs individuais custariam
   88 ms só de overhead, antes de qualquer simulação. Na prática o tamanho mínimo
   útil de um job hoje é da ordem de um milissegundo.
-- **RISK:** Alto a partir da Phase 5, quando trabalho por entidade chega.
+- **RISK:** Alto. **Confirmado com entidades reais** (2026-09-06): na mesma
+  execução, simular 1.000 entidades custa **2,95 µs** e submeter 1.000 jobs custa
+  **14,48 ms** — razão de **~4.900×**. A estimativa anterior ("fatal por
+  entidade") era otimista.
 - **PROPOSED REMEDIATION:** causa provável é um futex wake por `notify_one` a
   cada submissão, somado à contenção de todos os workers num único mutex.
   Candidatos: API de submissão em lote, ou filas por worker com work-stealing
   para que o produtor não acorde o pool a cada job. Medir de novo depois.
+- **NOTA DE ARQUITETURA:** o número não condena o job system, define a
+  granularidade correta dele. Um chunk a ~2,5 ms é exatamente o tipo de trabalho
+  que `NEXORA THREADING AND CONCURRENCY MODEL.md` manda dividir. **Um job por
+  entidade é anti-padrão, agora com número.**
 - **TARGET STAGE:** antes da Phase 5 (Entity + AI Foundation)
+- **STATUS:** OPEN (medido)
+
+### DEBT-0010 — Consultas de entidade são varredura linear, sem índice espacial
+
+- **SYSTEM:** `engine/entity::query`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** `Entity System.md` §34 (ENTITY-33) especifica um índice
+  espacial. A ADR-0006 adiou deliberadamente: construir índice antes de medir a
+  varredura repetiria o erro que o DEBT-0005 pegou.
+- **IMPACT:** medido em **~19 ns por entidade examinada**. Extrapolando:
+
+  | população | uma varredura |
+  | ---: | ---: |
+  | 1.000 | ~19 µs |
+  | 10.000 | ~190 µs |
+  | 100.000 | ~1,9 ms |
+
+- **RISK:** nenhum hoje; alto acima de ~10.000 entidades, e proibitivo se IA
+  consultar por entidade a cada tick.
+- **PROPOSED REMEDIATION:** índice espacial por chunk ou grade frouxa, alimentado
+  pelas mudanças de transform. Medir de novo contra a varredura antes de manter.
+- **TRIGGER:** população passar de 10.000, ou um perfil mostrar consulta em
+  caminho quente.
+- **TARGET STAGE:** Phase 5 (Entity + AI Foundation)
 - **STATUS:** OPEN
