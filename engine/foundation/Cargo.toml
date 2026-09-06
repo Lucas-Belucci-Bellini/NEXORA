@@ -1,0 +1,15 @@
+[package]
+name = "nexora-foundation"
+description = "NEXORA Foundation layer: errors, versions, identifiers, time, space, determinism and diagnostics."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The Foundation layer has no dependencies at all - not even internal ones.
+# See docs/adr/ADR-0002-zero-dependency-foundation.md.
+[dependencies]
+
+[lints]
+workspace = true
