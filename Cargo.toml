@@ -8,6 +8,8 @@
 #     persistence -> foundation
 #     runtime     -> foundation
 #     world       -> foundation, runtime, persistence
+#     physics     -> foundation
+#     simulation  -> foundation, runtime, world, physics
 #     headless    -> all of the above
 #
 # A crate cannot depend "upwards", because Cargo rejects cycles. The matrix is
@@ -21,6 +23,8 @@ members = [
     "engine/persistence",
     "engine/world",
     "engine/entity",
+    "engine/physics",
+    "engine/simulation",
     "engine/headless",
     "engine/benchmark",
 ]
@@ -38,6 +42,8 @@ nexora-runtime = { path = "engine/runtime", version = "0.0.1" }
 nexora-persistence = { path = "engine/persistence", version = "0.0.1" }
 nexora-world = { path = "engine/world", version = "0.0.1" }
 nexora-entity = { path = "engine/entity", version = "0.0.1" }
+nexora-physics = { path = "engine/physics", version = "0.0.1" }
+nexora-simulation = { path = "engine/simulation", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

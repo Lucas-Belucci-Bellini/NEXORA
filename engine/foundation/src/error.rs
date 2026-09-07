@@ -43,6 +43,8 @@ pub enum Domain {
     Time,
     /// Coordinate spaces and conversions.
     Spatial,
+    /// Rigid bodies, collision and physical queries.
+    Physics,
 }
 
 impl Domain {
@@ -64,6 +66,7 @@ impl Domain {
             Self::Security => "security",
             Self::Time => "time",
             Self::Spatial => "spatial",
+            Self::Physics => "physics",
         }
     }
 }

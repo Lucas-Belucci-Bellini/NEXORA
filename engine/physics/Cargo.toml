@@ -1,0 +1,20 @@
+[package]
+name = "nexora-physics"
+description = "NEXORA physics: fixed-step rigid bodies, voxel collision, character control and spatial queries."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Simulation layer per NEXORA DEPENDENCY MATRIX.md. Deliberately depends on
+# Foundation ONLY: PHYSICS.md's closing rule says physics must know Body,
+# Collider, Material, Force, Constraint and Query - never "this is a sword" or
+# "this is a villager". Voxels arrive through the VoxelSource trait rather than
+# a dependency on nexora-world, so the same solver serves the world, a test
+# fixture and a benchmark without any of them knowing about each other.
+[dependencies]
+nexora-foundation.workspace = true
+
+[lints]
+workspace = true

@@ -9,7 +9,9 @@ dependencies = [
  "nexora-entity",
  "nexora-foundation",
  "nexora-persistence",
+ "nexora-physics",
  "nexora-runtime",
+ "nexora-simulation",
  "nexora-world",
 ]
 
@@ -32,7 +34,9 @@ version = "0.0.1"
 dependencies = [
  "nexora-foundation",
  "nexora-persistence",
+ "nexora-physics",
  "nexora-runtime",
+ "nexora-simulation",
  "nexora-world",
 ]
 
@@ -44,10 +48,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-physics"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+]
+
+[[package]]
 name = "nexora-runtime"
 version = "0.0.1"
 dependencies = [
  "nexora-foundation",
+]
+
+[[package]]
+name = "nexora-simulation"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+ "nexora-physics",
+ "nexora-runtime",
+ "nexora-world",
 ]
 
 [[package]]
