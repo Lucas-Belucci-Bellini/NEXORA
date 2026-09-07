@@ -376,3 +376,92 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** primeiro bloco de meia altura no conteúdo.
 - **TARGET STAGE:** Phase 4
 - **STATUS:** OPEN
+
+### DEBT-0017 — O tick ocioso de streaming cresce mais rápido que a área de interesse
+
+- **SYSTEM:** `engine/streaming::system` (`desired_tiers`)
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** cada tick enumera todas as colunas dentro do raio externo de
+  cada fonte de interesse, monta um `BTreeSet` de candidatos e consulta o
+  `BTreeMap` de rastreados uma vez por candidato — mesmo quando nada se moveu.
+- **IMPACT:** medido (Apêndice C, achado 16):
+
+  | raio | colunas | mediana | por coluna |
+  | ---: | ---: | ---: | ---: |
+  | 3 | 49 | 4,70 µs | 96 ns |
+  | 12 | 625 | **167,47 µs** | **268 ns** |
+
+  12,8× as colunas custam **35,6×** o tempo: o termo de área é multiplicado por
+  um logarítmico. A 167 µs por tick, com nada acontecendo, é ~1% de um quadro a
+  60 Hz gasto para concluir que nada mudou. Extrapolando, raio 24 ≈ 1 ms.
+- **RISK:** baixo em raios pequenos; alto assim que a distância de visão crescer.
+- **PROPOSED REMEDIATION:** o conjunto de candidatos só muda quando um
+  observador cruza a fronteira de uma coluna. Manter o conjunto e atualizá-lo
+  por diferença (anel que entra, anel que sai) em vez de reconstruí-lo. Medir de
+  novo contra o par r3/r12 antes de manter.
+- **TRIGGER:** raio de interesse passar de 12, ou streaming aparecer em perfil.
+- **TARGET STAGE:** Phase 2 (Voxel Vertical Slice) ou Phase 4
+- **STATUS:** OPEN (medido)
+
+### DEBT-0018 — Streaming gera chunks na thread do tick, não no job system
+
+- **SYSTEM:** `engine/simulation::residency` (`WorldResidency::activate`)
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `activate` chama `World::load_or_generate` de forma síncrona.
+  `NEXORA THREADING AND CONCURRENCY MODEL.md` manda dividir trabalho pesado em
+  jobs independentes, e o próprio slice **já** gera chunks no pool de workers em
+  um estágio anterior — o caminho de streaming não.
+- **IMPACT:** medido (Apêndice C, achado 18): gerar um chunk custa **2,72 ms**,
+  contra **4,70 µs** de um tick ocioso — **578×**. Com o orçamento de 8
+  ativações por tick que o próprio slice usa, um tick que gaste o orçamento
+  inteiro custa `8 × 2,72 ms ≈ 21,8 ms`, mais que um quadro a 60 Hz, na thread
+  do tick.
+- **RISK:** alto assim que houver renderização: é um travamento visível a cada
+  travessia de fronteira de região.
+- **PROPOSED REMEDIATION:** submeter a geração como job e concluir a ativação em
+  um tick posterior. A máquina de adiamento (`deferred` no relatório) já existe
+  exatamente para descrever isso.
+- **TRIGGER:** existir um loop de quadro, ou o orçamento de ativação passar de 2.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN (medido)
+
+### DEBT-0019 — `Regional` e `Abstract` são estados reais sem dados próprios
+
+- **SYSTEM:** `engine/streaming::lod`, `engine/simulation::residency`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `STREAMING SYSTEM.md` define a escada
+  `FULL → REGIONAL → ABSTRACT → UNRESIDENT`. O gerenciador rastreia os quatro
+  níveis e preserva identidade em todos, mas nenhum backend guarda dados
+  distintos para os dois do meio: a simulação regional que os preencheria é a
+  Phase 4.
+- **IMPACT:** hoje um alvo em `Regional` é indistinguível de um em `Abstract`
+  para o mundo. Isso está documentado no próprio `Lod::is_resident`, não
+  escondido.
+- **RISK:** baixo. O mecanismo é real e testado; falta o conteúdo.
+- **PROPOSED REMEDIATION:** quando `WORLD CONTINUITY AND PLAYER INDEPENDENCE.md`
+  §17–§18 for implementada, o backend passa a materializar resumo regional e
+  agregado estatístico nesses níveis.
+- **TRIGGER:** Phase 4 (Living World).
+- **TARGET STAGE:** Phase 4
+- **STATUS:** OPEN
+
+### DEBT-0020 — Chunks retidos moram na memória, não em arquivos de região
+
+- **SYSTEM:** `engine/simulation::residency` (`RetainedChunks`)
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** um chunk editado e despejado é guardado num `BTreeMap` em
+  memória até o próximo save. `RegionCoord` e `RegionShape` já existem na
+  foundation exatamente para o destino correto: arquivo de região em disco.
+- **IMPACT:** medido: **20,0 KiB por coluna editada** (Apêndice C). A retenção
+  cresce com **quanto o mundo foi alterado**, não com o quanto foi explorado —
+  que é o limite certo — mas ainda é memória, e não sobrevive ao processo.
+- **RISK:** médio em sessão longa de construção; alto em servidor dedicado com
+  muitos jogadores editando.
+- **PROPOSED REMEDIATION:** escrever a coluna editada num arquivo de região no
+  `persist` e lê-la de volta no `activate`. Isso também elimina a armadilha do
+  `flush_into`, porque o estado deixa de depender de estar na memória na hora do
+  save.
+- **TRIGGER:** retenção passar de ~1.000 colunas, ou o primeiro servidor
+  dedicado.
+- **TARGET STAGE:** Phase 3 (Persistence + Simulation)
+- **STATUS:** OPEN (medido)

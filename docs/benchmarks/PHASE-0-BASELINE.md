@@ -447,6 +447,8 @@ number rather than from the intuition that a ray is light.
 
 ## Gate progress
 
+Superseded by Appendix C; see the table there.
+
 | requirement (plan §17-§18) | status |
 | --- | --- |
 | **Physics** | **done** — this appendix |
@@ -461,11 +463,154 @@ number rather than from the intuition that a ray is light.
 | FFI / IPC boundary cost | missing |
 | Build and iteration time | not captured by this harness |
 
-**Every stage of the plan's vertical slice that can be measured without hardware
-or a second language is now measured.** What remains is not more Rust: it is a
-GPU for the render stages, a streaming manager, and — the one that actually
-blocks the decision — the same workload built a second time in another language.
+> **Correction (Appendix C).** This appendix originally claimed that every
+> stage measurable without hardware or a second language was now measured.
+> That was wrong, and its own "not measured" table contradicted it two
+> paragraphs later: **streaming** needed neither a GPU nor a second language —
+> it needed a streaming manager, which is ordinary headless code. Appendix C
+> builds and measures it. The claim below is the corrected one.
+
+Physics was the last *unbuilt subsystem the slice already depended on*. What
+remains is a GPU for the render stages, **streaming** (built in Appendix C),
+and — the one that actually blocks the decision — the same workload built a
+second time in another language.
 
 **The gate still cannot close.** Rule 5 forbids deciding from one stack, and
-there is still only one. Nothing in this appendix changes that; it only removes
-the last excuse that the Rust side was not measured enough.
+there is still only one.
+
+---
+
+# Appendix C — streaming increment (2026-09-07, later run)
+
+Streaming landed after the appendix above, adding the benchmark plan's
+**`streaming`** stage — which Appendix B wrongly implied was blocked on
+hardware. It was not. It was unbuilt.
+
+## Which run these belong to
+
+Same regime as Appendices A and B, not the original table:
+
+| unchanged code | first run | Appendix A | Appendix B | this run |
+| --- | ---: | ---: | ---: | ---: |
+| `worldgen.chunk_32` | 1.29 ms | 2.47 ms | 2.48 ms | 2.61 ms |
+| `entity.step_1000` | — | 2.95 µs | 2.66 µs | 2.46 µs |
+
+Compare within a run. Every ratio below is from a single execution.
+
+## Streaming measurements
+
+| measurement | median | p95 | rel. σ |
+| --- | ---: | ---: | ---: |
+| `streaming.chunk_retained_cycle` | **338.9 ns** | 474.7 ns | 15.4% |
+| `streaming.idle_tick_r3` | **4.70 µs** | 4.91 µs | 2.1% |
+| `streaming.walk_one_chunk` | 9.72 µs | 9.92 µs | 1.1% |
+| `streaming.fast_travel_r3` | 68.38 µs | 70.01 µs | 1.1% |
+| `streaming.idle_tick_r12` | **167.47 µs** | 172.97 µs | 1.4% |
+| `streaming.chunk_generate_cycle` | **2.72 ms** | 3.16 ms | 7.9% |
+| `streaming.retained_bytes_per_chunk` | 20.0 KiB | — | — |
+| `streaming.columns_of_interest_r12` | 625 | — | — |
+
+## Findings
+
+### 15. Retention beats regeneration by about eight thousand times
+
+The design question the backend had to answer: when a chunk is evicted, keep it
+or regenerate it later?
+
+| coming back to an evicted column | median |
+| --- | ---: |
+| regenerate it from the seed | **2.72 ms** |
+| restore it from retention | **338.9 ns** |
+| ratio | **≈ 8 000×** |
+
+So retention wins overwhelmingly — and the engine still does not retain most
+chunks, on purpose. Generation is deterministic and position-seeded, so an
+**unedited** column is regenerable and is dropped; only an **edited** one is
+kept, at **20.0 KiB** each.
+
+The consequence is the one worth remembering: **retained memory grows with how
+much the world has been changed, not with how far it has been explored.** A
+player who walks a thousand columns and edits ten holds ten columns of memory.
+Retaining everything explored would have inverted that.
+
+### 16. The idle tick is not free, and it grows faster than the area
+
+A tick with *nothing to do* still enumerates every column in interest range:
+
+| interest radius | columns | median | per column |
+| ---: | ---: | ---: | ---: |
+| 3 | 49 | 4.70 µs | 96 ns |
+| 12 | 625 | **167.47 µs** | **268 ns** |
+
+12.8× the columns costs **35.6×** the time. The growth is superlinear because
+every candidate goes through a `BTreeSet` insert and a `BTreeMap` lookup whose
+own costs rise with the size of the set — so the area term is multiplied by a
+logarithmic one.
+
+At radius 12 that is 167 µs **on every tick, whether or not anything moved**:
+about 1% of a 60 Hz frame, spent deciding that nothing changed. Extrapolating
+the per-column cost, radius 24 is roughly 1 ms. Recorded as **`DEBT-0017`**,
+with the shape of the fix — the candidate set only changes when an observer
+crosses a column boundary, so it can be cached and updated incrementally — and
+the radius that triggers it.
+
+### 17. Deciding costs more than moving
+
+| | median | against an idle tick |
+| --- | ---: | ---: |
+| idle, radius 3 | 4.70 µs | 1× |
+| observer moves one column | 9.72 µs | 2.1× |
+| fast travel, whole set replaced | 68.38 µs | 14.5× |
+
+Moving one column roughly doubles a tick; replacing the entire resident set
+costs fifteen idle ticks. Neither is the problem. **The problem is that the idle
+tick has a floor at all**, which is what finding 16 says and what `DEBT-0017`
+addresses. Optimising the load path would be optimising the cheap half.
+
+### 18. Generation dominates residency by 578×, so the budget is the parameter
+
+| | median |
+| --- | ---: |
+| one chunk activated and dropped | **2.72 ms** |
+| one idle streaming tick, radius 3 | 4.70 µs |
+| ratio | **578×** |
+
+A single chunk generation costs more than five hundred idle ticks. That settles
+what a streaming budget is actually sizing: **generation time, not manager
+overhead.**
+
+And it produces a number the slice's own configuration fails: at its budget of
+8 activations per tick, a tick that spends its whole budget costs
+`8 × 2.72 ms ≈ 21.8 ms` — longer than a 60 Hz frame, on the tick thread.
+
+`NEXORA THREADING AND CONCURRENCY MODEL.md` asks for heavy work to be divided
+into independent jobs, and the slice's *earlier* stage already generates chunks
+across the worker pool. Streaming's activation path does not: it calls
+`load_or_generate` synchronously. Recorded as **`DEBT-0018`** — the fix is to
+submit generation as jobs and let activation complete on a later tick, which is
+what the deferral machinery in the report already exists to describe.
+
+## Gate progress
+
+| requirement (plan §17-§18) | status |
+| --- | --- |
+| **Streaming** | **done** — this appendix |
+| Physics | done — Appendix B |
+| 1,000 entities | done — Appendix A |
+| Serialization, save/load | done |
+| Job overhead | done |
+| Memory, binary size, startup | done |
+| Deterministic simulation | done |
+| Same workload on a second candidate stack | **missing** — the blocker |
+| RHI, window, camera, mesh generation | missing — needs a GPU |
+| FFI / IPC boundary cost | missing — needs a second language |
+| Build and iteration time | not captured by this harness |
+
+Every stage of the plan's vertical slice is now either **measured** or blocked
+on something this repository cannot provide by writing more Rust: a GPU, or a
+second language. That is a narrower and more defensible statement than the one
+Appendix B made, and this time the "not measured" table agrees with it.
+
+**The gate still cannot close.** Rule 5 forbids deciding from a single stack.
+The next thing that moves it is not another subsystem — it is the same workload,
+built again, in something that is not Rust.

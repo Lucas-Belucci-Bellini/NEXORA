@@ -52,7 +52,8 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Physics ownership | [x] | [~] | fixed timestep, rigid bodies, materials, gravity, swept voxel collision, character control and ray queries built (`engine/physics`, ADR-0007); body-versus-body collision, rotation and non-cube shapes are not (DEBT-0014, DEBT-0015, DEBT-0016) |
 | Physics ↔ world boundary | [x] | [x] | terrain reaches the solver through `VoxelSource`; `engine/simulation` is the only crate that sees both sides, and Cargo enforces it (ADR-0007) |
 | AI decision pipeline | [x] | [ ] | `NEXORA AI DECISION ARCHITECTURE.md` |
-| LOD transitions | [x] | [ ] | `WORLD CONTINUITY AND PLAYER INDEPENDENCE.md` |
+| LOD transitions | [x] | [~] | the `FULL → REGIONAL → ABSTRACT → UNRESIDENT` ladder, hysteresis and eviction are built and tested (`engine/streaming`, ADR-0008); the two middle tiers hold no distinct data until the regional simulation exists (DEBT-0019) |
+| Streaming residency | [x] | [x] | interest, priority, budgets with backpressure, and eviction that persists before it drops — including the case where the write fails and the chunk is *not* dropped (ADR-0008) |
 | Performance budgets | [x] | [~] | storage, counters and now physics are measurable; no budgets published or enforced (DEBT-0013) |
 | Deterministic requirements | [x] | [~] | RNG, generation and saves are deterministic and tested; replay is not built |
 
@@ -107,7 +108,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Observability | [x] | [x] | `foundation::diagnostics` |
 | Testing strategy | [x] | [x] | 187 tests; unit, integration, property, determinism, corruption |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
-| Technology benchmark | [x] | [~] | harness built; the reference stack is measured through **every slice stage that needs no GPU and no second language**, physics included ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
+| Technology benchmark | [x] | [~] | harness built; every slice stage is now either measured or blocked on a GPU or a second language, streaming included ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
 
 ## Final gate
 
@@ -125,7 +126,9 @@ contracts.
    and rule 5 of the plan forbids deciding from one. ADR-0001 keeps the language
    gate open on purpose; freezing the architecture before that comparison would
    settle by default the question the gate exists to ask. **More Rust does not
-   move this blocker.**
+   move this blocker** — and Appendix C is the correction to an earlier version
+   of that sentence, which claimed the Rust side was finished one subsystem
+   before it was.
 2. **The RHI and presentation boundary is unbuilt.** It is specified, but no
    implementation has ever run, so nothing has tested whether the boundary
    survives contact with a real renderer.

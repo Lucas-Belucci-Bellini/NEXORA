@@ -60,6 +60,7 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0002](docs/adr/ADR-0002-zero-dependency-foundation.md) | Zero dependências externas nos crates do engine | ACCEPTED |
 | [0003](docs/adr/ADR-0003-workspace-layout-enforces-dependency-matrix.md) | O layout do workspace faz o build recusar violações da matriz de dependências | ACCEPTED |
 | [0004](docs/adr/ADR-0004-save-container-format-v1.md) | Formato do contêiner de save v1 | ACCEPTED |
-| [0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) | Fronteira de escopo da Phase 0 — o que **não** foi implementado, e por quê | ACCEPTED (emendada pelas 0006 e 0007) |
+| [0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) | Fronteira de escopo da Phase 0 — o que **não** foi implementado, e por quê | ACCEPTED (emendada pelas 0006, 0007 e 0008) |
 | [0006](docs/adr/ADR-0006-entity-identity-and-storage.md) | Identidade de entidade é API pública; layout de armazenamento não é | ACCEPTED |
 | [0007](docs/adr/ADR-0007-physics-collides-against-a-provider-not-the-world.md) | Física colide contra um provedor, não contra o mundo | ACCEPTED |
+| [0008](docs/adr/ADR-0008-streaming-decides-residency-and-a-backend-provides-it.md) | Streaming decide residência; um backend a executa | ACCEPTED |

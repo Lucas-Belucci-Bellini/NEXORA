@@ -17,6 +17,7 @@ headless vertical slice proves the chain end to end:
 boot lifecycle -> resolve modules -> create world from a seed
    -> generate chunks across a worker pool -> mutate voxels
    -> drop a character onto the terrain and simulate it until it settles
+   -> walk an observer away and back, streaming chunks out and in
    -> advance the clock -> save -> shut down -> reopen -> verify the state survived
 ```
 
@@ -37,7 +38,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 398 tests
+cargo test --workspace          # 469 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -56,12 +57,16 @@ save size          744954 bytes
 physics bodies     9 (9 settled)
 physics substeps   600 (270 contacts)
 character drop     1010 cm
+streaming ticks    29 (95 generated, 120 evicted, 25 restored)
+chunks retained    25 (peak, edits that cannot be regenerated)
 probes verified    76
 result             OK
 ```
 
 Fifty million blocks held in 722 KB is the palette and uniform-section storage
-doing its job: solid rock costs nothing to hold.
+doing its job: solid rock costs nothing to hold. The observer walks away from
+the edited region and back before the save, so those 76 verified probes are also
+proof that streaming evicted 120 columns without losing an edit.
 
 ```bash
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
@@ -102,7 +107,10 @@ engine/world         voxel storage, chunks, world lifecycle, generation
 engine/entity        identity, lifecycle, components, queries, persistence
 engine/physics       fixed timestep, bodies, swept voxel collision, characters,
                      ray queries         (depends on foundation and nothing else)
-engine/simulation    the one crate allowed to see both the world and physics
+engine/streaming     interest, priority, budgets, LOD tiers, eviction
+                     (also depends on foundation and nothing else)
+engine/simulation    the one crate allowed to see the world, physics and
+                     streaming at the same time
 engine/benchmark     the measurement harness for the language gate
 engine/headless      the Phase 0 vertical slice
 docs/adr/            architecture decision records
@@ -125,24 +133,22 @@ document disagree, the document wins until an ADR says otherwise
 
 ## What comes next
 
-The open gate is still the **technology benchmark** (`DEBT-0008`), and its shape
-has changed. Every stage of the plan's vertical slice that can be measured
-**without a GPU and without a second language** is now measured — chunks, jobs,
-save/load, 1,000 entities and, as of Appendix B, physics. Rule 5 of
-`NEXORA TECHNOLOGY BENCHMARK PLAN.md` forbids deciding from a single stack, and
-no second one has been measured.
+The open gate is still the **technology benchmark** (`DEBT-0008`). Every stage
+of the plan's vertical slice is now either measured — chunks, jobs, save/load,
+1,000 entities, physics, streaming — or blocked on something no amount of Rust
+provides: a GPU for the render stages, or a second language for the FFI
+boundary. Rule 5 of `NEXORA TECHNOLOGY BENCHMARK PLAN.md` forbids deciding from
+a single stack, and no second one has been measured.
 
-**More Rust no longer moves the gate.** What remains is a GPU for the render
-stages, a streaming manager, and — the part that actually blocks the decision —
-the same workload built a second time in another language.
+**The next thing that moves the gate is the same workload, built again, in
+something that is not Rust.**
 
-Measurement also opened `DEBT-0009` through `DEBT-0013`, each with a trigger
-point rather than a guess: the job system costs ~4,900× the work when used per
-entity (it is a chunk-granularity tool), entity queries are linear scans that
-stop being free above ~10,000 entities, the voxel lookup is half of a physics
-step, the depenetration pass is a 42% tax on the common case, and physics still
-has no published performance budget despite now having the numbers to set one
-from.
+Measurement also opened `DEBT-0009` through `DEBT-0020`, each with a trigger
+point rather than a guess. Among them: the job system costs ~4,900× the work
+when used per entity, entity queries stop being free above ~10,000 entities, the
+voxel lookup is half of a physics step, and streaming generates chunks on the
+tick thread — where spending its own activation budget would cost 21.8 ms, more
+than a frame.
 
 ## Originality
 

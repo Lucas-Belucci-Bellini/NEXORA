@@ -97,7 +97,8 @@ A Phase 0 existe como código. O mapa entre documento normativo e crate:
 | World | `engine/world` | CHUNK & VOXEL ENGINE, WORLD STATE LIFECYCLE, WORLD GENERATION |
 | Entity | `engine/entity` | Entity System, ECS AND DATA ORIENTED RUNTIME (identidade pública; layout é detalhe) |
 | Physics | `engine/physics` | PHYSICS (PHY-0 a PHY-14 e PHY-22), REPLAY AND DETERMINISM (passo fixo) |
-| Simulation | `engine/simulation` | DEPENDENCY MATRIX (o único ponto de composição entre mundo e física) |
+| Streaming | `engine/streaming` | STREAMING SYSTEM, WORLD CONTINUITY AND PLAYER INDEPENDENCE §18 (identidade sobrevive ao despejo) |
+| Simulation | `engine/simulation` | DEPENDENCY MATRIX (o único ponto de composição entre mundo, física e streaming) |
 | Benchmark | `engine/benchmark` | TECHNOLOGY BENCHMARK PLAN, PERFORMANCE BUDGETS (medição, não imposição) |
 | Slice | `engine/headless` | DEFINITION OF DONE (verificação executável), TESTING AND VALIDATION STRATEGY |
 
