@@ -106,9 +106,9 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Save compatibility | [x] | [x] | `foundation::version`, ADR-0004 |
 | Crash / recovery strategy | [x] | [~] | detect, quarantine and atomic write are built; journal recovery is not (DEBT-0001) |
 | Observability | [x] | [x] | `foundation::diagnostics` |
-| Testing strategy | [x] | [x] | 187 tests; unit, integration, property, determinism, corruption |
+| Testing strategy | [x] | [x] | 475 tests; unit, integration, property, determinism, corruption, plus 12 cross-stack conformance digests |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
-| Technology benchmark | [x] | [~] | harness built; every slice stage is now either measured or blocked on a GPU or a second language, streaming included ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
+| Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — the GPU stages cannot run here and no engine-scale comparison exists (DEBT-0008, ADR-0009) |
 
 ## Final gate
 
@@ -118,17 +118,27 @@ contracts.
 
 **Not met.** Two blockers stand out:
 
-1. **The technology benchmark has one stack, and needs two** (DEBT-0008).
-   Every stage of the plan's vertical slice that can be measured without a GPU
-   or a second language is now measured — see
+1. **The technology benchmark now has two stacks, and still cannot close**
+   (DEBT-0008). The second stack exists: `benchmarks/cpp/` mirrors the engine's
+   hot kernels in C++20, twelve conformance digests match bit-for-bit across
+   Rust, g++ and clang++, and `scripts/compare-stacks.sh` refuses to time
+   anything until they do — see
    [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md),
-   Appendix B closes the last of them. But no *second* stack has been measured,
-   and rule 5 of the plan forbids deciding from one. ADR-0001 keeps the language
-   gate open on purpose; freezing the architecture before that comparison would
-   settle by default the question the gate exists to ask. **More Rust does not
-   move this blocker** — and Appendix C is the correction to an earlier version
-   of that sentence, which claimed the Rust side was finished one subsystem
-   before it was.
+   Appendix D. Rule 5's "do not decide from one stack" is satisfied for the
+   kernels; two things it asked for are still missing, and neither is fixable by
+   writing more code here. **The GPU stages** (RHI, window, camera, mesh) cannot
+   run in a headless container. **An engine-scale comparison** is explicitly out
+   of scope for a kernel reference (ADR-0009) — nine pieces of arithmetic say
+   nothing about allocation, cache behaviour at scale, or threading.
+
+   What Appendix D did settle is worth stating precisely, because the temptation
+   is to over-read it: on these kernels Rust is not measurably a handicap, and
+   **the optimizer backend costs more than the language** — the widest gap
+   between the two C++ builds (1.89×) is larger than every Rust-versus-C++ gap
+   in the table. Freezing on that alone would still settle by default the
+   question the gate exists to ask, and
+   `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves the language lock for the
+   completed benchmark.
 2. **The RHI and presentation boundary is unbuilt.** It is specified, but no
    implementation has ever run, so nothing has tested whether the boundary
    survives contact with a real renderer.

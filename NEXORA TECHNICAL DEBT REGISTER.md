@@ -184,13 +184,33 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   Cobre aproximadamente um terço do gate: chunk, jobs, save/load, headless,
   memória, tamanho de binário e determinismo. As nove etapas restantes da fatia
   do plano estão **declaradas como não medidas**, com motivo, em vez de omitidas.
-- **PROPOSED REMEDIATION:** falta o essencial — **uma segunda stack medida sob o
-  mesmo workload**. A regra 5 do plano proíbe decidir por um microcaso único, e
-  números absolutos de uma stack só não comparam nada. Próximos incrementos
-  mensuráveis, nesta ordem: entity system (não precisa de hardware) e depois RHI
-  (impossível de medir em container headless).
+- **PROGRESS (2026-09-07):** a segunda stack existe e foi medida.
+  `benchmarks/cpp/` reimplementa em C++20 os kernels quentes do motor; os doze
+  digests de conformidade batem bit a bit entre Rust, g++ 13.3 e clang++ 18.1, e
+  `scripts/compare-stacks.sh` **se recusa a cronometrar** enquanto um digest
+  divergir. Resultado em
+  [Apêndice D](docs/benchmarks/PHASE-0-BASELINE.md) (achados 19 e 20):
+  em nove kernels compartilhados o Rust cai **dentro da faixa entre os dois
+  builds C++** em cinco, ganha dos dois em dois e perde para o C++ mais próximo
+  em dois (13% e 11%). **O backend do compilador pesa mais que a linguagem** — o
+  CRC-32 mede 668,83 µs no g++ e 353,11 µs no clang++, contra 363,97 µs no Rust:
+  medido só contra o g++, o "Rust é 1,8× mais rápido que C++" era GCC × LLVM.
+  O custo de FFI, que a plataforma listava como métrica e era impossível de
+  medir com uma linguagem só, ficou em **~1,2 ns por travessia** no piso da ABI
+  C — o mesmo que qualquer chamada não-inlinada, e invisível a 4 KiB por
+  travessia. É um **piso**, não uma estimativa: não inclui marshalling,
+  conversão de string, cópia por ownership, panic boundary nem validação de
+  ponteiro.
+- **PROPOSED REMEDIATION:** o que falta agora é diferente do que faltava antes.
+  Não é mais "não existe segunda stack": é (a) as etapas de GPU — RHI, janela,
+  câmera, mesh — impossíveis num container headless, e (b) uma comparação em
+  **escala de motor**, que o ADR-0009 declara explicitamente fora do escopo do
+  reference de kernels. Enquanto (a) não for medível aqui, o gate não fecha, e
+  `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserva o lock do mapa de linguagens
+  para o benchmark completo.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS
+- **STATUS:** IN PROGRESS — desbloqueado do lado da segunda linguagem; preso
+  no hardware
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 

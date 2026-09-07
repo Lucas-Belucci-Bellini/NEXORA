@@ -614,3 +614,171 @@ Appendix B made, and this time the "not measured" table agrees with it.
 **The gate still cannot close.** Rule 5 forbids deciding from a single stack.
 The next thing that moves it is not another subsystem — it is the same workload,
 built again, in something that is not Rust.
+
+---
+
+# Appendix D — a second stack (2026-09-07, later run)
+
+*"The next thing that moves it is not another subsystem — it is the same
+workload, built again, in something that is not Rust."* — Appendix C, above.
+
+This is that. It moves the gate; it does not close it, and the difference
+matters enough to state before the numbers rather than after.
+
+## What was built
+
+`benchmarks/cpp/` — a C++20 reference implementation of the arithmetic the
+engine runs in its inner loops: SplitMix64 and its derived streams, FNV-1a 64,
+CRC-32/ISO-HDLC, Euclidean block→section mapping, palette-compressed section
+access, the heightmap and chunk generator, and one axis of the swept-box
+collision. Roughly 700 lines. **It is not an engine** — no world, no
+persistence, no streaming, no allocator strategy — and Appendix D's conclusions
+never reach past the kernels it contains. ADR-0009 has the reasoning.
+
+## Conformance first: 12 digests, all identical
+
+`scripts/compare-stacks.sh` refuses to time anything until every build agrees on
+every digest. Two implementations that disagree about what they compute cannot
+be compared on how fast they compute it.
+
+| digest | value |
+| --- | --- |
+| `rng.splitmix64` | `0xd7f5375fa46d2dac` |
+| `rng.next_below` | `0xeb0ab73b99f30cfe` |
+| `rng.stream_seeds` | `0x0e6cfbe5674a4709` |
+| `rng.positional` | `0xd5b76f71dbb067f1` |
+| `hash.fnv1a` | `0x85cda2f59434f6cc` |
+| `hash.crc32` | `0x1c880e1b88d0cae7` |
+| `spatial.section_of` | `0xa5e5cdaa740e5ec8` |
+| `world.surface_height` | `0x5bb0ba519f4d32a6` |
+| `world.chunk_cells` | `0xc09113a274ebab66` |
+| `world.chunk_non_air` | `2,032,268 blocks` |
+| `world.chunk_sections` | `63 sections` |
+| `physics.sweep` | `0x4f58c702db5dd49f` |
+
+`world.chunk_cells` hashes every cell of a generated chunk, and `physics.sweep`
+includes the `1.9 - 0.9 == 0.9999999999999999` case ADR-0007 exists because of.
+Three builds — Rust, g++ 13.3.0, clang++ 18.1.3 — produce all twelve bit-for-bit.
+
+## Finding 19 — the compiler backend explains more than the language does
+
+This is the result, and it was nearly missed. The first run used g++ alone:
+
+| build | CRC-32 over 64 KiB | what a single-compiler run would have concluded |
+| --- | ---: | --- |
+| Rust (LLVM) | **363.97 µs** | — |
+| C++ / g++ (GCC) | **668.83 µs** | *"Rust is 1.8× faster than C++"* |
+| C++ / clang++ (LLVM) | **353.11 µs** | *"C++ is 3% faster than Rust"* |
+
+Same source, same `-O2`, same branchless reflected-CRC loop, same 64 KiB from
+the same seeded stream. The 1.8× was **GCC versus LLVM**, and Rust and clang++
+— which share a backend — land 3% apart. Timing against one compiler would have
+published a language finding that does not exist.
+
+So the C++ side is now built by every compiler on the machine, and the table has
+three columns:
+
+| kernel | Rust | g++ | clang++ | C++-internal spread | where Rust lands |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `spatial.section_of_division` | 2.4 ns | 3.0 ns | 1.8 ns | 1.67× | inside |
+| `voxel.get_paletted` | 6.9 ns | 8.6 ns | 6.4 ns | 1.34× | inside |
+| `voxel.get_uniform` | 3.8 ns | 5.6 ns | 5.0 ns | 1.12× | **1.32× faster than both** |
+| `voxel.set_existing_state` | 14.1 ns | 9.4 ns | 12.5 ns | 1.33× | **1.13× slower than both** |
+| `worldgen.surface_height` | 36.7 ns | 73.5 ns | 40.1 ns | 1.83× | 1.09× faster than both |
+| `worldgen.chunk_16` | 230.92 µs | 286.26 µs | 214.60 µs | 1.33× | inside |
+| `worldgen.chunk_32` | 1.51 ms | 1.59 ms | 1.49 ms | 1.07× | inside |
+| `physics.axis_sweep` | 40.1 ns | 33.6 ns | 36.0 ns | 1.07× | **1.11× slower than both** |
+| `save.crc32_64kib` | 363.97 µs | 668.83 µs | 353.11 µs | 1.89× | inside |
+
+Nine shared kernels. Rust falls **inside the band the two C++ builds span** in
+five of them, beats both in two, and trails the nearer C++ build in two — by
+13% and 11%. The widest C++-internal spread (1.89×) is larger than every
+Rust-versus-C++ gap in the table.
+
+**The honest summary: on these kernels, Rust is not measurably a handicap, and
+the choice of optimizer backend costs more than the choice of language.** That
+is a narrow claim about nine pieces of arithmetic. It is not a claim that a C++
+engine would perform the same, and nothing here measures allocation, cache
+behaviour at engine scale, threading, or build times.
+
+## Finding 20 — a language boundary costs about what any un-inlined call costs
+
+`NEXORA TECHNOLOGY BENCHMARK PLAN.md` lists FFI overhead as a metric, and it was
+unmeasurable while the build had one language in it. Three rungs, all timed in
+one binary under one methodology:
+
+| rung | scalar (one `u64`) | bulk (4 KiB) |
+| --- | ---: | ---: |
+| inlined Rust | 2.4 ns | 5.01 µs |
+| `#[inline(never)]` Rust — same language | 3.6 ns | 4.90 µs |
+| `extern "C"` into C++ | 3.7 ns | 5.00 µs |
+| the crossing alone, near-empty callee | **1.2 ns** | — |
+
+Two things fall out, and they cross-check each other:
+
+1. **Losing inlining costs ~1.2 ns** (3.6 − 2.4), and the near-empty crossing
+   costs **1.2 ns** independently. The two agree.
+2. **Crossing into C++ costs no more than an un-inlined Rust call** — 3.7 vs
+   3.6 ns, inside the noise. At the C ABI, the boundary *is* a call.
+3. **At 4 KiB per crossing all three rungs are identical.** One crossing
+   amortised over a page of work is invisible.
+
+This sharpens `NEXORA LANGUAGE AND FFI BOUNDARY.md`'s rule — *"hot simulation
+loops must not cross FFI repeatedly"* — rather than contradicting it. The rule
+is right, but not because a crossing is expensive: at the floor it is about
+1.2 ns. It is right because **the floor is not what a real boundary costs.**
+Nothing here marshals a struct, converts a string, copies a buffer to satisfy an
+ownership rule, catches a panic before it unwinds into foreign frames, or
+validates a pointer arriving from the other side. Those are what the rule is
+protecting against, and this measurement deliberately excludes all of them. Read
+1.2 ns as a **lower bound**, never as an estimate.
+
+## Two methodology defects of mine, found in this increment
+
+Both were caught by disbelieving a number, not by a test, which is the part of
+this most likely to be wrong again.
+
+1. **The C++ harness took `const std::function<void()>&`; the Rust one is
+   generic over `F: FnMut()`.** So every C++ iteration paid a type-erased
+   indirect call that Rust did not — several nanoseconds on kernels costing
+   three, on one side of the comparison only. The header comment two lines above
+   it read *"a comparison where the two sides measure differently is not a
+   comparison"*, which is exactly what it was. Fixed by templating on the
+   callable.
+
+2. **LLVM collapsed four mixes into one `imul`.** `ffi.scalar_inlined` reported
+   0.5 ns, below the latency of the multiply in its own dependency chain. The
+   disassembly showed the loop counter advancing by 4 per single `imul`. With a
+   barrier the same kernel costs 2.4 ns — 4× more, exactly the collapse factor.
+   The same class of defect then turned up in `physics.axis_sweep`, which was
+   being hoisted out of its loop entirely and reporting 2.4 ns for a 40 ns
+   kernel.
+
+The second correction has a tail worth recording: the first fix over-corrected,
+putting the whole 48-byte `Aabb` through `black_box` and forcing a memory
+round-trip C++ was not paying. That read as *"Rust is 2× slower at sweeping"*
+(66.8 ns vs 31.8 ns) and would have been published as a language finding. The
+barrier is now on the one scalar the result depends on, applied identically on
+both sides, and the kernels land within 19% of each other.
+
+## What the gate still needs
+
+| metric | state |
+| --- | --- |
+| Same kernels on a second stack | **done** — this appendix |
+| FFI / IPC boundary cost | **done** — finding 20, at the C ABI floor |
+| Same *engine* on a second stack | missing — out of scope, ADR-0009 |
+| RHI, window, camera, mesh generation | missing — needs a GPU |
+| Build and iteration time | not captured by this harness |
+| Debugging and tooling effort | qualitative; the plan scores it separately |
+
+`DEBT-0008` is no longer blocked on *"no second stack exists"*. It stays open:
+the plan's gate also wants the GPU stages, and an engine-scale comparison that
+this deliberately is not.
+
+**What can now be said that could not be said before:** the kernels the engine
+spends its inner loops in are not slower in Rust than in C++ on this machine,
+and the FFI boundary the polyglot option depends on costs about 1.2 ns per
+crossing at its floor. **What still cannot be said:** which language the engine
+should be written in. `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves that for
+the completed benchmark, and it is not complete.

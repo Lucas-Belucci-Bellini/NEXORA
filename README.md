@@ -78,8 +78,13 @@ The language selection gate needs evidence, so the reference implementation is
 measured rather than asserted:
 
 ```bash
-cargo run --release -p nexora-benchmark
+cargo run --release -p nexora-benchmark      # the Rust reference
+scripts/compare-stacks.sh                    # Rust vs C++, every compiler found
 ```
+
+The second script needs a C++20 compiler; nothing else in the repository does.
+It checks conformance before it times anything, and **fails without producing a
+single number** if the stacks disagree on any digest.
 
 Results and analysis:
 [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md).
@@ -112,6 +117,8 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
 engine/benchmark     the measurement harness for the language gate
+benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
+benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)
 engine/headless      the Phase 0 vertical slice
 docs/adr/            architecture decision records
 ```
@@ -133,15 +140,33 @@ document disagree, the document wins until an ADR says otherwise
 
 ## What comes next
 
-The open gate is still the **technology benchmark** (`DEBT-0008`). Every stage
-of the plan's vertical slice is now either measured — chunks, jobs, save/load,
-1,000 entities, physics, streaming — or blocked on something no amount of Rust
-provides: a GPU for the render stages, or a second language for the FFI
-boundary. Rule 5 of `NEXORA TECHNOLOGY BENCHMARK PLAN.md` forbids deciding from
-a single stack, and no second one has been measured.
+The open gate is still the **technology benchmark** (`DEBT-0008`), but it moved.
+The second stack now exists: `benchmarks/cpp/` mirrors the engine's hot kernels
+in C++20, and `scripts/compare-stacks.sh` checks twelve conformance digests
+across Rust, g++ and clang++ before timing anything — because two
+implementations that disagree about *what* they compute cannot be compared on
+how fast they compute it.
 
-**The next thing that moves the gate is the same workload, built again, in
-something that is not Rust.**
+The result is in [Appendix D](docs/benchmarks/PHASE-0-BASELINE.md), and the
+useful half of it is a warning about how easy this is to get wrong:
+
+> CRC-32 over 64 KiB runs in **668 µs under g++**, **353 µs under clang++**, and
+> **364 µs in Rust** — same algorithm, same flags. Timed against g++ alone, Rust
+> looks 1.8× faster than "C++"; the difference was GCC versus LLVM. **The
+> optimizer backend costs more than the language.**
+
+Across nine shared kernels Rust lands inside the band the two C++ builds span in
+five, beats both in two, and trails the nearer one in two, by 13% and 11%. FFI
+overhead — a plan metric that was unmeasurable with one language in the build —
+is **~1.2 ns per crossing** at the C ABI floor, the same as any un-inlined call,
+and invisible at 4 KiB per crossing.
+
+**What still blocks the gate is no longer "no second stack".** It is the GPU
+stages, which cannot run in a headless container, and an engine-scale
+comparison, which a kernel reference is explicitly not (ADR-0009). Nine pieces
+of arithmetic say nothing about allocation, cache behaviour at scale, or
+threading — and `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves the language lock
+for the completed benchmark.
 
 Measurement also opened `DEBT-0009` through `DEBT-0020`, each with a trigger
 point rather than a guess. Among them: the job system costs ~4,900× the work
