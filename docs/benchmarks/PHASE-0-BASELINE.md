@@ -315,22 +315,157 @@ entities would be a ~14 MiB save section: large but not alarming, and compressib
 
 ## Gate progress
 
+Superseded by Appendix B; see the table there.
+
+
+
+---
+
+# Appendix B — physics increment (2026-09-07)
+
+Physics landed after the appendix above, adding the benchmark plan's **`physics`**
+stage. That was the last stage of the plan's vertical slice measurable without a
+GPU or a second language in the build.
+
+## Which run these belong to
+
+This run sits in the **same regime as Appendix A**, not the original table:
+
+| unchanged code | first run | Appendix A | this run |
+| --- | ---: | ---: | ---: |
+| `worldgen.chunk_32` | 1.29 ms | 2.47 ms | 2.48 ms |
+| `entity.step_1000` | — | 2.95 µs | 2.66 µs |
+| `voxel.set_existing_state` | — | — | 26.7 ns |
+
+So the physics numbers below may be compared with Appendix A's, and **must not**
+be compared with the original table's. Every ratio quoted below is taken from a
+single execution, and every figure was reproduced within 4% on a second run.
+
+## Physics measurements
+
+| measurement | median | p95 | rel. σ |
+| --- | ---: | ---: | ---: |
+| `physics.timestep_accumulate` | **9.1 ns** | 10.3 ns | 4.7% |
+| `physics.depenetration_check` | 166.2 ns | 170.7 ns | 2.1% |
+| `physics.box_sweep` | **394.1 ns** | 399.0 ns | 0.7% |
+| `physics.character_step` | **1.00 µs** | 1.03 µs | 1.1% |
+| `physics.thousand_sleeping_step` | **1.61 µs** | 1.77 µs | 3.8% |
+| `physics.raycast_40m` | 2.39 µs | 2.40 µs | 0.4% |
+| `physics.thousand_bodies_step_flat` | 149.27 µs | 165.95 µs | 5.9% |
+| `physics.thousand_bodies_step` | **293.82 µs** | 305.47 µs | 3.2% |
+| `physics.sleeping_bodies_of_1000` | 1 000 | — | — |
+
+## Findings
+
+### 10. Half the cost of a physics step is the world lookup, not the solver
+
+The same thousand bodies, the same substep, differing only in where the terrain
+comes from:
+
+| | median | per body |
+| --- | ---: | ---: |
+| against generated terrain | **293.82 µs** | 294 ns |
+| against a flat fixture | **149.27 µs** | 149 ns |
+| difference — the voxel lookup | **144.55 µs** | 145 ns |
+
+**49% of a physics step is spent asking the world what is there.** That is the
+single most useful number in this appendix, because it says where optimisation
+would pay and where it would not: a faster solver would address the smaller
+half. The lookup walks a `BTreeMap` of chunk columns and then a palette-indexed
+section, once per cell per axis per body, with no caching between queries that
+are almost always in the same chunk.
+
+Recorded as **`DEBT-0011`**, with the concrete shape a fix would take (hold the
+resident chunk across a body's sweeps) and the trigger for building it.
+
+The pair of measurements is the point. A single "physics costs 294 ns per body"
+number would have been attributed to the solver by default, and the work would
+have gone to the wrong half.
+
+### 11. Sleeping is worth about 180×, and it actually engages
+
+| 1,000 bodies, one substep | median |
+| --- | ---: |
+| awake, against generated terrain | 293.82 µs |
+| asleep | **1.61 µs** |
+| ratio | **≈ 182×** |
+
+`physics.sleeping_bodies_of_1000` is **1000 of 1000**: after ten seconds on a
+floor, every body has settled. `PHYSICS.md` §35 calls sleeping "fundamental for
+performance" without a number; this is the number, and it confirms that the
+settle criterion is reachable rather than theoretically correct and practically
+never met.
+
+The residual 1.61 µs is the loop over slots that skips them — 1.6 ns per
+sleeping body, which is the cost of asking rather than the cost of doing.
+
+### 12. The depenetration check is a 42% tax on the common case
+
+`physics.depenetration_check` measures the test **when the body is not
+penetrating**, which is the case essentially always. At **166.2 ns** against a
+**394.1 ns** box sweep, every body pays roughly **42% of a sweep** each step for
+a recovery path that almost never fires.
+
+That is not an argument for deleting it: without the pass, a body that ends up
+inside terrain — a block placed where it stands, a chunk generating around it —
+sinks forever, and the defect that motivated it was found by a test, not by
+theory. But it is a scan of the body's whole cell volume on every step, and the
+cheap version of the same question is available: the sweep already visits those
+cells. Recorded as **`DEBT-0012`**.
+
+### 13. Collision, not the entity walk, is what a tick actually costs
+
+Two measurements from the same run, both over 1,000 objects:
+
+| | median | per object |
+| --- | ---: | ---: |
+| `entity.step_1000` — advance transforms | 2.66 µs | 2.7 ns |
+| `physics.thousand_bodies_step` — collide against terrain | 293.82 µs | 294 ns |
+| ratio | | **≈ 110×** |
+
+Moving a thousand entities is nearly free; deciding what they may move *through*
+is a hundred times more. Any budget written from the entity number alone would
+be wrong by two orders of magnitude.
+
+At 60 physics steps per second, a thousand permanently-awake bodies would cost
+**~17.6 ms of CPU per wall-clock second**, or about 1.8% of one core — which is
+affordable, and which is affordable *because* finding 11 says almost nothing
+stays awake. `NEXORA PERFORMANCE BUDGETS.md` asks every major system to publish
+`TARGET`/`WARNING`/`CRITICAL` figures and physics has not published any; these
+are the first measurements a budget could honestly be set from, and setting one
+from a single machine's single run would be unearned precision. Recorded as
+**`DEBT-0013`**.
+
+### 14. A ray costs six box sweeps, and that is the wrong instinct to trust
+
+`physics.raycast_40m` walks 40 metres of generated terrain in **2.39 µs**,
+against **394.1 ns** for a full three-axis box sweep. A ray looks like the
+cheaper primitive and is six times the cost here, because it visits ~40 cells
+against the sweep's handful. Anything that raycasts per entity per frame — AI
+line-of-sight is the obvious candidate — needs the budget worked out from this
+number rather than from the intuition that a ray is light.
+
+## Gate progress
+
 | requirement (plan §17-§18) | status |
 | --- | --- |
-| **1,000 entities** | **done** — this appendix |
+| **Physics** | **done** — this appendix |
+| 1,000 entities | done — Appendix A |
 | Serialization, save/load | done |
 | Job overhead | done |
 | Memory, binary size, startup | done |
 | Deterministic simulation | done |
-| Physics | missing — boundary boxes exist, collision response does not |
-| Same workload on a second candidate stack | **missing** — still the blocker |
+| Same workload on a second candidate stack | **missing** — the blocker |
 | RHI, window, camera, mesh generation | missing — needs hardware |
 | Streaming | missing |
 | FFI / IPC boundary cost | missing |
 | Build and iteration time | not captured by this harness |
 
-Roughly half the gate, up from a third. The remaining measurable-without-hardware
-item is physics; everything else needs either a GPU or a second language in the
-build. **The gate still cannot close** — rule 5 forbids deciding from one stack,
-and there is still only one.
+**Every stage of the plan's vertical slice that can be measured without hardware
+or a second language is now measured.** What remains is not more Rust: it is a
+GPU for the render stages, a streaming manager, and — the one that actually
+blocks the decision — the same workload built a second time in another language.
 
+**The gate still cannot close.** Rule 5 forbids deciding from one stack, and
+there is still only one. Nothing in this appendix changes that; it only removes
+the last excuse that the Rust side was not measured enough.

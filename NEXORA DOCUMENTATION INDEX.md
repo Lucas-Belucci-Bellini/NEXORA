@@ -95,6 +95,10 @@ A Phase 0 existe como código. O mapa entre documento normativo e crate:
 | Persistence | `engine/persistence` | SAVE FORMAT AND COMPATIBILITY, SECURITY THREAT MODEL (entrada não confiável) |
 | Runtime | `engine/runtime` | RUNTIME LIFECYCLE, ENGINE MODULE SYSTEM, Registry System, Event Bus, JOB SYSTEM, THREADING AND CONCURRENCY MODEL |
 | World | `engine/world` | CHUNK & VOXEL ENGINE, WORLD STATE LIFECYCLE, WORLD GENERATION |
+| Entity | `engine/entity` | Entity System, ECS AND DATA ORIENTED RUNTIME (identidade pública; layout é detalhe) |
+| Physics | `engine/physics` | PHYSICS (PHY-0 a PHY-14 e PHY-22), REPLAY AND DETERMINISM (passo fixo) |
+| Simulation | `engine/simulation` | DEPENDENCY MATRIX (o único ponto de composição entre mundo e física) |
+| Benchmark | `engine/benchmark` | TECHNOLOGY BENCHMARK PLAN, PERFORMANCE BUDGETS (medição, não imposição) |
 | Slice | `engine/headless` | DEFINITION OF DONE (verificação executável), TESTING AND VALIDATION STRATEGY |
 
 Decisões que sustentam esse código estão em [`docs/adr/`](docs/adr/). O estado

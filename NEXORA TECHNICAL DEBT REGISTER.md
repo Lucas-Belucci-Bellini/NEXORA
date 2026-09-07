@@ -243,3 +243,136 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   caminho quente.
 - **TARGET STAGE:** Phase 5 (Entity + AI Foundation)
 - **STATUS:** OPEN
+
+### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
+
+- **SYSTEM:** `engine/simulation::terrain` (`WorldVoxels`)
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** o adaptador responde cada célula com uma busca no `BTreeMap`
+  de colunas seguida de leitura da seção paletizada. Não há estado entre
+  consultas — e consultas consecutivas do mesmo corpo caem quase sempre no
+  mesmo chunk.
+- **IMPACT:** medido, com o par de medições que existe para isso
+  (`docs/benchmarks/PHASE-0-BASELINE.md` Apêndice B, achado 10):
+
+  | 1.000 corpos, um substep | mediana | por corpo |
+  | --- | ---: | ---: |
+  | contra terreno gerado | 293,82 µs | 294 ns |
+  | contra piso plano | 149,27 µs | 149 ns |
+  | diferença — o lookup | **144,55 µs** | **145 ns** |
+
+  **49% do passo é perguntar ao mundo o que existe ali**, não resolver colisão.
+- **RISK:** médio. Otimizar o solver hoje endereçaria a metade menor; o número
+  existe justamente para impedir esse erro.
+- **PROPOSED REMEDIATION:** manter a coluna residente entre os sweeps de um
+  mesmo corpo (a caixa quase nunca cruza chunk), e medir de novo contra o par
+  terreno/plano antes de manter.
+- **TRIGGER:** física passar de ~10% do orçamento de simulação, ou população
+  acordada estável acima de 1.000.
+- **TARGET STAGE:** Phase 4 (World Runtime) ou antes, se o gatilho ocorrer
+- **STATUS:** OPEN (medido)
+
+### DEBT-0012 — Depenetração custa 42% de um sweep no caso em que nada aconteceu
+
+- **SYSTEM:** `engine/physics::collision::depenetrate`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** `resolve` verifica, a cada passo e para cada corpo, se ele já
+  começou dentro do terreno. A verificação varre todo o volume de células da
+  caixa, e o caso que ela trata — bloco colocado onde o corpo está, chunk
+  gerando em volta — é raro.
+- **IMPACT:** **166,2 ns** contra **394,1 ns** de um sweep completo de três
+  eixos, ou seja **~42% de um sweep** pago por todo corpo, todo passo, por um
+  caminho que quase nunca dispara.
+- **RISK:** baixo hoje; cresce linearmente com corpos acordados.
+- **PROPOSED REMEDIATION:** o sweep já visita essas células. Derivar a
+  sobreposição do próprio sweep em vez de uma varredura separada, ou marcar o
+  corpo como suspeito apenas quando o mundo muda perto dele (o `wake_in` já
+  identifica a região).
+- **NOTA:** remover a passagem **não** é opção. O defeito que a motivou foi
+  encontrado por teste: sem ela, um corpo que acaba dentro do terreno afunda
+  para sempre.
+- **TRIGGER:** junto com DEBT-0011, ou quando física aparecer em perfil.
+- **TARGET STAGE:** Phase 4
+- **STATUS:** OPEN (medido)
+
+### DEBT-0013 — Física não publicou orçamento, embora agora tenha os números
+
+- **SYSTEM:** `engine/physics`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `NEXORA PERFORMANCE BUDGETS.md` exige que todo sistema maior
+  publique `TARGET`/`WARNING`/`CRITICAL`/`EMERGENCY`, e diz que um sistema não é
+  *production-ready* enquanto o orçamento não estiver documentado. Física não
+  publicou nenhum.
+- **IMPACT:** sem orçamento não há como o CI ou o `/diagnostico` dizer que a
+  física passou do aceitável; só dá para dizer que ficou mais lenta.
+- **RISK:** médio. Regressão de desempenho passa despercebida até virar sintoma
+  de jogo.
+- **PROPOSED REMEDIATION:** publicar os quatro limiares a partir do Apêndice B —
+  1.000 corpos acordados custam ~17,6 ms de CPU por segundo de relógio a 60 Hz,
+  ~1,8% de um núcleo — **depois** de medir em mais de uma máquina. Fixar limiar
+  a partir de uma execução de um container compartilhado seria precisão não
+  merecida.
+- **TRIGGER:** segunda máquina medida, ou entrada na Phase 4.
+- **TARGET STAGE:** Phase 4
+- **STATUS:** OPEN
+
+### DEBT-0014 — Corpos não colidem com corpos
+
+- **SYSTEM:** `engine/physics::world`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** todo contato desta fase é corpo-contra-voxel. `PHYSICS.md`
+  §5–§7 (PHY-4, PHY-5, PHY-6) especificam broadphase, narrowphase e solver de
+  pares; o *primeiro vertical slice* do próprio documento — cair, andar, pular,
+  aterrissar — não precisa deles, e a ADR-0007 preferiu medir o que existe a
+  construir o que ainda não tem evidência.
+- **IMPACT:** não funcionam: plataforma móvel carregando passageiro (PHY-25),
+  veículos (PHY-27), blocos que caem e empilham (PHY-18), gatilhos por
+  sobreposição (PHY-24). Dois corpos dinâmicos se atravessam.
+- **RISK:** alto **se descoberto por acidente**. Por isso está fixado por teste:
+  `engine/physics/tests/phy_42_checklist.rs` tem casos `not_yet_*` que falham no
+  dia em que o par solver existir, forçando a lista a ser atualizada em vez de
+  ficar mentindo.
+- **PROPOSED REMEDIATION:** broadphase por grade espacial frouxa sobre corpos
+  acordados, narrowphase AABB-AABB, solver de impulso com atrito e restituição
+  usando a mesma combinação de materiais já implementada.
+- **TRIGGER:** primeiro sistema que precise — veículos, blocos que caem, ou
+  plataforma móvel.
+- **TARGET STAGE:** Phase 6 (Vehicles) ou antes, conforme o gatilho
+- **STATUS:** OPEN
+
+### DEBT-0015 — Corpos não têm orientação
+
+- **SYSTEM:** `engine/physics::body`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** não há rotação, velocidade angular nem tensor de inércia.
+  Toda caixa é alinhada aos eixos e todo voxel é um cubo alinhado aos eixos, de
+  modo que uma rotação não teria em que agir. Carregar os campos sem código que
+  os leia seria mock permanente (regra §43 do briefing).
+- **IMPACT:** uma caixa que cai fica sempre alinhada; nada tomba, gira ou rola.
+- **RISK:** baixo enquanto colisão for caixa-contra-cubo.
+- **PROPOSED REMEDIATION:** chega junto com formas não-cúbicas e com o solver de
+  pares — antes disso não há geometria capaz de aplicar torque.
+- **TRIGGER:** DEBT-0014 ou DEBT-0016, o que vier primeiro.
+- **TARGET STAGE:** Phase 6
+- **STATUS:** OPEN
+
+### DEBT-0016 — Só existem cubos inteiros, e isso força `step_height = 1.0`
+
+- **SYSTEM:** `engine/physics::voxel::VoxelShape`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `PHYSICS.md` §13 (PHY-12) pede slab, rampa, cunha e escada.
+  `VoxelShape` é `#[non_exhaustive]` exatamente porque essas são variantes dele,
+  não um redesenho — mas nenhuma existe ainda.
+- **IMPACT:** o menor degrau possível é um metro, então uma altura de passo
+  sub-bloco (o 0,6 convencional, que pressupõe meia-laje) nunca conseguiria
+  subir em nada. O preset de personagem usa `1.0` por isso, e está documentado
+  no próprio preset. Também não há rampa para testar `slopeLimit`, que por
+  consequência não existe.
+- **RISK:** baixo hoje; a decisão do `step_height` volta a ficar em aberto no dia
+  em que slabs chegarem.
+- **PROPOSED REMEDIATION:** adicionar as variantes com as caixas parciais que
+  cada uma descreve, e então reavaliar `step_height` e introduzir limite de
+  inclinação.
+- **TRIGGER:** primeiro bloco de meia altura no conteúdo.
+- **TARGET STAGE:** Phase 4
+- **STATUS:** OPEN

@@ -49,10 +49,11 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Contract | Defined | Built | Where |
 | --- | :---: | :---: | --- |
 | ECS / data model | [x] | [~] | entity identity, lifecycle, components, queries and persistence built as a dense component store (`engine/entity`, ADR-0006); the archetype/query-planner layer is deferred with no measured need |
-| Physics ownership | [x] | [ ] | entities now carry boundary boxes, but collision *response* does not exist |
+| Physics ownership | [x] | [~] | fixed timestep, rigid bodies, materials, gravity, swept voxel collision, character control and ray queries built (`engine/physics`, ADR-0007); body-versus-body collision, rotation and non-cube shapes are not (DEBT-0014, DEBT-0015, DEBT-0016) |
+| Physics ↔ world boundary | [x] | [x] | terrain reaches the solver through `VoxelSource`; `engine/simulation` is the only crate that sees both sides, and Cargo enforces it (ADR-0007) |
 | AI decision pipeline | [x] | [ ] | `NEXORA AI DECISION ARCHITECTURE.md` |
 | LOD transitions | [x] | [ ] | `WORLD CONTINUITY AND PLAYER INDEPENDENCE.md` |
-| Performance budgets | [x] | [~] | storage and counters are measurable; no budgets enforced |
+| Performance budgets | [x] | [~] | storage, counters and now physics are measurable; no budgets published or enforced (DEBT-0013) |
 | Deterministic requirements | [x] | [~] | RNG, generation and saves are deterministic and tested; replay is not built |
 
 ## World
@@ -106,7 +107,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Observability | [x] | [x] | `foundation::diagnostics` |
 | Testing strategy | [x] | [x] | 187 tests; unit, integration, property, determinism, corruption |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
-| Technology benchmark | [x] | [~] | harness built; the reference stack is measured through roughly half the plan's slice, entities included ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
+| Technology benchmark | [x] | [~] | harness built; the reference stack is measured through **every slice stage that needs no GPU and no second language**, physics included ([baseline](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — no second stack has been measured (DEBT-0008) |
 
 ## Final gate
 
@@ -116,13 +117,15 @@ contracts.
 
 **Not met.** Two blockers stand out:
 
-1. **The technology benchmark is only about half done** (DEBT-0008). The reference
-   stack is now measured — see
-   [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md)
-   — but no *second* stack has been, and rule 5 of the plan forbids deciding
-   from one. ADR-0001 keeps the language gate open on purpose; freezing the
-   architecture before that comparison would settle by default the question the
-   gate exists to ask.
+1. **The technology benchmark has one stack, and needs two** (DEBT-0008).
+   Every stage of the plan's vertical slice that can be measured without a GPU
+   or a second language is now measured — see
+   [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md),
+   Appendix B closes the last of them. But no *second* stack has been measured,
+   and rule 5 of the plan forbids deciding from one. ADR-0001 keeps the language
+   gate open on purpose; freezing the architecture before that comparison would
+   settle by default the question the gate exists to ask. **More Rust does not
+   move this blocker.**
 2. **The RHI and presentation boundary is unbuilt.** It is specified, but no
    implementation has ever run, so nothing has tested whether the boundary
    survives contact with a real renderer.

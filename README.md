@@ -15,8 +15,9 @@ headless vertical slice proves the chain end to end:
 
 ```text
 boot lifecycle -> resolve modules -> create world from a seed
-   -> generate chunks across a worker pool -> mutate voxels -> advance the clock
-   -> save -> shut down -> reopen -> verify the state survived
+   -> generate chunks across a worker pool -> mutate voxels
+   -> drop a character onto the terrain and simulate it until it settles
+   -> advance the clock -> save -> shut down -> reopen -> verify the state survived
 ```
 
 There is deliberately **no renderer and no window yet**. Those are specified but
@@ -36,7 +37,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 187 tests
+cargo test --workspace          # 398 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -52,6 +53,9 @@ chunks generated   25
 non-air blocks     50818052
 voxel storage      722304 bytes
 save size          744954 bytes
+physics bodies     9 (9 settled)
+physics substeps   600 (270 contacts)
+character drop     1010 cm
 probes verified    76
 result             OK
 ```
@@ -76,9 +80,12 @@ Results and analysis:
 [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md).
 Highlights — 18.3 million blocks held in 144 KiB, 7.0 MiB peak resident memory,
 a measurement that closed `DEBT-0005` by showing the "optimization" it proposed
-would have been **4× slower** than the code it was meant to improve, and the
-number behind `DEBT-0009`: scheduling one job per entity costs **~4,900× the
-simulation it schedules**.
+would have been **4× slower** than the code it was meant to improve, the number
+behind `DEBT-0009` (scheduling one job per entity costs **~4,900× the simulation
+it schedules**), and the one behind `DEBT-0011`: **49% of a physics step is the
+voxel lookup, not the solver** — measured by running the same 1,000 bodies
+against generated terrain and against a flat fixture, because a single combined
+number would have sent the optimisation work to the wrong half.
 
 ## Layout
 
@@ -93,6 +100,9 @@ engine/persistence   versioned, checksummed, atomic save container
 engine/runtime       lifecycle, engine modules, registries, event bus, jobs
 engine/world         voxel storage, chunks, world lifecycle, generation
 engine/entity        identity, lifecycle, components, queries, persistence
+engine/physics       fixed timestep, bodies, swept voxel collision, characters,
+                     ray queries         (depends on foundation and nothing else)
+engine/simulation    the one crate allowed to see both the world and physics
 engine/benchmark     the measurement harness for the language gate
 engine/headless      the Phase 0 vertical slice
 docs/adr/            architecture decision records
@@ -115,18 +125,24 @@ document disagree, the document wins until an ADR says otherwise
 
 ## What comes next
 
-The open gate is still the **technology benchmark** (`DEBT-0008`), now about a
-half complete: the reference stack is measured through the chunk, job,
-save/load and 1,000-entity stages, but rule 5 of
+The open gate is still the **technology benchmark** (`DEBT-0008`), and its shape
+has changed. Every stage of the plan's vertical slice that can be measured
+**without a GPU and without a second language** is now measured — chunks, jobs,
+save/load, 1,000 entities and, as of Appendix B, physics. Rule 5 of
 `NEXORA TECHNOLOGY BENCHMARK PLAN.md` forbids deciding from a single stack, and
-no second one has been measured. The next measurable increments are the **entity
-system** (needs no hardware) and then the **RHI** (cannot be measured headless at
-all).
+no second one has been measured.
 
-Measurement also opened `DEBT-0009` and `DEBT-0010`: the job system costs
-~4,900× the work when used per entity (it is a chunk-granularity tool), and
-entity queries are linear scans that stop being free somewhere above 10,000
-entities. Both have trigger points rather than guesses.
+**More Rust no longer moves the gate.** What remains is a GPU for the render
+stages, a streaming manager, and — the part that actually blocks the decision —
+the same workload built a second time in another language.
+
+Measurement also opened `DEBT-0009` through `DEBT-0013`, each with a trigger
+point rather than a guess: the job system costs ~4,900× the work when used per
+entity (it is a chunk-granularity tool), entity queries are linear scans that
+stop being free above ~10,000 entities, the voxel lookup is half of a physics
+step, the depenetration pass is a 42% tax on the common case, and physics still
+has no published performance budget despite now having the numbers to set one
+from.
 
 ## Originality
 
