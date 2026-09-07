@@ -1,0 +1,19 @@
+[package]
+name = "nexora-streaming"
+description = "NEXORA streaming: interest, priority, budgets, LOD tiers and eviction for world residency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Simulation layer per NEXORA DEPENDENCY MATRIX.md. Foundation only, for the
+# reason STREAMING SYSTEM.md states in its own first line: streaming controls
+# what is resident and "does not own generation or gameplay rules". Residency
+# reaches the world through the ResidencyBackend trait, so the manager cannot
+# generate a chunk even by accident.
+[dependencies]
+nexora-foundation.workspace = true
+
+[lints]
+workspace = true

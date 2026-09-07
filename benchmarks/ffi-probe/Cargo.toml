@@ -1,0 +1,42 @@
+# The one crate in this repository allowed to declare an `unsafe` block.
+#
+# Its entire purpose is to be a language boundary, and calling a C ABI function
+# is `unsafe` by definition -- the compiler cannot check the other side. Keeping
+# it here, outside `engine/`, is what lets every crate that ships keep
+# `unsafe_code = "forbid"`: see ADR-0009.
+#
+# The C++ side is OPTIONAL. Without the `cpp` feature this crate is pure Rust
+# with no unsafe compiled at all, and `cargo build --workspace` needs no C++
+# compiler. `scripts/compare-stacks.sh` turns the feature on.
+
+[package]
+name = "nexora-ffi-probe"
+description = "Measures what one crossing of a language boundary costs. Not part of the engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_ffi_probe"
+path = "src/lib.rs"
+
+[features]
+# Compile and link `benchmarks/cpp/src/ffi_boundary.cpp`, enabling the
+# cross-language measurements. Off by default on purpose.
+cpp = []
+
+[lints.rust]
+# `deny`, not the workspace's `forbid`: this crate needs exactly one documented
+# `allow`, at the extern block. `forbid` cannot be lifted at an item, which is
+# precisely why the engine crates use it and this one does not.
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+unimplemented = "warn"
+panic_in_result_fn = "warn"

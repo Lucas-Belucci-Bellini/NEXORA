@@ -1,0 +1,6 @@
+# Pinned so that every developer, CI runner and benchmark run uses the same
+# compiler. "NEXORA BUILD CI AND RELEASE ARCHITECTURE.md" requires builds to be
+# traceable to the toolchain that produced them.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]

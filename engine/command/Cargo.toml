@@ -1,0 +1,23 @@
+[package]
+name = "nexora-command"
+description = "Intent boundary: commands are requested here, validated here, and dispatched to exactly one authority."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_command"
+path = "src/lib.rs"
+
+# Foundation and runtime only, and that is the point. `Command System.md` §134
+# lists what this system must NOT contain -- block rules, physics, worldgen,
+# inventory, crafting, combat, economy. None of those crates are reachable from
+# here, so the boundary is enforced by Cargo rather than by review. See ADR-0010.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+
+[lints]
+workspace = true

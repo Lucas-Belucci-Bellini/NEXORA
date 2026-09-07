@@ -1,0 +1,36 @@
+[package]
+name = "nexora-benchmark"
+description = "NEXORA Phase 0 measurement harness: the reference numbers for the language selection gate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_benchmark"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexora-benchmark"
+path = "src/main.rs"
+
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+nexora-persistence.workspace = true
+nexora-world.workspace = true
+nexora-entity.workspace = true
+nexora-physics.workspace = true
+nexora-simulation.workspace = true
+nexora-streaming.workspace = true
+nexora-ffi-probe.workspace = true
+
+[features]
+# Link the C++ translation unit and measure the language boundary for real.
+# Off by default so `cargo build --workspace` needs no C++ compiler; turned on
+# by `scripts/compare-stacks.sh`.
+cpp = ["nexora-ffi-probe/cpp"]
+
+[lints]
+workspace = true

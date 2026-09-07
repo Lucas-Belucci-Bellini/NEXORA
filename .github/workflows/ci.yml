@@ -1,0 +1,115 @@
+# NEXORA continuous integration.
+#
+# Stage order follows "NEXORA BUILD CI AND RELEASE ARCHITECTURE.md". Stages that
+# have no code to run yet (package, migration) are absent rather than stubbed
+# green: a check that always passes is worse than a missing one, because it
+# reads as coverage.
+
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: format, lint, test, build, smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the version, so the action installs exactly it.
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt clippy
+          rustc --version && cargo --version
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # STAGE: FORMAT
+      - name: Format
+        run: cargo fmt --all --check
+
+      # STAGE: LINT / STATIC ANALYSIS
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # STAGE: UNIT + INTEGRATION + DETERMINISM + SAVE TESTS
+      # The determinism and save/load suites live alongside the units they
+      # cover; the whole workspace runs as one gate.
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      - name: Documentation tests
+        run: cargo test --workspace --doc
+
+      # STAGE: BUILD
+      - name: Build (release)
+        run: cargo build --workspace --release
+
+      # STAGE: SMOKE TEST
+      # Runs the Phase 0 vertical slice against the release binary and fails the
+      # build if the world does not survive a save and reload.
+      - name: Smoke test the headless vertical slice
+        run: |
+          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv"
+
+      # The benchmark harness is code too: run a minimal pass so it cannot rot.
+      # Deliberately NOT gated on timings - a shared runner's numbers would
+      # produce false failures, and a performance gate that cries wolf gets
+      # disabled. Real numbers come from a deliberate run on known hardware.
+      - name: Smoke test the benchmark harness
+        run: |
+          ./target/release/nexora-benchmark --smoke \
+            --scratch "${RUNNER_TEMP}/bench" > /dev/null
+
+      # STAGE: CROSS-STACK CONFORMANCE
+      # The C++ reference must agree with Rust on every digest before its
+      # timings mean anything, so the agreement is checked on every push rather
+      # than trusted from the day it was written. Timings are NOT gated here,
+      # for the same reason the benchmark harness is not: a shared runner's
+      # numbers would produce false failures. `--smoke` runs the full
+      # conformance check and only a token pass of the timing loops.
+      #
+      # ubuntu-latest ships both g++ and clang++, so this also exercises the
+      # two-compiler control that Appendix D exists because of.
+      - name: Cross-stack conformance (Rust vs C++)
+        run: ./scripts/compare-stacks.sh --smoke
+
+      # A second run at a different worker count must produce an identical save.
+      - name: Determinism smoke test
+        run: |
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 1 \
+            --save "${RUNNER_TEMP}/det-a.nxsv"
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 8 \
+            --save "${RUNNER_TEMP}/det-b.nxsv"
+          cmp "${RUNNER_TEMP}/det-a.nxsv" "${RUNNER_TEMP}/det-b.nxsv"
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build documentation
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"

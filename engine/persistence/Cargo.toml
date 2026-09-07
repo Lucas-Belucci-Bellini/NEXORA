@@ -1,0 +1,14 @@
+[package]
+name = "nexora-persistence"
+description = "NEXORA save container: versioned, checksummed, atomically written and recoverable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nexora-foundation.workspace = true
+
+[lints]
+workspace = true

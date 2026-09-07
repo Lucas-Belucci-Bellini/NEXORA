@@ -1,71 +1,144 @@
 # NEXORA — ARCHITECTURE FREEZE CHECKLIST
 
 ## Goal
-Provide an explicit gate before large-scale implementation and final technology lock.
+Provide an explicit gate before large-scale implementation and final technology
+lock.
+
+## How to read this
+
+The original checklist tracked one thing: whether a contract was *defined*. With
+Phase 0 implemented, ticking everything as "defined" would make the list
+decorative — nearly every contract has a specification document. It now tracks
+two independent questions:
+
+- **Defined** — a normative document specifies the contract.
+- **Built** — code implements it, and CI builds, tests and runs that code.
+
+`Defined` without `Built` is the intended state for most rows: `preparing is not
+implementing` (ADR-0005). A row that is `Built` without being `Defined` is a
+defect — it means code is inventing architecture.
+
+Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 
 ## Foundation
-- [ ] Core lifecycle defined
-- [ ] Module lifecycle defined
-- [ ] Job/threading model defined
-- [ ] Resource ownership defined
-- [ ] Time model defined
-- [ ] Spatial model defined
-- [ ] Registry/ID rules defined
-- [ ] Event/Command/Query semantics defined
+
+| Contract | Defined | Built | Where |
+| --- | :---: | :---: | --- |
+| Core lifecycle | [x] | [x] | `runtime::lifecycle` |
+| Module lifecycle | [x] | [x] | `runtime::module` |
+| Job / threading model | [x] | [x] | `runtime::jobs` |
+| Resource ownership | [x] | [ ] | `NEXORA MEMORY AND RESOURCE OWNERSHIP.md` |
+| Time model | [x] | [x] | `foundation::time` |
+| Spatial model | [x] | [x] | `foundation::spatial` |
+| Registry / ID rules | [x] | [x] | `runtime::registry`, `foundation::ident` |
+| Event / Command / Query semantics | [x] | [~] | events and **commands** built (`engine/command`, ADR-0010: intent, layered validation, one authority per command, quotas); **queries are not**, and commands stop at CMD-4 (DEBT-0021) |
 
 ## Runtime
-- [ ] RHI boundary defined
-- [ ] Input boundary defined
-- [ ] Audio boundary defined
-- [ ] Asset lifecycle defined
-- [ ] Streaming lifecycle defined
-- [ ] Headless mode defined
+
+| Contract | Defined | Built | Where |
+| --- | :---: | :---: | --- |
+| RHI boundary | [x] | [ ] | no display or GPU to verify against (ADR-0005) |
+| Input boundary | [x] | [ ] | meaningless without a window |
+| Audio boundary | [x] | [ ] | — |
+| Asset lifecycle | [x] | [ ] | `RESOURCE AND ASSET SYSTEM.md` |
+| Streaming lifecycle | [x] | [ ] | chunks are loaded explicitly for now |
+| Headless mode | [x] | [x] | `nexora-headless` |
 
 ## Simulation
-- [ ] ECS/data model defined
-- [ ] Physics ownership defined
-- [ ] AI decision pipeline defined
-- [ ] LOD transitions defined
-- [ ] performance budgets defined
-- [ ] deterministic requirements defined
+
+| Contract | Defined | Built | Where |
+| --- | :---: | :---: | --- |
+| ECS / data model | [x] | [~] | entity identity, lifecycle, components, queries and persistence built as a dense component store (`engine/entity`, ADR-0006); the archetype/query-planner layer is deferred with no measured need |
+| Physics ownership | [x] | [~] | fixed timestep, rigid bodies, materials, gravity, swept voxel collision, character control and ray queries built (`engine/physics`, ADR-0007); body-versus-body collision, rotation and non-cube shapes are not (DEBT-0014, DEBT-0015, DEBT-0016) |
+| Physics ↔ world boundary | [x] | [x] | terrain reaches the solver through `VoxelSource`; `engine/simulation` is the only crate that sees both sides, and Cargo enforces it (ADR-0007) |
+| AI decision pipeline | [x] | [ ] | `NEXORA AI DECISION ARCHITECTURE.md` |
+| LOD transitions | [x] | [~] | the `FULL → REGIONAL → ABSTRACT → UNRESIDENT` ladder, hysteresis and eviction are built and tested (`engine/streaming`, ADR-0008); the two middle tiers hold no distinct data until the regional simulation exists (DEBT-0019) |
+| Streaming residency | [x] | [x] | interest, priority, budgets with backpressure, and eviction that persists before it drops — including the case where the write fails and the chunk is *not* dropped (ADR-0008) |
+| Performance budgets | [x] | [~] | storage, counters and now physics are measurable; no budgets published or enforced (DEBT-0013) |
+| Deterministic requirements | [x] | [~] | RNG, generation and saves are deterministic and tested; replay is not built |
 
 ## World
-- [ ] Chunk lifecycle defined
-- [ ] world-state lifecycle defined
-- [ ] generation seed reproducibility defined
-- [ ] persistence boundary defined
-- [ ] world event lifecycle defined
+
+| Contract | Defined | Built | Where |
+| --- | :---: | :---: | --- |
+| Chunk lifecycle | [x] | [x] | `world::chunk` |
+| World-state lifecycle | [x] | [x] | `world::world` |
+| Generation seed reproducibility | [x] | [x] | `foundation::rng`, `world::world` |
+| Persistence boundary | [x] | [x] | `persistence`, `world::persist` |
+| World event lifecycle | [x] | [ ] | `World Events.md` |
 
 ## Living world
-- [ ] civilization ownership defined
-- [ ] economy ownership defined
-- [ ] knowledge/information boundaries defined
-- [ ] history truth model defined
-- [ ] lore derivation defined
-- [ ] archive/evidence model defined
-- [ ] player-independence rules defined
+
+| Contract | Defined | Built |
+| --- | :---: | :---: |
+| Civilization ownership | [x] | [ ] |
+| Economy ownership | [x] | [ ] |
+| Knowledge / information boundaries | [x] | [ ] |
+| History truth model | [x] | [ ] |
+| Lore derivation | [x] | [ ] |
+| Archive / evidence model | [x] | [ ] |
+| Player-independence rules | [x] | [ ] |
 
 ## Network / security
-- [ ] authority model defined
-- [ ] replication boundaries defined
-- [ ] threat model defined
-- [ ] validation invariants defined
-- [ ] mod/script trust model defined
+
+| Contract | Defined | Built | Note |
+| --- | :---: | :---: | --- |
+| Authority model | [x] | [ ] | |
+| Replication boundaries | [x] | [ ] | |
+| Threat model | [x] | [~] | save files are treated as untrusted input today: bounded lengths, checked reads, quarantine |
+| Validation invariants | [x] | [~] | foundation and world invariants are enforced and tested; cross-system validation is not |
+| Mod / script trust model | [x] | [ ] | configuration namespace isolation is built; no script sandbox |
 
 ## Content / tools
-- [ ] content pipeline defined
-- [ ] asset provenance defined
-- [ ] original-content policy defined
-- [ ] editor/runtime relationship defined
-- [ ] mod API versioning defined
+
+| Contract | Defined | Built | Note |
+| --- | :---: | :---: | --- |
+| Content pipeline | [x] | [ ] | |
+| Asset provenance | [x] | [ ] | no assets ship yet |
+| Original-content policy | [x] | [x] | no third-party code or assets; algorithms implemented from published specifications (ADR-0002) |
+| Editor / runtime relationship | [x] | [ ] | |
+| Mod API versioning | [x] | [~] | version types exist; no mod API |
 
 ## Engineering
-- [ ] save compatibility defined
-- [ ] crash/recovery strategy defined
-- [ ] observability defined
-- [ ] testing strategy defined
-- [ ] CI/build/release strategy defined
-- [ ] technology benchmark defined
+
+| Contract | Defined | Built | Where |
+| --- | :---: | :---: | --- |
+| Save compatibility | [x] | [x] | `foundation::version`, ADR-0004 |
+| Crash / recovery strategy | [x] | [~] | detect, quarantine, atomic write and journal recovery are built and tested against the mandatory crash/corruption cases (ADR-0011); **the engine journals its own writes** and the slice rebuilds itself from checkpoint + journal, on a policy measured rather than guessed (Appendix E: an fsync is 303× an append); replay still reaches only resident chunks (DEBT-0024) |
+| Observability | [x] | [x] | `foundation::diagnostics` |
+| Testing strategy | [x] | [x] | 600 tests; unit, integration, property, determinism, corruption, plus 12 cross-stack conformance digests |
+| CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
+| Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — the GPU stages cannot run here and no engine-scale comparison exists (DEBT-0008, ADR-0009) |
 
 ## Final gate
-The architecture can be frozen only when unresolved items are either completed or explicitly classified as post-freeze extensions with no impact on frozen contracts.
+
+The architecture can be frozen only when unresolved items are either completed
+or explicitly classified as post-freeze extensions with no impact on frozen
+contracts.
+
+**Not met.** Two blockers stand out:
+
+1. **The technology benchmark now has two stacks, and still cannot close**
+   (DEBT-0008). The second stack exists: `benchmarks/cpp/` mirrors the engine's
+   hot kernels in C++20, twelve conformance digests match bit-for-bit across
+   Rust, g++ and clang++, and `scripts/compare-stacks.sh` refuses to time
+   anything until they do — see
+   [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md),
+   Appendix D. Rule 5's "do not decide from one stack" is satisfied for the
+   kernels; two things it asked for are still missing, and neither is fixable by
+   writing more code here. **The GPU stages** (RHI, window, camera, mesh) cannot
+   run in a headless container. **An engine-scale comparison** is explicitly out
+   of scope for a kernel reference (ADR-0009) — nine pieces of arithmetic say
+   nothing about allocation, cache behaviour at scale, or threading.
+
+   What Appendix D did settle is worth stating precisely, because the temptation
+   is to over-read it: on these kernels Rust is not measurably a handicap, and
+   **the optimizer backend costs more than the language** — the widest gap
+   between the two C++ builds (1.89×) is larger than every Rust-versus-C++ gap
+   in the table. Freezing on that alone would still settle by default the
+   question the gate exists to ask, and
+   `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves the language lock for the
+   completed benchmark.
+2. **The RHI and presentation boundary is unbuilt.** It is specified, but no
+   implementation has ever run, so nothing has tested whether the boundary
+   survives contact with a real renderer.
