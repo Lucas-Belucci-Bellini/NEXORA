@@ -116,6 +116,7 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
                      (also depends on foundation and nothing else)
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
+engine/command       intent: definitions, validation, dispatch, quotas
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
 benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)
@@ -174,6 +175,40 @@ when used per entity, entity queries stop being free above ~10,000 entities, the
 voxel lookup is half of a physics step, and streaming generates chunks on the
 tick thread — where spending its own activation budget would cost 21.8 ms, more
 than a frame.
+
+## Commands
+
+`NEXORA ARCHITECTURE RULES.md` §4 separates **command** (intent), **event**
+(fact) and **query** (read), and forbids using an event as a disguised command.
+The engine had events and no commands, which is precisely the pressure that
+produces that mistake — `DEBT-0007`. It now has both
+([ADR-0010](docs/adr/ADR-0010-commands-are-intent-and-carry-their-own-authority.md)).
+
+`engine/command` holds the framework and depends on `engine/foundation` and
+`engine/runtime` only. That is not tidiness: `Command System.md` §134 lists what
+the command system must never contain — block rules, physics, worldgen,
+inventory, crafting, economy — and none of those crates are reachable from it,
+so the list is a build error rather than a comment. Block handlers live in
+`engine/simulation`, mirroring §28's own split: **the handler adapts, the
+specialized system decides.**
+
+Three properties it was built to have, each with a test that fails if it stops
+being true:
+
+- **Deny by default.** A definition that forgot to say who may send it permits
+  *nobody*, and is refused at registration rather than at the first attempt.
+  Authority defaults to server-required; the rate limit defaults to finite.
+- **No trusted bypass.** §72 — *"nunca assumir internal = always valid"*. A
+  server-issued command runs every validation layer a player's does.
+- **Priority orders, and only orders.** §32 — a `Critical` command goes first
+  and cannot skip a check, because the queue has no path to the pipeline.
+
+The vertical slice runs the reachable part of §115's first slice: intent →
+validation → one authority → a changed world. Three of its five commands are
+**refused on purpose** (nothing there, out of reach, wrong actor kind) — a
+pipeline only ever shown accepting things has not been shown to refuse anything.
+The stage places a block and breaks it again, so the save stays byte-identical
+across worker counts and the determinism check keeps measuring determinism.
 
 ## Originality
 

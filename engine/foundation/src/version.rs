@@ -87,6 +87,17 @@ contract_version!(
     "generator"
 );
 
+contract_version!(
+    /// Version of one command's schema.
+    ///
+    /// `Command System.md` §78 requires a command's shape to be versioned
+    /// independently of the engine: a stored, replayed or network-encoded
+    /// instance has to be readable by a build whose other contracts have moved
+    /// on. Mods version their own commands with the same type (§79).
+    CommandVersion,
+    "command"
+);
+
 /// What the engine is allowed to do with a given persisted version.
 ///
 /// Mirrors the policy list in `NEXORA SAVE FORMAT AND COMPATIBILITY.md`.

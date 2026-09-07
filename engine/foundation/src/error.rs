@@ -45,6 +45,13 @@ pub enum Domain {
     Spatial,
     /// Rigid bodies, collision and physical queries.
     Physics,
+    /// Command definition, validation, dispatch and quotas.
+    ///
+    /// Distinct from [`Domain::Security`]: this covers the framework failing
+    /// (an unknown command, an exhausted counter, a malformed instance), while
+    /// an actor being refused permission is a security answer, not a framework
+    /// fault.
+    Command,
 }
 
 impl Domain {
@@ -67,6 +74,7 @@ impl Domain {
             Self::Time => "time",
             Self::Spatial => "spatial",
             Self::Physics => "physics",
+            Self::Command => "command",
         }
     }
 }

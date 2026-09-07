@@ -22,6 +22,7 @@ nexora-persistence.workspace = true
 nexora-world.workspace = true
 nexora-physics.workspace = true
 nexora-streaming.workspace = true
+nexora-command.workspace = true
 nexora-simulation.workspace = true
 
 [lints]

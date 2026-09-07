@@ -165,8 +165,17 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **RISK:** Médio: o desvio é fácil e difícil de reverter depois.
 - **PROPOSED REMEDIATION:** Implementar Command System com o contrato próprio de
   `Command System.md`, em vez de estender o Event Bus.
+- **RESOLUTION (2026-09-07):** feito, com o contrato próprio. `engine/command`
+  implementa CMD-0 a CMD-4 — identidade, definições, instâncias, ciclo de vida,
+  validação em camadas, registry, dispatch, fila e resultados estruturados — e
+  depende **só** de `nexora-foundation` e `nexora-runtime`. Com isso a lista do
+  §134 ("não deve conter regras de bloco, física, worldgen, inventário…") vira
+  erro de compilação em vez de comentário: as crates não são alcançáveis. Os
+  handlers de bloco moram em `nexora-simulation`, exatamente a divisão do §28
+  (o handler adapta, o sistema decide). Ver
+  [ADR-0010](docs/adr/ADR-0010-commands-are-intent-and-carry-their-own-authority.md).
 - **TARGET STAGE:** Phase 1/2
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-09-07)
 
 ### DEBT-0008 — Benchmark do gate de linguagem ainda não executado
 
@@ -441,7 +450,13 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **PROPOSED REMEDIATION:** submeter a geração como job e concluir a ativação em
   um tick posterior. A máquina de adiamento (`deferred` no relatório) já existe
   exatamente para descrever isso.
-- **TRIGGER:** existir um loop de quadro, ou o orçamento de ativação passar de 2.
+- **TRIGGER:** existir um loop de quadro. *(Correção 2026-09-07: o gatilho dizia
+  também "ou o orçamento de ativação passar de 2" — mas o slice já usava 8
+  quando isto foi escrito, ou seja, o gatilho nasceu satisfeito. Um gatilho que
+  já é verdade no dia em que se escreve não é gatilho, é tarefa pendente
+  disfarçada. A parte mensurável fica: com orçamento 8, um tick que o gaste
+  inteiro custa 21,8 ms na thread do tick, e isso é intolerável assim que
+  houver um quadro para perder.)*
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN (medido)
 
@@ -485,3 +500,76 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   dedicado.
 - **TARGET STAGE:** Phase 3 (Persistence + Simulation)
 - **STATUS:** OPEN (medido)
+
+### DEBT-0021 — Command System parou em CMD-4; CMD-5 a CMD-15 não existem
+
+- **SYSTEM:** `engine/command`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `Command System.md` §114 define quinze etapas. O ADR-0010
+  entrega CMD-0 a CMD-4 (contratos, registry, dispatch, validação, fila) porque
+  as demais não têm chamador: networking, inventário, scripts, IA e console de
+  admin ainda não existem. Construí-las agora seria adivinhar a forma da
+  integração antes de haver o que integrar — startup brief §52.
+- **IMPACT:** o que falta, e o que cada coisa espera:
+  | etapa | o que falta | espera por |
+  | --- | --- | --- |
+  | CMD-5 | integração com networking | a camada de rede |
+  | CMD-9 | transações: reserva, commit, rollback | inventário/crafting |
+  | CMD-10/11/12 | scripts, NPC/IA, admin | mod runtime, IA, console |
+  | CMD-13 | gravação e replay do log de comandos | `NEXORA REPLAY AND DETERMINISM.md` |
+  | CMD-14 | dry run, preview, detecção de conflito | UI |
+  | CMD-15 | batching, region affinity, orçamentos | mais de uma região |
+- **RISK:** baixo hoje, e sobe junto com o primeiro consumidor de cada etapa.
+  O risco real seria o inverso: um framework de transações sem nenhuma
+  transação para modelar.
+- **PROPOSED REMEDIATION:** cada etapa quando o seu consumidor chegar, na ordem
+  do §114. A idempotência do §35 já é **detectada** (id de instância duplicado é
+  recusado pela fila); falta a parte **transacional**, que é CMD-9.
+- **TRIGGER:** por etapa, a existência do sistema que a consome.
+- **TARGET STAGE:** Phase 2 em diante
+- **STATUS:** OPEN
+
+### DEBT-0022 — Validação de identidade não tem sessão para consultar
+
+- **SYSTEM:** `engine/command::validation::IdentityValidator`
+- **CLASS:** TEMPORARY
+- **WHY CREATED:** `Command System.md` §20 quer verificar *"Connection 93
+  claiming Player 17"* contra sessão, jogador, entidade e conexão reais. Não
+  existe tabela de sessões ainda, então a camada verifica o invariante que dá
+  para verificar: um ator que precisa de identidade tem de trazer alguma.
+- **IMPACT:** um cliente que forje o `player id` de outro passa a camada de
+  identidade hoje. As camadas seguintes ainda se aplicam — permissão, alcance,
+  cota — mas a atribuição em si não é verificada, e é ela que decide *de quem*
+  é a cota e *de quem* é a permissão.
+- **RISK:** alto **assim que houver rede**, e exatamente zero antes disso: sem
+  networking não existe conexão para mentir. É por isso que é `TEMPORARY` e não
+  um furo aberto — a camada existe, com o nome certo, esperando a fonte de
+  verdade.
+- **PROPOSED REMEDIATION:** dar ao `ValidationRequest` acesso à tabela de
+  sessões e checar que a conexão que trouxe o comando é dona do jogador que ele
+  reivindica.
+- **TRIGGER:** o primeiro comando que chegue por `Source::Network` de verdade.
+- **TARGET STAGE:** CMD-5 (Server Integration)
+- **STATUS:** OPEN
+
+### DEBT-0023 — Comandos não emitem eventos; devolvem o nome deles
+
+- **SYSTEM:** `engine/command::handler`, `engine/simulation::commands`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** §55 manda o sistema publicar um evento depois da mudança de
+  estado, e §56 separa evento de resultado. O handler hoje devolve o **nome** do
+  evento no `CommandResult` em vez de publicá-lo no Event Bus.
+- **IMPACT:** quem quiser reagir a `nexora:block_broken` precisa ler o resultado
+  do comando, o que inverte a relação: §110 diz que um evento tem muitos
+  assinantes, e ninguém pode assinar um nome devolvido a um único chamador.
+- **RISK:** médio. O `CommandResult` já carrega a informação certa, então a
+  mudança é aditiva; o risco é alguém construir sobre o resultado por hábito e
+  aí virar a forma de reagir a fatos.
+- **PROPOSED REMEDIATION:** dar ao handler acesso ao `EventBus` e publicar de
+  verdade, mantendo os nomes no resultado (§56: são respostas diferentes, as
+  duas úteis). Precisa de tipos de evento concretos por domínio, que hoje não
+  existem — `BlockBrokenEvent` mora em `Block System.md`, não implementado.
+- **TRIGGER:** o primeiro assinante que precise reagir a um fato produzido por
+  um comando.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN

@@ -18,6 +18,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-command"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+ "nexora-runtime",
+]
+
+[[package]]
 name = "nexora-entity"
 version = "0.0.1"
 dependencies = [
@@ -38,6 +46,7 @@ version = "0.0.1"
 name = "nexora-headless"
 version = "0.0.1"
 dependencies = [
+ "nexora-command",
  "nexora-foundation",
  "nexora-persistence",
  "nexora-physics",
@@ -72,6 +81,7 @@ dependencies = [
 name = "nexora-simulation"
 version = "0.0.1"
 dependencies = [
+ "nexora-command",
  "nexora-foundation",
  "nexora-physics",
  "nexora-runtime",

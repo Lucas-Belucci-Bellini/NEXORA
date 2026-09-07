@@ -359,3 +359,52 @@ fn the_report_renders_every_field() {
         );
     }
 }
+
+#[test]
+fn the_command_stage_both_accepts_and_refuses() {
+    let scratch = Scratch::new("commands");
+    let report = run_slice(&config(&scratch, "commands")).expect("the slice runs");
+
+    // Accepting is half the job. A pipeline that has only ever been shown
+    // accepting things has not been shown to refuse anything, and refusing is
+    // the half that carries the security boundary.
+    assert!(report.commands_accepted > 0, "no command reached a handler");
+    assert!(
+        report.commands_refused > 0,
+        "no command was refused; the validation layers are unproven"
+    );
+}
+
+#[test]
+fn commands_do_not_change_what_the_save_contains() {
+    // The stage places a block and breaks it again, so the world it hands back
+    // is the world it was given. If that ever stops being true, the
+    // byte-identical determinism comparison below stops measuring determinism
+    // and starts measuring whether the command stage ran the same way twice.
+    let scratch = Scratch::new("commands-neutral");
+    let report = run_slice(&config(&scratch, "commands-neutral")).expect("the slice runs");
+
+    assert_eq!(report.probes_verified, report.blocks_edited);
+    assert!(report.save_bytes > 0);
+}
+
+#[test]
+fn commands_do_not_depend_on_the_worker_count_either() {
+    let scratch = Scratch::new("commands-determinism");
+
+    let mut single = config(&scratch, "cmd-a");
+    single.worker_threads = 1;
+    let single = run_slice(&single).expect("the slice runs at one thread");
+
+    let mut many = config(&scratch, "cmd-b");
+    many.worker_threads = 8;
+    let many = run_slice(&many).expect("the slice runs at eight threads");
+
+    assert_eq!(single.commands_accepted, many.commands_accepted);
+    assert_eq!(single.commands_refused, many.commands_refused);
+    assert_eq!(
+        std::fs::read(scratch.save("cmd-a")).expect("save a"),
+        std::fs::read(scratch.save("cmd-b")).expect("save b"),
+        "the command stage made the save depend on the worker count"
+    );
+}

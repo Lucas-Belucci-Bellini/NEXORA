@@ -15,6 +15,7 @@ repository.workspace = true
 nexora-foundation.workspace = true
 nexora-runtime.workspace = true
 nexora-world.workspace = true
+nexora-command.workspace = true
 nexora-physics.workspace = true
 nexora-streaming.workspace = true
 

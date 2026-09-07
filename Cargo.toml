@@ -7,10 +7,11 @@
 #     foundation  -> (nothing)
 #     persistence -> foundation
 #     runtime     -> foundation
+#     command     -> foundation, runtime
 #     world       -> foundation, runtime, persistence
 #     physics     -> foundation
 #     streaming   -> foundation
-#     simulation  -> foundation, runtime, world, physics, streaming
+#     simulation  -> foundation, runtime, world, physics, streaming, command
 #     headless    -> all of the above
 #
 # A crate cannot depend "upwards", because Cargo rejects cycles. The matrix is
@@ -21,6 +22,7 @@ resolver = "2"
 members = [
     "engine/foundation",
     "engine/runtime",
+    "engine/command",
     "engine/persistence",
     "engine/world",
     "engine/entity",
@@ -44,6 +46,7 @@ repository = "https://github.com/Lucas-Belucci-Bellini/NEXORA"
 [workspace.dependencies]
 nexora-foundation = { path = "engine/foundation", version = "0.0.1" }
 nexora-runtime = { path = "engine/runtime", version = "0.0.1" }
+nexora-command = { path = "engine/command", version = "0.0.1" }
 nexora-persistence = { path = "engine/persistence", version = "0.0.1" }
 nexora-world = { path = "engine/world", version = "0.0.1" }
 nexora-entity = { path = "engine/entity", version = "0.0.1" }

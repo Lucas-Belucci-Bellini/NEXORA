@@ -121,6 +121,12 @@ pub struct SliceReport {
     pub streaming_retained_peak: usize,
     /// Chunks streaming released.
     pub streaming_evicted: u32,
+    /// Commands that passed every validation layer and changed the world.
+    pub commands_accepted: usize,
+    /// Commands refused, at any layer. Non-zero on purpose: the slice submits
+    /// requests that must be turned away, because a pipeline that has only
+    /// ever accepted things has not been shown to refuse anything.
+    pub commands_refused: usize,
     /// Probes checked after reloading.
     pub probes_verified: usize,
     /// Lifecycle phases entered, in order.
@@ -269,6 +275,20 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         .counters()
         .add("blocks.edited", blocks_edited as u64);
 
+    // --- commands ----------------------------------------------------------
+    // The reachable part of `Command System.md` §115: intent, validated by the
+    // full pipeline, executed by exactly one authority, changing the world.
+    // Networking, Build & Destruction, Loot and Item do not exist yet.
+    let (returned, commands) = run_command_stage(world, &diagnostics)?;
+    world = returned;
+    diagnostics
+        .counters()
+        .add("commands.accepted", commands.accepted as u64);
+    diagnostics
+        .counters()
+        .add("commands.refused", commands.refused as u64);
+    log(&diagnostics, "commands dispatched");
+
     // --- physics -----------------------------------------------------------
     // Runs against the world but never writes to it, so the save below - and
     // the byte-identical determinism check over it - is unaffected.
@@ -358,6 +378,8 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         save_bytes,
         storage_bytes,
         non_air_blocks,
+        commands_accepted: commands.accepted,
+        commands_refused: commands.refused,
         physics_substeps: physics.substeps,
         physics_bodies: physics.bodies,
         physics_contacts: physics.contacts,
@@ -456,6 +478,139 @@ fn generate_in_parallel(
 /// Positions are derived from the columns that were actually generated rather
 /// than hard-coded, so the slice is correct at any radius - including a radius
 /// of zero, where only the origin column exists.
+/// What the command stage did.
+struct CommandOutcome {
+    accepted: usize,
+    refused: usize,
+}
+
+/// Drive real commands through the full pipeline against the live world.
+///
+/// The net effect on the world is **zero**: every block this places, it breaks
+/// again. That is deliberate — the stage has to prove the pipeline mutates a
+/// real world, without changing what the save contains, so the byte-identical
+/// determinism comparison across worker counts keeps measuring what it was
+/// written to measure.
+///
+/// It submits requests that must be **refused** as well as accepted. A pipeline
+/// that has only ever been shown accepting things has not been shown to refuse
+/// anything, and refusing is the half that matters for §71's security boundary.
+fn run_command_stage(world: World, diagnostics: &Diagnostics) -> Result<(World, CommandOutcome)> {
+    use nexora_command::dispatcher::Dispatcher;
+    use nexora_command::identity::{Actor, ActorKind, CommandId, InstanceIdSource, Source};
+    use nexora_command::instance::{CommandContext, CommandInstance, Target};
+    use nexora_command::registry::CommandRegistry;
+    use nexora_command::validation::ValidationPipeline;
+    use nexora_foundation::diagnostics::CorrelationId;
+    use nexora_simulation::commands::{
+        register_block_commands, ActorPosition, BlockTargetValidator, BreakBlockHandler,
+        PlaceBlockHandler, BREAK_BLOCK, PLACE_BLOCK,
+    };
+
+    // A cell high above the terrain, so placing into it cannot disturb
+    // generated ground or any probe.
+    let position = BlockPos::new(2, 210, 2);
+    let stone: BlockStateId = world.block_id(&Identifier::parse("nexora:block/stone")?)?;
+
+    // Taken by value and handed back, the same shape `generate_in_parallel`
+    // uses: the handlers need shared ownership, and the slice needs the world
+    // afterwards.
+    let shared = std::rc::Rc::new(std::cell::RefCell::new(world));
+
+    let mut registry = CommandRegistry::new()?;
+    let (break_id, place_id) = register_block_commands(&mut registry)?;
+    registry.freeze();
+
+    let standing = ActorPosition {
+        x: f64::from(position.x as i32) + 0.5,
+        y: f64::from(position.y as i32) + 1.5,
+        z: f64::from(position.z as i32) + 0.5,
+    };
+    let mut dispatcher = Dispatcher::new().with_pipeline(
+        ValidationPipeline::standard().with_domain(Box::new(BlockTargetValidator {
+            actor_position: Some(standing),
+        })),
+    );
+    dispatcher.attach(
+        break_id,
+        Box::new(BreakBlockHandler::new(std::rc::Rc::clone(&shared))),
+    )?;
+    dispatcher.attach(
+        place_id,
+        Box::new(PlaceBlockHandler::new(std::rc::Rc::clone(&shared), stone)),
+    )?;
+
+    let mut ids = InstanceIdSource::new();
+    let tick = WorldTime(1);
+    let mut request =
+        |command: &str, actor: Actor, source: Source, target: Target| -> Result<CommandInstance> {
+            Ok(CommandInstance::new(
+                CommandId::parse(command)?,
+                ids.mint()?,
+                target,
+                Vec::new(),
+                CommandContext::new(actor, source, tick, CorrelationId(1)),
+            ))
+        };
+
+    let at = Target::Block {
+        x: position.x,
+        y: position.y,
+        z: position.z,
+    };
+    let far = Target::Block {
+        x: position.x + 500,
+        y: position.y,
+        z: position.z,
+    };
+
+    let attempts = vec![
+        // Accepted: places a block into empty air, then breaks it again.
+        request(PLACE_BLOCK, Actor::player(1), Source::Network, at.clone())?,
+        request(BREAK_BLOCK, Actor::player(1), Source::Network, at.clone())?,
+        // Refused: nothing there to break any more (§23 target validation).
+        request(BREAK_BLOCK, Actor::player(1), Source::Network, at)?,
+        // Refused: out of the actor's reach, decided by the server (§72).
+        request(BREAK_BLOCK, Actor::player(1), Source::Network, far)?,
+        // Refused: a script is not an allowed actor for these definitions.
+        request(
+            BREAK_BLOCK,
+            Actor::of(ActorKind::Script),
+            Source::ModRuntime,
+            Target::None,
+        )?,
+    ];
+
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for instance in &attempts {
+        let result = dispatcher.dispatch(&registry, instance, tick);
+        if result.succeeded() {
+            accepted += 1;
+        } else {
+            refused += 1;
+            diagnostics.counters().add("commands.refused.observed", 1);
+        }
+    }
+
+    // The handlers hold clones of the world handle, so they have to go before
+    // it can be reclaimed. Dropping the dispatcher drops them.
+    drop(dispatcher);
+    let world = std::rc::Rc::try_unwrap(shared)
+        .map_err(|_| mismatch("the command stage leaked a handle to the world"))?
+        .into_inner();
+
+    // The stage must be a no-op on the world: it placed one block and broke it.
+    if world.get_block(position)? != nexora_world::voxel::AIR {
+        return Err(mismatch(
+            "the command stage left a block behind; the save would no longer be \
+             comparable across worker counts",
+        ));
+    }
+
+    Ok((world, CommandOutcome { accepted, refused }))
+}
+
 fn apply_edits(world: &mut World, coords: &[ChunkCoord]) -> Result<Vec<Probe>> {
     let air = Identifier::parse("nexora:block/air")?;
     let stone = Identifier::parse("nexora:block/stone")?;
@@ -532,6 +687,10 @@ pub fn format_report(report: &SliceReport) -> String {
         report.storage_bytes
     ));
     out.push_str(&format!("blocks edited      {}\n", report.blocks_edited));
+    out.push_str(&format!(
+        "commands           {} accepted, {} refused\n",
+        report.commands_accepted, report.commands_refused
+    ));
     out.push_str(&format!("ticks advanced     {}\n", report.ticks_advanced));
     out.push_str(&format!("save size          {} bytes\n", report.save_bytes));
     out.push_str(&format!(
