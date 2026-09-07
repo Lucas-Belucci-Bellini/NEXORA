@@ -7,6 +7,7 @@ name = "nexora-benchmark"
 version = "0.0.1"
 dependencies = [
  "nexora-entity",
+ "nexora-ffi-probe",
  "nexora-foundation",
  "nexora-persistence",
  "nexora-physics",
@@ -24,6 +25,10 @@ dependencies = [
  "nexora-persistence",
  "nexora-runtime",
 ]
+
+[[package]]
+name = "nexora-ffi-probe"
+version = "0.0.1"
 
 [[package]]
 name = "nexora-foundation"

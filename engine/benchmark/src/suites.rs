@@ -12,8 +12,10 @@ use nexora_entity::persist as entity_persist;
 use nexora_entity::query::{EntityFilter, Query};
 use nexora_entity::store::{EntityStore, SpawnContext, SpawnReason};
 use nexora_foundation::error::Result;
+use nexora_foundation::hashing::crc32;
 use nexora_foundation::ident::Identifier;
 use nexora_foundation::ident::WorldId;
+use nexora_foundation::rng::Rng;
 use nexora_foundation::spatial::WorldPosition;
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, SectionCoord};
 use nexora_foundation::time::CalendarConfig;
@@ -21,9 +23,9 @@ use nexora_foundation::time::WorldDuration;
 use nexora_persistence::SaveContainer;
 use nexora_physics::body::BodyDescriptor;
 use nexora_physics::character::{CharacterController, MoveIntent};
-use nexora_physics::collision::{depenetrate, resolve};
+use nexora_physics::collision::{depenetrate, resolve, sweep_axis};
 use nexora_physics::gravity::GravityField;
-use nexora_physics::math::{Aabb, Vec3};
+use nexora_physics::math::{Aabb, Axis, Vec3};
 use nexora_physics::query::raycast;
 use nexora_physics::step::FixedStep;
 use nexora_physics::voxel::FlatGround;
@@ -40,6 +42,7 @@ use nexora_world::persist;
 use nexora_world::voxel::{BlockStateId, Section, AIR};
 use nexora_world::world::{World, WorldDescriptor};
 
+use crate::conformance::SweepFixture;
 use crate::{
     consume, measure, measure_throughput, record_bytes, record_quantity, Budget, Measurement,
     Unmeasured,
@@ -373,6 +376,27 @@ pub fn persistence(budget: Budget, scratch: &Path) -> Result<Vec<Measurement>> {
     let encoded = container.encode();
     let size = encoded.len() as u64;
     let mut out = Vec::new();
+
+    // Mirrors `save.crc32_64kib` in the C++ reference, down to the fixture: the
+    // same 64 KiB drawn from the same seeded stream, so the pair compares two
+    // implementations of one algorithm over one input.
+    const CHECKSUM_PAYLOAD_BYTES: usize = 64 * 1024;
+    const CHECKSUM_PAYLOAD_SEED: u64 = 11;
+    let mut driver = Rng::from_seed(CHECKSUM_PAYLOAD_SEED);
+    let payload: Vec<u8> = (0..CHECKSUM_PAYLOAD_BYTES)
+        .map(|_| driver.next_u64() as u8)
+        .collect();
+    out.push(measure(
+        "save.crc32_64kib",
+        "CRC-32 over 64 KiB, the per-section integrity check (paired with the C++ reference)",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        || {
+            consume(crc32(&payload));
+        },
+    ));
 
     out.push(measure_throughput(
         "save.encode",
@@ -792,6 +816,32 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
         },
     ));
 
+    // Mirrors `physics.axis_sweep` in the C++ reference: the same fixture, the
+    // same box, the same axis and delta. The comparison table needs matched
+    // pairs, and "roughly the same kernel" is how two different problems get
+    // reported as a language difference.
+    let sweep_box = Aabb::new(Vec3::new(0.2, 3.0, 0.2), Vec3::new(0.8, 4.8, 0.8))
+        .expect("min is below max on every axis");
+    out.push(measure(
+        "physics.axis_sweep",
+        "One axis of a swept box against the voxel grid (paired with the C++ reference)",
+        Budget {
+            iterations_per_sample: 20_000,
+            ..budget
+        },
+        || {
+            // `delta` goes through `consume`, and only `delta`. The call is pure
+            // with constant arguments, so with no barrier at all LLVM hoists the
+            // whole sweep out of the timing loop -- it did, reporting 2.4 ns for
+            // a kernel that costs an order of magnitude more. One opaque scalar
+            // the result depends on is enough to stop that, and unlike hiding
+            // the `Aabb` it does not force a 48-byte round trip through memory
+            // that the C++ side would not be paying. The C++ reference applies
+            // the same barrier to the same argument.
+            consume(sweep_axis(&SweepFixture, sweep_box, Axis::Y, consume(-0.16)).allowed);
+        },
+    ));
+
     // The primitive underneath all of it.
     let body_box = Aabb::from_center(
         Vec3::new(4.5, (surface + 3) as f64, 4.5),
@@ -1130,6 +1180,136 @@ pub const PLAN_SLICE_STAGES: [&str; 13] = [
     "mod boundary",
 ];
 
+/// What one crossing of a language boundary costs.
+///
+/// Three rungs of the same ladder, so the differences separate two costs the
+/// word "FFI" usually runs together:
+///
+/// * `opaque - inlined` — what it costs to not inline a call. Not a language
+///   cost; any `dyn`, any function pointer, any cross-crate call without LTO
+///   pays it too.
+/// * `crossing - opaque` — what it costs for the callee to have been compiled
+///   by a different language's compiler. This is the number ADR-0004 needs.
+///
+/// Each pair is measured at two payload sizes, because that difference is the
+/// whole design question: a boundary crossed once per 4 KiB and a boundary
+/// crossed once per `u64` are not the same boundary.
+///
+/// Every rung passes its input through [`consume`] on the way in, including the
+/// ones that do not need it. A call is already an optimizer barrier, so the
+/// inlinable rung is the only one that could be fused across iterations -- and
+/// it was: LLVM collapsed four mixes into one `imul` and reported a quarter of
+/// the real cost. Applying the barrier to all three keeps the rungs comparable
+/// instead of handicapping the two that have a call in them.
+///
+/// Returns only the Rust rungs when the build has no C++ linked; the crossing
+/// is then reported by [`unmeasured_stages`] instead. Substituting a Rust
+/// number under a cross-language label is the failure this guards against.
+#[must_use]
+pub fn ffi(budget: Budget) -> Vec<Measurement> {
+    use nexora_ffi_probe::{crossing, inlined, opaque, CROSS_LANGUAGE_LINKED};
+
+    /// A single crossing costs a handful of nanoseconds, which is below the
+    /// resolution of one `Instant::now()` pair. Batched like the other
+    /// nanosecond-scale kernels so the clock is amortised rather than measured.
+    const SCALAR_ITERATIONS: u32 = 50_000;
+
+    /// 4 KiB of FNV is microseconds, so a much smaller batch already dwarfs the
+    /// clock.
+    const BULK_ITERATIONS: u32 = 200;
+
+    let scalar = Budget {
+        iterations_per_sample: SCALAR_ITERATIONS,
+        ..budget
+    };
+    let bulk = Budget {
+        iterations_per_sample: BULK_ITERATIONS,
+        ..budget
+    };
+
+    let mut measurements = Vec::new();
+
+    // --- scalar: high frequency, nothing to amortise the crossing over -------
+    let mut seed = 1u64;
+    measurements.push(measure(
+        "ffi.scalar_inlined",
+        "Mix one u64, inlined Rust: the work with no call at all",
+        scalar,
+        || seed = inlined::mix(consume(seed)),
+    ));
+    consume(seed);
+
+    let mut seed = 1u64;
+    measurements.push(measure(
+        "ffi.scalar_opaque_rust",
+        "The same mix behind a Rust call the optimizer will not inline",
+        scalar,
+        || seed = opaque::mix(consume(seed)),
+    ));
+    consume(seed);
+
+    if CROSS_LANGUAGE_LINKED {
+        let mut seed = 1u64;
+        measurements.push(measure(
+            "ffi.scalar_crossing",
+            "The same mix executed by C++, through the C ABI",
+            scalar,
+            || {
+                seed =
+                    crossing::mix(consume(seed)).expect("linked: checked by CROSS_LANGUAGE_LINKED")
+            },
+        ));
+        consume(seed);
+
+        // The crossing with as little work as possible on the far side, so the
+        // remaining cost is the crossing and nothing else.
+        let mut seed = 1u64;
+        measurements.push(measure(
+            "ffi.empty_crossing",
+            "Into C++ and back doing almost nothing: the crossing alone",
+            scalar,
+            || {
+                seed =
+                    crossing::noop(consume(seed)).expect("linked: checked by CROSS_LANGUAGE_LINKED")
+            },
+        ));
+        consume(seed);
+    }
+
+    // --- 4 KiB: one crossing, a page of work behind it -----------------------
+    let payload: Vec<u8> = (0u32..4096)
+        .map(|byte| byte.wrapping_mul(2_654_435_761) as u8)
+        .collect();
+    measurements.push(measure(
+        "ffi.bulk_inlined",
+        "Hash 4 KiB, inlined Rust",
+        bulk,
+        || {
+            consume(inlined::digest(&payload));
+        },
+    ));
+    measurements.push(measure(
+        "ffi.bulk_opaque_rust",
+        "Hash 4 KiB behind a Rust call the optimizer will not inline",
+        bulk,
+        || {
+            consume(opaque::digest(&payload));
+        },
+    ));
+    if CROSS_LANGUAGE_LINKED {
+        measurements.push(measure(
+            "ffi.bulk_crossing",
+            "Hash 4 KiB in C++, the buffer passed as a pointer and a length",
+            bulk,
+            || {
+                consume(crossing::digest(&payload));
+            },
+        ));
+    }
+
+    measurements
+}
+
 /// The plan's slice stages this build actually measures.
 #[must_use]
 pub fn measured_stages() -> Vec<&'static str> {
@@ -1150,7 +1330,7 @@ pub fn measured_stages() -> Vec<&'static str> {
 /// benchmark that covered everything.
 #[must_use]
 pub fn unmeasured_stages() -> Vec<Unmeasured> {
-    vec![
+    let mut stages = vec![
         Unmeasured {
             name: "window",
             reason: "no windowing layer; ADR-0005",
@@ -1180,10 +1360,6 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
             reason: "no render loop exists to time",
         },
         Unmeasured {
-            name: "FFI overhead",
-            reason: "single-language build; nothing crosses a boundary",
-        },
-        Unmeasured {
             name: "incremental build",
             reason: "measured by the build system, not by this process",
         },
@@ -1191,7 +1367,20 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
             name: "debugging / tooling effort",
             reason: "qualitative; the plan scores it separately from timing",
         },
-    ]
+    ];
+
+    // Measured only when the C++ translation unit is linked in. Built without
+    // the `cpp` feature there is no second language, so the honest report is
+    // that the metric has no number -- not a Rust-to-Rust call wearing the
+    // label.
+    if !nexora_ffi_probe::CROSS_LANGUAGE_LINKED {
+        stages.push(Unmeasured {
+            name: "FFI overhead",
+            reason: "built without the `cpp` feature; no boundary is linked in",
+        });
+    }
+
+    stages
 }
 
 #[cfg(test)]

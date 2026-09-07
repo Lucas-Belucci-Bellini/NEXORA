@@ -29,6 +29,9 @@ members = [
     "engine/simulation",
     "engine/headless",
     "engine/benchmark",
+    # Not an engine crate: the only place `unsafe` is allowed, because measuring
+    # a language boundary means calling across one. ADR-0009.
+    "benchmarks/ffi-probe",
 ]
 
 [workspace.package]
@@ -47,6 +50,7 @@ nexora-entity = { path = "engine/entity", version = "0.0.1" }
 nexora-physics = { path = "engine/physics", version = "0.0.1" }
 nexora-streaming = { path = "engine/streaming", version = "0.0.1" }
 nexora-simulation = { path = "engine/simulation", version = "0.0.1" }
+nexora-ffi-probe = { path = "benchmarks/ffi-probe", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

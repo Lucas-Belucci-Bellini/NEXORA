@@ -36,6 +36,7 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+pub mod conformance;
 pub mod suites;
 
 /// What a measurement counts.

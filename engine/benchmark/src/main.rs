@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use nexora_benchmark::{
-    format_markdown, format_text, suites, Budget, Environment, Measurement, Report,
+    conformance, format_markdown, format_text, suites, Budget, Environment, Measurement, Report,
 };
 
 fn main() -> ExitCode {
@@ -19,6 +19,21 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if options.conformance {
+        return match conformance::digests() {
+            Ok(digests) => {
+                for digest in digests {
+                    println!("{}\t{:#018x}", digest.name, digest.value);
+                }
+                ExitCode::SUCCESS
+            }
+            Err(cause) => {
+                eprintln!("conformance failed: {cause}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     match run(&options) {
         Ok(report) => {
@@ -39,6 +54,7 @@ fn main() -> ExitCode {
 struct Options {
     markdown: bool,
     smoke: bool,
+    conformance: bool,
     scratch: PathBuf,
 }
 
@@ -48,6 +64,7 @@ fn usage() -> String {
      options:\n\
      \x20 --markdown     emit a Markdown table instead of plain text\n\
      \x20 --smoke        run a minimal pass, for CI rot detection\n\
+     \x20 --conformance  print kernel digests for cross-stack comparison\n\
      \x20 --scratch <p>  directory for temporary save files\n\
      \x20 --help         show this message"
         .to_owned()
@@ -57,6 +74,7 @@ fn parse_args() -> Result<Option<Options>, String> {
     let mut options = Options {
         markdown: false,
         smoke: false,
+        conformance: false,
         scratch: std::env::temp_dir().join("nexora-benchmark"),
     };
     let mut args = std::env::args().skip(1);
@@ -68,6 +86,7 @@ fn parse_args() -> Result<Option<Options>, String> {
                 return Ok(None);
             }
             "--markdown" => options.markdown = true,
+            "--conformance" => options.conformance = true,
             "--smoke" => options.smoke = true,
             "--scratch" => {
                 options.scratch = PathBuf::from(
@@ -113,6 +132,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::streaming(coarse)?);
     measurements.extend(suites::jobs(coarse)?);
     measurements.extend(suites::persistence(coarse, &options.scratch)?);
+    measurements.extend(suites::ffi(standard));
 
     Ok(Report {
         measurements,

@@ -79,6 +79,19 @@ jobs:
           ./target/release/nexora-benchmark --smoke \
             --scratch "${RUNNER_TEMP}/bench" > /dev/null
 
+      # STAGE: CROSS-STACK CONFORMANCE
+      # The C++ reference must agree with Rust on every digest before its
+      # timings mean anything, so the agreement is checked on every push rather
+      # than trusted from the day it was written. Timings are NOT gated here,
+      # for the same reason the benchmark harness is not: a shared runner's
+      # numbers would produce false failures. `--smoke` runs the full
+      # conformance check and only a token pass of the timing loops.
+      #
+      # ubuntu-latest ships both g++ and clang++, so this also exercises the
+      # two-compiler control that Appendix D exists because of.
+      - name: Cross-stack conformance (Rust vs C++)
+        run: ./scripts/compare-stacks.sh --smoke
+
       # A second run at a different worker count must produce an identical save.
       - name: Determinism smoke test
         run: |
