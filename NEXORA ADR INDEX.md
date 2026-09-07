@@ -66,3 +66,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0008](docs/adr/ADR-0008-streaming-decides-residency-and-a-backend-provides-it.md) | Streaming decide residência; um backend a executa | ACCEPTED |
 | [0009](docs/adr/ADR-0009-a-second-stack-measures-kernels-not-an-engine.md) | Uma segunda stack mede kernels, não um motor — e uma crate pode dizer `unsafe` | ACCEPTED |
 | [0010](docs/adr/ADR-0010-commands-are-intent-and-carry-their-own-authority.md) | Comandos são intenção, e a fronteira é imposta pelo grafo de crates | ACCEPTED |
+| [0011](docs/adr/ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md) | Cauda truncada é crash; corrupção não é, e cada uma tem sua resposta | ACCEPTED |

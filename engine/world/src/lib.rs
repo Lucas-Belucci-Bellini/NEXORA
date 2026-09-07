@@ -14,6 +14,7 @@
 
 pub mod chunk;
 pub mod persist;
+pub mod recovery;
 pub mod voxel;
 pub mod world;
 

@@ -66,8 +66,20 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   checkpoints são perdidas se o processo cair.
 - **RISK:** Médio. Cresce com o tamanho do mundo e com o intervalo de autosave.
 - **PROPOSED REMEDIATION:** Journal append-only por região, com replay no load.
+- **RESOLUTION (2026-09-07):** feito. `engine/persistence::journal` é um log
+  append-only com cada registro emoldurado e checksumado por si, e
+  `engine/world::recovery` decide o que um registro significa. A distinção que
+  faz o mecanismo valer: **escrita interrompida trunca, ela não reescreve** —
+  então cauda curta é *crash* (esperado, recupera o prefixo) e registro completo
+  com checksum errado é *corrupção* (barulhento, quarentena). O journal nomeia o
+  snapshot de que parte e recusa qualquer outro, que é a armadilha silenciosa:
+  os registros aplicariam limpos e produziriam um mundo que nunca existiu. Os
+  testes obrigatórios do `NEXORA SAVE FORMAT AND COMPATIBILITY.md` — "crash
+  durante save", "corrupção parcial", "recuperação de journal" — vivem em
+  `engine/world/tests/crash_recovery.rs`. Ver
+  [ADR-0011](docs/adr/ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md).
 - **TARGET STAGE:** Phase 3 (Persistence + Simulation)
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-09-07)
 
 ### DEBT-0002 — Mundo inteiro em uma seção de save
 
@@ -572,4 +584,52 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro assinante que precise reagir a um fato produzido por
   um comando.
 - **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0024 — Replay só alcança chunks residentes
+
+- **SYSTEM:** `engine/world::recovery::apply`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `World::set_block` exige chunk residente, então um registro
+  cujo chunk esta sessão ainda não carregou é reportado como `NotWritable` em
+  vez de aplicado. Honesto — o relatório diz exatamente o que ficou de fora —
+  mas incompleto: a recuperação vale só até onde o conjunto residente alcança.
+- **IMPACT:** um mundo que salvou com 25 colunas residentes e recarrega com 9
+  perde, no replay, as edições das 16 que faltam. Elas **não** somem: continuam
+  no journal e o relatório as lista. Mas ninguém as reaplica depois.
+- **RISK:** médio hoje (o slice recarrega o mesmo raio que salvou), e alto assim
+  que o carregamento passar a ser guiado por interesse em vez de por raio fixo —
+  aí o conjunto residente na recuperação quase nunca é o do save.
+- **PROPOSED REMEDIATION:** indexar os registros por coluna e reaplicar os
+  pendentes no momento em que cada chunk se torna residente, em vez de uma vez
+  só no load. O `WorldResidency` do ADR-0008 já é o ponto onde uma coluna entra.
+- **TRIGGER:** o primeiro load cujo conjunto residente difira do que escreveu o
+  journal — na prática, streaming dirigir o carregamento inicial.
+- **TARGET STAGE:** Phase 3
+- **STATUS:** OPEN
+
+### DEBT-0025 — O motor não escreve no journal ainda
+
+- **SYSTEM:** `engine/world`, `engine/headless`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o ADR-0011 construiu o formato, a gravação, o replay e a
+  recuperação, com testes que exercitam os três casos obrigatórios. O que não
+  fez foi ligar o `Journal` ao caminho de escrita do mundo: hoje quem journaliza
+  é o teste, não o motor. Isso foi deliberado — depurar um formato novo e um
+  ponto de chamada novo ao mesmo tempo é depurar dois de uma vez.
+- **IMPACT:** enquanto isto não for feito, a 1.0.0 do save continua sendo
+  "snapshot só" na prática, e o `DEBT-0001` estaria fechado no papel e aberto no
+  comportamento. É por isso que este débito existe em vez de o anterior ficar
+  entreaberto.
+- **RISK:** médio. O risco não é o mecanismo estar errado — está testado — e sim
+  alguém ler "journal implementado" e presumir durabilidade que o processo em
+  execução ainda não tem.
+- **PROPOSED REMEDIATION:** decidir a política de checkpoint (a cada quantos
+  ticks, ou a cada quantos bytes de journal) e emitir um `EditRecord` em
+  `World::set_block`, com `sync` na fronteira que o chamador considerar commit.
+  O custo de `sync` por edição precisa ser medido antes de escolher a política —
+  o harness já mede `save.write_atomic_disk` a 32 MiB/s.
+- **TRIGGER:** antes de qualquer afirmação de que o save sobrevive a uma queda
+  de processo no motor em execução.
+- **TARGET STAGE:** Phase 3
 - **STATUS:** OPEN

@@ -210,6 +210,43 @@ pipeline only ever shown accepting things has not been shown to refuse anything.
 The stage places a block and breaks it again, so the save stays byte-identical
 across worker counts and the determinism check keeps measuring determinism.
 
+## Crash recovery
+
+`NEXORA SAVE FORMAT AND COMPATIBILITY.md` defines recovery as
+`Snapshot + Journal → Recovery`. The snapshot half was built in Phase 0; the
+journal half is [ADR-0011](docs/adr/ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md),
+and it turns on one observation:
+
+> **A torn write truncates. It cannot produce a complete record whose contents
+> are wrong.**
+
+So a damaged journal has a knowable cause. Fewer bytes than the record claims
+means the process died mid-append — expected, recover the prefix, carry on. A
+*complete* record failing its checksum means storage returned different bytes
+than were written — that is never filed as a routine crash, because
+`NEXORA FAILURE AND RECOVERY ARCHITECTURE.md` says **"never hide a
+data-integrity failure."**
+
+Replay stops at the first damaged record either way and never resynchronises
+past it. Salvaging more would mean guessing where the next frame starts, and a
+wrong guess feeds garbage into a world *as if it were an edit*. Losing a
+journal's tail is bounded; a world with invented edits is not.
+
+A journal names the snapshot it continues from and refuses any other — the
+records would otherwise apply cleanly and produce a world that never existed.
+Edits are recorded by identifier rather than runtime id, so a block whose
+content is gone is reported as Missing Content instead of becoming whatever
+happens to hold that id today.
+
+`engine/world/tests/crash_recovery.rs` covers the save document's mandatory
+list: truncate a journal mid-record, flip a bit inside a complete one, replay
+the same journal twice and compare the saves byte-for-byte, quarantine a wrecked
+journal and show the snapshot still loads.
+
+**What this does not yet do:** the running engine does not write to the journal
+(`DEBT-0025`), and replay reaches only chunks that are resident (`DEBT-0024`).
+Both are recorded with triggers rather than implied to be finished.
+
 ## Originality
 
 NEXORA is an original project. It contains no code, assets, textures, models,

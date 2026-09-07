@@ -11,6 +11,8 @@
 
 pub mod codec;
 pub mod container;
+pub mod journal;
 
 pub use codec::{Reader, Writer};
 pub use container::{quarantine, SaveContainer};
+pub use journal::{Damage, Journal, Replay, SnapshotId};
