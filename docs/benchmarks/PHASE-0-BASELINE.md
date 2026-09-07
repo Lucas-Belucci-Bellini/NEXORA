@@ -675,6 +675,17 @@ the same seeded stream. The 1.8× was **GCC versus LLVM**, and Rust and clang++
 — which share a backend — land 3% apart. Timing against one compiler would have
 published a language finding that does not exist.
 
+**It reproduced on different hardware.** CI runs the same script on a GitHub
+4-vCPU runner, and the pattern held: **321.36 µs** Rust, **589.57 µs** g++,
+**322.28 µs** clang++ — g++ 1.83× slower again, Rust and clang++ 0.3% apart.
+Two machines, two orders of magnitude apart in the absolute numbers, same
+conclusion.
+
+The same run also shows the effect is not *directional*: on that runner
+`voxel.set_existing_state` was **6.5 ns** under g++ and **14.9 ns** under
+clang++ — the backends swap places. Whichever compiler happened to be chosen
+would have decided which language "won" that row.
+
 So the C++ side is now built by every compiler on the machine, and the table has
 three columns:
 

@@ -108,5 +108,7 @@ done
 
 echo
 echo "==> written to ${OUTPUT_DIR}"
-echo "    Read the two tables side by side, and read ADR-0009 before drawing a"
-echo "    conclusion from them: this compares KERNELS, not engines."
+echo "    Read the tables side by side, and read ADR-0009 before drawing a"
+echo "    conclusion from them: this compares KERNELS, not engines -- and where"
+echo "    two C++ builds disagree with each other by more than either disagrees"
+echo "    with Rust, that row is telling you about a compiler, not a language."
