@@ -12,6 +12,7 @@ dependencies = [
  "nexora-physics",
  "nexora-runtime",
  "nexora-simulation",
+ "nexora-streaming",
  "nexora-world",
 ]
 
@@ -37,6 +38,7 @@ dependencies = [
  "nexora-physics",
  "nexora-runtime",
  "nexora-simulation",
+ "nexora-streaming",
  "nexora-world",
 ]
 
@@ -68,7 +70,15 @@ dependencies = [
  "nexora-foundation",
  "nexora-physics",
  "nexora-runtime",
+ "nexora-streaming",
  "nexora-world",
+]
+
+[[package]]
+name = "nexora-streaming"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
 ]
 
 [[package]]
