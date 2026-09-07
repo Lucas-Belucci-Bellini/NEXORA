@@ -243,9 +243,30 @@ list: truncate a journal mid-record, flip a bit inside a complete one, replay
 the same journal twice and compare the saves byte-for-byte, quarantine a wrecked
 journal and show the snapshot still loads.
 
-**What this does not yet do:** the running engine does not write to the journal
-(`DEBT-0025`), and replay reaches only chunks that are resident (`DEBT-0024`).
-Both are recorded with triggers rather than implied to be finished.
+**The engine journals its own writes**, and the policy was measured before it
+was chosen ([Appendix E](docs/benchmarks/PHASE-0-BASELINE.md)):
+
+| | cost | per edit |
+| --- | ---: | ---: |
+| frame and checksum one edit | 672 ns | 672 ns |
+| make one edit durable (fsync) | 203 µs | **203 µs** |
+| 64 edits sharing one fsync | 293 µs | **4.6 µs** |
+
+An fsync is **303× an append**, and almost all of it is fixed cost. The slice
+makes 78 writes: per-edit durability would cost **15.8 ms**, most of a 60 Hz
+frame, against **203 µs** for one flush at a commit boundary. So `set_block`
+records every write, `sync_journal` commits, and `unsynced_edits` says exactly
+what a crash would cost right now.
+
+The journal lives *on* the world rather than wrapped around it, because a
+durability mechanism a caller can forget to use will be forgotten. The proof is
+that the command stage became journalled without its handlers knowing the
+journal exists — the slice reports `78 edits` for 76 block edits plus the
+command stage's 2 writes, then rebuilds itself from checkpoint + journal and
+re-checks all 76 probes.
+
+**What this still does not do:** replay reaches only chunks that are resident
+(`DEBT-0024`), recorded with a trigger rather than implied to be finished.
 
 ## Originality
 

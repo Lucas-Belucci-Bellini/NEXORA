@@ -411,3 +411,140 @@ fn an_edit_naming_content_this_build_does_not_have_is_reported_not_guessed() {
         Some(SkipReason::UnknownBlock(_))
     ));
 }
+
+// --- the engine's own write path ------------------------------------------
+//
+// Everything above journals by hand, which proves the mechanism. These prove
+// the *engine* uses it: `DEBT-0025`'s trigger is any claim that the save
+// survives a process crash in the running engine, and a test that journals for
+// the engine cannot support that claim.
+
+#[test]
+fn the_engine_journals_its_own_edits_without_being_asked() {
+    let scratch = Scratch::new("engine-writes");
+    let path = scratch.file("world.nxjr");
+
+    let mut live = world();
+    let (bytes, id) = snapshot(&live);
+    live.attach_journal(Journal::create(&path, id).expect("created"));
+
+    let state = live.block_id(&stone()).expect("registered");
+    let positions = [BlockPos::new(1, 201, 1), BlockPos::new(2, 201, 2)];
+    for position in positions {
+        // An ordinary write. Nothing here mentions the journal.
+        live.set_block(position, state).expect("written");
+    }
+    assert_eq!(live.unsynced_edits(), 2, "recorded, not yet durable");
+    live.sync_journal().expect("committed");
+    assert_eq!(live.unsynced_edits(), 0);
+    drop(live.detach_journal());
+
+    let mut recovered = reload(&bytes);
+    let replay = journal::replay(&path, id).expect("read");
+    let report = recovery::apply(&mut recovered, &replay).expect("applied");
+
+    assert_eq!(report.applied, 2);
+    for position in positions {
+        assert_ne!(recovered.get_block(position).expect("resident"), AIR);
+    }
+}
+
+#[test]
+fn a_crash_before_the_commit_boundary_costs_only_the_unsynced_tail() {
+    // The measured policy: append per edit (672 ns), fsync per commit boundary
+    // (203 us). This is what that trade actually costs when the process dies.
+    let scratch = Scratch::new("engine-crash");
+    let path = scratch.file("world.nxjr");
+
+    let mut live = world();
+    let (bytes, id) = snapshot(&live);
+    live.attach_journal(Journal::create(&path, id).expect("created"));
+
+    let state = live.block_id(&stone()).expect("registered");
+    let committed = [BlockPos::new(1, 201, 1), BlockPos::new(2, 201, 2)];
+    for position in committed {
+        live.set_block(position, state).expect("written");
+    }
+    live.sync_journal().expect("commit boundary");
+
+    // Edits after the boundary. The process dies before the next one.
+    let uncommitted = BlockPos::new(3, 201, 3);
+    live.set_block(uncommitted, state).expect("written");
+    assert_eq!(
+        live.unsynced_edits(),
+        1,
+        "the world can say what a crash would cost right now"
+    );
+    // Simulate the death: drop the handle without syncing, then cut whatever
+    // reached the file back to the last committed record.
+    drop(live.detach_journal());
+    let raw = fs::read(&path).expect("read");
+    let record_bytes = EditRecord::SetBlock {
+        position: uncommitted,
+        block: stone(),
+    }
+    .encode()
+    .len()
+        + 8;
+    fs::write(&path, &raw[..raw.len() - record_bytes]).expect("crash");
+
+    let mut recovered = reload(&bytes);
+    let replay = journal::replay(&path, id).expect("recoverable");
+    recovery::apply(&mut recovered, &replay).expect("applied");
+
+    for position in committed {
+        assert_ne!(
+            recovered.get_block(position).expect("resident"),
+            AIR,
+            "everything before the commit boundary survived"
+        );
+    }
+    assert_eq!(
+        recovered.get_block(uncommitted).expect("resident"),
+        AIR,
+        "and only the unsynced tail was lost"
+    );
+}
+
+#[test]
+fn an_unjournalled_world_writes_exactly_as_it_did_before() {
+    // Journalling is opt-in. A world with no journal must behave identically,
+    // or every existing caller pays for a feature it did not ask for.
+    let mut plain = world();
+    let state = plain.block_id(&stone()).expect("registered");
+    let position = BlockPos::new(1, 201, 1);
+
+    assert!(!plain.is_journalled());
+    plain.set_block(position, state).expect("written");
+    assert_eq!(plain.unsynced_edits(), 0);
+    // Syncing without a journal is a no-op rather than an error.
+    plain.sync_journal().expect("no journal, nothing to flush");
+    assert_ne!(plain.get_block(position).expect("resident"), AIR);
+}
+
+#[test]
+fn a_journalled_world_and_a_plain_one_reach_the_same_state() {
+    // The journal observes; it must not alter what the world becomes.
+    let scratch = Scratch::new("no-divergence");
+    let path = scratch.file("world.nxjr");
+
+    let mut plain = world();
+    let mut journalled = world();
+    let (_, id) = snapshot(&journalled);
+    journalled.attach_journal(Journal::create(&path, id).expect("created"));
+
+    let state = plain.block_id(&stone()).expect("registered");
+    for step in 0..12i64 {
+        let position = BlockPos::new(step, 201, step);
+        plain.set_block(position, state).expect("written");
+        journalled.set_block(position, state).expect("written");
+    }
+    journalled.sync_journal().expect("committed");
+    drop(journalled.detach_journal());
+
+    assert_eq!(
+        persist::save(&plain).expect("saved").encode(),
+        persist::save(&journalled).expect("saved").encode(),
+        "attaching a journal changed the world it produced"
+    );
+}

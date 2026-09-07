@@ -20,6 +20,7 @@ use nexora_foundation::spatial::WorldPosition;
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, SectionCoord};
 use nexora_foundation::time::CalendarConfig;
 use nexora_foundation::time::WorldDuration;
+use nexora_persistence::journal::{self, Journal, SnapshotId};
 use nexora_persistence::SaveContainer;
 use nexora_physics::body::BodyDescriptor;
 use nexora_physics::character::{CharacterController, MoveIntent};
@@ -455,6 +456,101 @@ pub fn persistence(budget: Budget, scratch: &Path) -> Result<Vec<Measurement>> {
             container.write_atomic(&path).expect("write");
         },
     ));
+
+    // --- journalling ---------------------------------------------------------
+    // `DEBT-0025` will not choose a durability policy without these. The
+    // question the numbers have to answer: can the engine afford to make every
+    // edit durable as it happens, or does durability have to be batched -- and
+    // if batched, what does a crash then cost?
+    {
+        /// A representative edit record: a tag, three coordinates and a block
+        /// identifier. Sized from what `EditRecord::SetBlock` actually encodes
+        /// rather than from a round number.
+        const EDIT_RECORD_BYTES: usize = 1 + 8 + 8 + 8 + 4 + "nexora:block/stone".len();
+
+        /// How many records one batched sync covers.
+        const BATCH_RECORDS: u32 = 64;
+
+        let record = vec![0xA5u8; EDIT_RECORD_BYTES];
+        let base = SnapshotId::of(0xBEEF, b"benchmark snapshot");
+
+        let append_path = scratch.join("bench-append.nxjr");
+        let mut appending = Journal::create(&append_path, base)?;
+        out.push(measure(
+            "journal.append_unsynced",
+            "Frame and checksum one edit record, without making it durable",
+            Budget {
+                iterations_per_sample: 2_000,
+                ..budget
+            },
+            || {
+                appending.append(&record).expect("append");
+            },
+        ));
+        drop(appending);
+
+        let durable_path = scratch.join("bench-durable.nxjr");
+        let mut durable = Journal::create(&durable_path, base)?;
+        out.push(measure(
+            "journal.append_durable",
+            "One edit record, fsynced before returning: durability per edit",
+            Budget {
+                iterations_per_sample: 20,
+                ..budget
+            },
+            || {
+                durable.append_durable(&record).expect("append");
+            },
+        ));
+        drop(durable);
+
+        // The middle ground: many appends, one flush. What a tick-scoped or
+        // batch-scoped commit would actually pay per edit.
+        let batched_path = scratch.join("bench-batched.nxjr");
+        let mut batched = Journal::create(&batched_path, base)?;
+        out.push(measure(
+            "journal.append_batched_sync",
+            "One edit record when 64 share a single fsync",
+            Budget {
+                iterations_per_sample: 20,
+                ..budget
+            },
+            || {
+                for _ in 0..BATCH_RECORDS {
+                    batched.append(&record).expect("append");
+                }
+                batched.sync().expect("sync");
+            },
+        ));
+        drop(batched);
+
+        // Replay cost decides whether a long journal is a problem on load.
+        let replay_path = scratch.join("bench-replay.nxjr");
+        let mut writing = Journal::create(&replay_path, base)?;
+        for _ in 0..10_000 {
+            writing.append(&record).expect("append");
+        }
+        writing.sync().expect("sync");
+        drop(writing);
+
+        out.push(measure(
+            "journal.replay_10k_records",
+            "Read back and verify a journal of 10,000 edit records",
+            Budget {
+                iterations_per_sample: 1,
+                ..budget
+            },
+            || {
+                consume(journal::replay(&replay_path, base).expect("replay").len());
+            },
+        ));
+
+        out.push(record_bytes(
+            "journal.record_bytes",
+            "Encoded size of one block edit, framing included",
+            (EDIT_RECORD_BYTES + 8) as u64,
+        ));
+    }
 
     out.push(measure_throughput(
         "save.read_disk",

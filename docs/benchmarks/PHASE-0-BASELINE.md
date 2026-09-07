@@ -793,3 +793,68 @@ and the FFI boundary the polyglot option depends on costs about 1.2 ns per
 crossing at its floor. **What still cannot be said:** which language the engine
 should be written in. `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves that for
 the completed benchmark, and it is not complete.
+
+---
+
+# Appendix E — what durability costs (2026-09-07, later run)
+
+`DEBT-0025` was written with a condition attached: *"o custo de `sync` por edição
+precisa ser medido antes de escolher a política."* This is that measurement, and
+the policy it justifies.
+
+## Finding 21 — an fsync is 303× an append, so durability has to be batched
+
+| measurement | median | rel. σ | per edit |
+| --- | ---: | ---: | ---: |
+| `journal.append_unsynced` | **672.1 ns** | 4.6% | 672 ns |
+| `journal.append_durable` | **203.42 µs** | 7.4% | **203 µs** |
+| `journal.append_batched_sync` (64 records, one flush) | **293.11 µs** | 19.3% | **4.6 µs** |
+| `journal.replay_10k_records` | **3.00 ms** | 0.9% | 300 ns |
+| `journal.record_bytes` | **55 B** | — | — |
+
+Framing and checksumming an edit is **672 ns** — cheap enough to do
+unconditionally on every write. Making that edit durable costs **203 µs**, which
+is **303× the append** and is almost entirely fixed cost: 64 records share one
+flush for 293 µs total, so the second record through the sixty-fourth cost
+**4.6 µs each** instead of 203.
+
+That ratio decides the design. The headless slice makes **78 writes**. At
+per-edit durability that is `78 × 203 µs ≈ 15.8 ms` — most of a 60 Hz frame,
+spent on fsync. One flush per commit boundary costs **203 µs, about 1.2% of that
+frame**, whatever the boundary holds.
+
+**The policy: append on every write, flush at a commit boundary the caller
+chooses.** `World::set_block` journals unconditionally; `World::sync_journal`
+makes it durable; `World::unsynced_edits` reports exactly what a crash would
+cost right now. The unsynced tail is the price, and ADR-0011's framing is what
+makes paying it safe — whatever reached storage is still recoverable, because
+each record checksums itself.
+
+Replay is not a constraint on the policy: **300 ns per record** means a journal
+of 10,000 edits costs 3 ms to read back, against **2.72 ms to generate a single
+chunk** (finding 15). A journal would have to be enormous before load time
+noticed it.
+
+## The fsync number is the least portable number in this document
+
+203 µs is what `sync_data` costs on **this container's storage**, which is
+virtualised and shared. On a consumer NVMe drive it is typically faster; on
+spinning rust or a network filesystem it can be one to two orders of magnitude
+slower. The *ratio* to an in-memory append is what the policy rests on, and that
+ratio only widens on slower storage — which strengthens the conclusion rather
+than weakening it. But anyone re-deriving a checkpoint interval for real
+hardware should re-measure rather than reuse 203 µs.
+
+## What the slice now proves
+
+The slice checkpoints the generated world **before** its first edit, opens a
+journal bound to that snapshot, and then never mentions journalling again: the
+78 writes that follow — 76 from the edit stage and 2 from the command stage —
+are recorded by `World::set_block` itself. At the save boundary it flushes once.
+
+Then it rebuilds the world from **checkpoint + journal** and re-checks every
+probe: `journal 78 edits, 76 probes recovered`. Both numbers matter. 78 is every
+write in the run, including the command handlers' — which never learned the
+journal exists, because the journal lives on the world rather than wrapped
+around it. 76 is every probe holding in a world that was reconstructed rather
+than loaded.

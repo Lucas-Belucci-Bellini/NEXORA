@@ -629,7 +629,22 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `World::set_block`, com `sync` na fronteira que o chamador considerar commit.
   O custo de `sync` por edição precisa ser medido antes de escolher a política —
   o harness já mede `save.write_atomic_disk` a 32 MiB/s.
+- **RESOLUTION (2026-09-07):** medido primeiro, decidido depois
+  ([Apêndice E](docs/benchmarks/PHASE-0-BASELINE.md), achado 21). Emoldurar e
+  checksumar uma edição custa **672 ns**; torná-la durável custa **203 µs** —
+  **303×**, e quase tudo custo fixo: 64 registros dividindo um flush saem a
+  **4,6 µs cada**. Com isso a política se escolhe sozinha: as 78 escritas do
+  slice custariam **15,8 ms** com fsync por edição (quase um quadro a 60 Hz) e
+  custam **203 µs** com um flush por fronteira de commit (1,2% do quadro).
+  Então `World::set_block` journaliza **sempre**, `World::sync_journal` torna
+  durável, e `World::unsynced_edits` diz exatamente quanto uma queda custaria
+  agora. A cauda não sincronizada é o preço, e o emolduramento do ADR-0011 é o
+  que torna seguro pagá-lo. O journal mora **no** `World`, não em volta dele:
+  mecanismo de durabilidade que o chamador pode esquecer de usar é mecanismo que
+  vai ser esquecido — prova disso é que o estágio de comandos passou a ser
+  journalizado sem que os handlers soubessem que o journal existe (78 = 76
+  edições + 2 comandos).
 - **TRIGGER:** antes de qualquer afirmação de que o save sobrevive a uma queda
   de processo no motor em execução.
 - **TARGET STAGE:** Phase 3
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-09-07)

@@ -408,3 +408,54 @@ fn commands_do_not_depend_on_the_worker_count_either() {
         "the command stage made the save depend on the worker count"
     );
 }
+
+#[test]
+fn the_slice_rebuilds_itself_from_checkpoint_plus_journal() {
+    // Snapshot + Journal -> Recovery, on this run's own data. The journal was
+    // written by `World::set_block` during the run, not by the test, so a pass
+    // is evidence about the engine rather than about the harness.
+    let scratch = Scratch::new("recovery");
+    let report = run_slice(&config(&scratch, "recovery")).expect("the slice runs");
+
+    assert!(report.journal_edits > 0, "nothing was journalled");
+    assert_eq!(
+        report.recovered_probes, report.probes_verified,
+        "recovery did not reproduce everything the save contains"
+    );
+}
+
+#[test]
+fn every_write_in_the_run_is_journalled_including_the_commands() {
+    // The command stage places a block and breaks it again. Those are two
+    // writes through the same `set_block` path as the edit stage, so they must
+    // appear in the journal without the command handlers knowing it exists.
+    let scratch = Scratch::new("journal-covers-commands");
+    let report = run_slice(&config(&scratch, "journal-covers-commands")).expect("the slice runs");
+
+    assert_eq!(
+        report.journal_edits as usize,
+        report.blocks_edited + report.commands_accepted,
+        "the journal missed a write that changed the world"
+    );
+}
+
+#[test]
+fn journalling_does_not_depend_on_the_worker_count_either() {
+    let scratch = Scratch::new("journal-determinism");
+
+    let mut single = config(&scratch, "jr-a");
+    single.worker_threads = 1;
+    let single = run_slice(&single).expect("the slice runs at one thread");
+
+    let mut many = config(&scratch, "jr-b");
+    many.worker_threads = 8;
+    let many = run_slice(&many).expect("the slice runs at eight threads");
+
+    assert_eq!(single.journal_edits, many.journal_edits);
+    assert_eq!(single.recovered_probes, many.recovered_probes);
+    assert_eq!(
+        std::fs::read(scratch.save("jr-a")).expect("save a"),
+        std::fs::read(scratch.save("jr-b")).expect("save b"),
+        "journalling made the save depend on the worker count"
+    );
+}

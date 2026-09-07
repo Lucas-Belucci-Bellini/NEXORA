@@ -104,9 +104,9 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Contract | Defined | Built | Where |
 | --- | :---: | :---: | --- |
 | Save compatibility | [x] | [x] | `foundation::version`, ADR-0004 |
-| Crash / recovery strategy | [x] | [~] | detect, quarantine, atomic write **and journal recovery** are built and tested against the mandatory crash/corruption cases (ADR-0011); the running engine does not write to the journal yet (DEBT-0025), and replay reaches only resident chunks (DEBT-0024) |
+| Crash / recovery strategy | [x] | [~] | detect, quarantine, atomic write and journal recovery are built and tested against the mandatory crash/corruption cases (ADR-0011); **the engine journals its own writes** and the slice rebuilds itself from checkpoint + journal, on a policy measured rather than guessed (Appendix E: an fsync is 303× an append); replay still reaches only resident chunks (DEBT-0024) |
 | Observability | [x] | [x] | `foundation::diagnostics` |
-| Testing strategy | [x] | [x] | 593 tests; unit, integration, property, determinism, corruption, plus 12 cross-stack conformance digests |
+| Testing strategy | [x] | [x] | 600 tests; unit, integration, property, determinism, corruption, plus 12 cross-stack conformance digests |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
 | Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — the GPU stages cannot run here and no engine-scale comparison exists (DEBT-0008, ADR-0009) |
 
