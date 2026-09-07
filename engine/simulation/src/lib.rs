@@ -15,6 +15,8 @@
 //! not depend on `nexora-physics`. Neither can, because the dependency is not
 //! declared — Cargo enforces the layering rather than a reviewer noticing it.
 
+pub mod residency;
 pub mod terrain;
 
+pub use residency::{RetainedChunks, WorldResidency};
 pub use terrain::{PhysicsModule, WorldVoxels};

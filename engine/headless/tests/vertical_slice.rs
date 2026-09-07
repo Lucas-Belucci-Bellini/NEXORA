@@ -131,6 +131,80 @@ fn the_module_graph_orders_physics_after_the_world() {
 }
 
 #[test]
+fn the_streaming_stage_evicts_and_restores_without_losing_an_edit() {
+    // The invariant of WORLD CONTINUITY AND PLAYER INDEPENDENCE.md §18, checked
+    // rather than asserted: the observer walks away, the edited region is
+    // evicted, and the probes still verify after the save and reload.
+    let scratch = Scratch::new("streaming");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+
+    assert!(report.streaming_ticks > 0);
+    assert!(
+        report.streaming_evicted > 0,
+        "nothing was ever evicted, so eviction was never exercised"
+    );
+    assert!(
+        report.streaming_generated > 0,
+        "the walk never left the region the slice had already generated"
+    );
+    // The slice edits every column it generated, so retention holds all of
+    // them and nothing else: the chunks the walk generated along the way are
+    // regenerable and are dropped rather than kept.
+    assert_eq!(
+        report.streaming_retained_peak, report.chunks_generated,
+        "retention should hold exactly the edited columns"
+    );
+    assert!(
+        report.streaming_generated as usize > report.chunks_generated,
+        "the walk generated fewer columns than it evicted, which cannot happen"
+    );
+    assert!(
+        report.streaming_restored > 0,
+        "walking back did not restore anything"
+    );
+    // And the payoff: every probe still reads correctly after the round trip.
+    assert_eq!(report.probes_verified, report.blocks_edited);
+}
+
+#[test]
+fn streaming_leaves_the_resident_set_it_found() {
+    // The observer ends where it started, so the save has to contain the same
+    // chunks it would have without any streaming at all. A drop here would mean
+    // a clean chunk was evicted and never regenerated.
+    let scratch = Scratch::new("streaming-set");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+    assert_eq!(report.chunks_generated, 9);
+    assert!(report.save_bytes > 0);
+}
+
+#[test]
+fn streaming_does_not_depend_on_the_worker_count_either() {
+    let scratch = Scratch::new("streaming-threads");
+    let single = run_slice(&SliceConfig {
+        seed: 5_150,
+        worker_threads: 1,
+        ..config(&scratch, "one.nxsv")
+    })
+    .expect("single-threaded run");
+    let many = run_slice(&SliceConfig {
+        seed: 5_150,
+        worker_threads: 8,
+        ..config(&scratch, "many.nxsv")
+    })
+    .expect("multi-threaded run");
+
+    assert_eq!(single.streaming_ticks, many.streaming_ticks);
+    assert_eq!(single.streaming_generated, many.streaming_generated);
+    assert_eq!(single.streaming_evicted, many.streaming_evicted);
+    assert_eq!(single.streaming_retained_peak, many.streaming_retained_peak);
+    assert_eq!(
+        fs::read(scratch.save("one.nxsv")).expect("read"),
+        fs::read(scratch.save("many.nxsv")).expect("read"),
+        "streaming must not change what the world saves"
+    );
+}
+
+#[test]
 fn a_headless_run_never_enters_presentation() {
     let scratch = Scratch::new("phases");
     let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
@@ -274,6 +348,8 @@ fn the_report_renders_every_field() {
         "physics bodies",
         "physics substeps",
         "character drop",
+        "streaming ticks",
+        "chunks retained",
         "probes verified",
         "lifecycle phases",
     ] {
