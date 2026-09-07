@@ -29,7 +29,13 @@ use nexora_physics::step::FixedStep;
 use nexora_physics::voxel::FlatGround;
 use nexora_physics::world::PhysicsWorld;
 use nexora_runtime::jobs::{JobSystem, Priority};
-use nexora_simulation::WorldVoxels;
+use nexora_simulation::{RetainedChunks, WorldResidency, WorldVoxels};
+use nexora_streaming::backend::{MemoryBackend, ResidencyBackend};
+use nexora_streaming::budget::StreamingBudget;
+use nexora_streaming::interest::{InterestId, InterestSource, LodRadii};
+use nexora_streaming::lod::Lod;
+use nexora_streaming::system::StreamingSystem;
+use nexora_streaming::target::StreamTarget;
 use nexora_world::persist;
 use nexora_world::voxel::{BlockStateId, Section, AIR};
 use nexora_world::world::{World, WorldDescriptor};
@@ -889,6 +895,219 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
     Ok(out)
 }
 
+/// Streaming: the "streaming" stage of the plan's vertical slice.
+///
+/// Measured as a **pair**, the same way physics is: the manager deciding what
+/// should be resident, against the world actually making it so. Deciding runs
+/// every tick whether or not anything moves; making it so runs only when
+/// something changes. A single combined number would hide which of the two a
+/// budget has to be sized around.
+///
+/// # Errors
+///
+/// Returns an error when a benchmark world or streaming configuration cannot be
+/// built.
+pub fn streaming(budget: Budget) -> Result<Vec<Measurement>> {
+    const TILE: u64 = 1_024;
+
+    let radii = |reach: u32| LodRadii::new(reach, reach, reach, 0);
+    let settled = |reach: u32| -> Result<(StreamingSystem, MemoryBackend)> {
+        let mut system = StreamingSystem::new();
+        let mut backend = MemoryBackend::new(TILE);
+        system.set_interest(
+            InterestSource::new(InterestId(1), ChunkCoord::new(0, 0)).with_radii(radii(reach)?),
+        )?;
+        for _ in 0..64 {
+            if system
+                .tick(&mut backend, StreamingBudget::UNLIMITED)?
+                .is_quiet()
+            {
+                break;
+            }
+        }
+        Ok((system, backend))
+    };
+
+    let mut out = Vec::new();
+
+    // The floor: what a tick costs when nothing has moved. This runs every
+    // frame of every session, so it is the number a frame budget cares about.
+    let (mut idle, mut idle_backend) = settled(3)?;
+    out.push(measure(
+        "streaming.idle_tick_r3",
+        "A tick with nothing to do, 7x7 columns of interest: pure decision cost",
+        Budget {
+            iterations_per_sample: 2_000,
+            ..budget
+        },
+        || {
+            consume(
+                idle.tick(&mut idle_backend, StreamingBudget::UNLIMITED)
+                    .expect("valid budget")
+                    .resident,
+            );
+        },
+    ));
+
+    // The same tick over a much larger interest area. Candidate enumeration is
+    // the square of the radius, and this is where that stops being free.
+    let (mut wide, mut wide_backend) = settled(12)?;
+    out.push(measure(
+        "streaming.idle_tick_r12",
+        "The same idle tick over 25x25 columns: how decision cost scales with radius",
+        Budget {
+            iterations_per_sample: 200,
+            ..budget
+        },
+        || {
+            consume(
+                wide.tick(&mut wide_backend, StreamingBudget::UNLIMITED)
+                    .expect("valid budget")
+                    .resident,
+            );
+        },
+    ));
+
+    // Movement: one chunk of travel per tick, which is what a sprinting player
+    // actually produces.
+    let (mut walking, mut walk_backend) = settled(3)?;
+    let mut step = 0i64;
+    out.push(measure(
+        "streaming.walk_one_chunk",
+        "A tick after the observer moves one column: decide, load the new ring, release the old",
+        Budget {
+            iterations_per_sample: 500,
+            ..budget
+        },
+        || {
+            step += 1;
+            walking
+                .set_interest(
+                    InterestSource::new(InterestId(1), ChunkCoord::new(step, 0))
+                        .with_radii(LodRadii::new(3, 3, 3, 0).expect("valid")),
+                )
+                .expect("existing source");
+            consume(
+                walking
+                    .tick(&mut walk_backend, StreamingBudget::UNLIMITED)
+                    .expect("valid budget")
+                    .activated,
+            );
+        },
+    ));
+
+    // Fast travel: the whole resident set is replaced at once.
+    let (mut travelling, mut travel_backend) = settled(3)?;
+    let mut destination = 0i64;
+    out.push(measure(
+        "streaming.fast_travel_r3",
+        "Teleport and settle: release 49 columns and take 49 more, decision side only",
+        Budget {
+            iterations_per_sample: 100,
+            ..budget
+        },
+        || {
+            destination += 1_000;
+            travelling
+                .set_interest(
+                    InterestSource::new(InterestId(1), ChunkCoord::new(destination, destination))
+                        .with_radii(LodRadii::new(3, 3, 3, 0).expect("valid")),
+                )
+                .expect("existing source");
+            for _ in 0..8 {
+                if travelling
+                    .tick(&mut travel_backend, StreamingBudget::UNLIMITED)
+                    .expect("valid budget")
+                    .is_quiet()
+                {
+                    break;
+                }
+            }
+            consume(travelling.resident_count());
+        },
+    ));
+
+    // The other half of the pair: what residency actually costs against a real
+    // world. Generation dominates, which is the point of measuring it apart
+    // from the decision.
+    let mut world = bench_world(32)?;
+    let mut retained = RetainedChunks::new();
+    let generated_target = StreamTarget::Chunk(ChunkCoord::new(64, 64));
+    out.push(measure(
+        "streaming.chunk_generate_cycle",
+        "Activate a fresh column and drop it again: the cost of an unedited chunk",
+        Budget {
+            iterations_per_sample: 4,
+            ..budget
+        },
+        || {
+            let mut backend = WorldResidency::new(&mut world, &mut retained);
+            consume(
+                backend
+                    .activate(generated_target, Lod::Full)
+                    .expect("generated"),
+            );
+            backend.evict(generated_target).expect("evicted");
+        },
+    ));
+
+    // The same cycle for a column that has been edited, so it is restored from
+    // retention rather than regenerated. This is what retention buys.
+    let mut edited_world = bench_world(32)?;
+    let mut edited_retained = RetainedChunks::new();
+    let edited_target = StreamTarget::Chunk(ChunkCoord::new(-64, -64));
+    {
+        let mut backend = WorldResidency::new(&mut edited_world, &mut edited_retained);
+        backend.activate(edited_target, Lod::Full)?;
+    }
+    let stone = edited_world.block_id(&Identifier::parse("nexora:block/stone")?)?;
+    edited_world.set_block(BlockPos::new(-2_040, 300, -2_040), stone)?;
+    out.push(measure(
+        "streaming.chunk_retained_cycle",
+        "Persist, drop and restore an edited column: retention instead of regeneration",
+        Budget {
+            iterations_per_sample: 200,
+            ..budget
+        },
+        || {
+            let mut backend = WorldResidency::new(&mut edited_world, &mut edited_retained);
+            backend.persist(edited_target).expect("persisted");
+            backend.evict(edited_target).expect("evicted");
+            consume(
+                backend
+                    .activate(edited_target, Lod::Full)
+                    .expect("restored"),
+            );
+        },
+    ));
+
+    // Sample while the column is actually held. The cycle above ends with a
+    // restore, so reading the store straight after it reports zero bytes for
+    // something that plainly occupies memory.
+    {
+        let mut backend = WorldResidency::new(&mut edited_world, &mut edited_retained);
+        backend.persist(edited_target)?;
+        backend.evict(edited_target)?;
+    }
+    let retained_bytes = edited_retained.storage_bytes() as u64;
+    debug_assert!(
+        retained_bytes > 0,
+        "an evicted edited column cannot occupy nothing"
+    );
+    out.push(record_bytes(
+        "streaming.retained_bytes_per_chunk",
+        "Memory an edited column occupies while it is evicted",
+        retained_bytes,
+    ));
+    out.push(record_quantity(
+        "streaming.columns_of_interest_r12",
+        "Columns a radius-12 observer makes the manager consider every tick",
+        25 * 25,
+    ));
+
+    Ok(out)
+}
+
 /// The vertical slice of `NEXORA TECHNOLOGY BENCHMARK PLAN.md`, verbatim.
 ///
 /// Every stage must appear in exactly one of [`measured_stages`] and
@@ -919,6 +1138,7 @@ pub fn measured_stages() -> Vec<&'static str> {
         "1,000 entities",
         "physics",
         "jobs",
+        "streaming",
         "save/load",
         "headless server",
     ]
@@ -950,10 +1170,6 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
         Unmeasured {
             name: "mesh generation",
             reason: "no renderer to consume a mesh",
-        },
-        Unmeasured {
-            name: "streaming",
-            reason: "chunks are loaded explicitly, no streaming manager",
         },
         Unmeasured {
             name: "mod boundary",
@@ -1040,6 +1256,7 @@ mod tests {
         assert!(!startup(budget).expect("startup").is_empty());
         assert!(!entities(budget).expect("entities").is_empty());
         assert!(!physics(budget).expect("physics").is_empty());
+        assert!(!streaming(budget).expect("streaming").is_empty());
 
         let _ = std::fs::remove_dir_all(&scratch);
     }
