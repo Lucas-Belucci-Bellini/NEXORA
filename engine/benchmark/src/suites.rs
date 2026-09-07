@@ -19,7 +19,17 @@ use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, SectionCoord}
 use nexora_foundation::time::CalendarConfig;
 use nexora_foundation::time::WorldDuration;
 use nexora_persistence::SaveContainer;
+use nexora_physics::body::BodyDescriptor;
+use nexora_physics::character::{CharacterController, MoveIntent};
+use nexora_physics::collision::{depenetrate, resolve};
+use nexora_physics::gravity::GravityField;
+use nexora_physics::math::{Aabb, Vec3};
+use nexora_physics::query::raycast;
+use nexora_physics::step::FixedStep;
+use nexora_physics::voxel::FlatGround;
+use nexora_physics::world::PhysicsWorld;
 use nexora_runtime::jobs::{JobSystem, Priority};
+use nexora_simulation::WorldVoxels;
 use nexora_world::persist;
 use nexora_world::voxel::{BlockStateId, Section, AIR};
 use nexora_world::world::{World, WorldDescriptor};
@@ -680,6 +690,240 @@ pub fn startup(budget: Budget) -> Result<Vec<Measurement>> {
     )])
 }
 
+/// Physics: the "physics" stage of the plan's vertical slice.
+///
+/// Measured against **generated terrain**, not a flat fixture. A flat floor
+/// answers every collision query out of one uniform section, which would make
+/// the voxel lookup look free — the opposite of what the gate needs to know.
+/// The flat case is measured too, as a deliberate pair: the difference between
+/// them is the cost of the world lookup, and without both numbers a slow result
+/// cannot be attributed to either half.
+///
+/// # Errors
+///
+/// Returns an error when the benchmark world or a physics world cannot be built.
+pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
+    const POPULATION: usize = 1_000;
+    const TICKS_PER_SECOND: u32 = 20;
+    const SUBSTEP: f64 = 1.0 / 60.0;
+
+    let world = populated_world()?;
+    let voxels = WorldVoxels::new(&world);
+    let surface = world.surface_height(4, 4);
+    let flat = FlatGround::at(0);
+    // Large enough to hold every body the suite spawns, so that re-waking is
+    // not itself measuring a region test that missed.
+    let everywhere = Aabb::new(Vec3::splat(-4_000.0), Vec3::splat(4_000.0))
+        .expect("a region large enough for the whole population");
+
+    let mut out = Vec::new();
+
+    // One character: the case that carries the whole control path — gravity,
+    // sweeps on three axes, step-up, the ground probe and friction.
+    let mut single = PhysicsWorld::earthlike(TICKS_PER_SECOND)?;
+    let character =
+        single.spawn(BodyDescriptor::character().at(Vec3::new(4.5, (surface + 3) as f64, 4.5)))?;
+    let controller = CharacterController::new(character);
+    out.push(measure(
+        "physics.character_step",
+        "One character substep on generated terrain: gravity, sweep, ground, friction",
+        Budget {
+            iterations_per_sample: 2_000,
+            ..budget
+        },
+        || {
+            controller
+                .apply(&mut single, MoveIntent::walking(Vec3::new(1.0, 0.0, 0.3)))
+                .expect("live body");
+            consume(single.step_once(&voxels, SUBSTEP).contacts);
+        },
+    ));
+
+    // A thousand bodies: the plan's own stress figure. Sleeping is deliberately
+    // defeated by re-waking them, so this is the cost of simulating a thousand
+    // bodies rather than the cost of skipping them.
+    let mut crowd = PhysicsWorld::earthlike(TICKS_PER_SECOND)?;
+    for index in 0..POPULATION {
+        let x = (index % 30) as i64;
+        let z = (index / 30) as i64;
+        crowd.spawn(BodyDescriptor::dynamic().at(Vec3::new(
+            x as f64 + 0.5,
+            (world.surface_height(x, z) + 4) as f64,
+            z as f64 + 0.5,
+        )))?;
+    }
+    out.push(measure(
+        "physics.thousand_bodies_step",
+        "One substep of 1,000 awake dynamic bodies against generated terrain",
+        Budget {
+            iterations_per_sample: 4,
+            ..budget
+        },
+        || {
+            crowd.wake_in(everywhere);
+            consume(crowd.step_once(&voxels, SUBSTEP).simulated);
+        },
+    ));
+
+    let mut flat_crowd = PhysicsWorld::earthlike(TICKS_PER_SECOND)?;
+    for index in 0..POPULATION {
+        flat_crowd.spawn(BodyDescriptor::dynamic().at(Vec3::new(
+            (index % 30) as f64 + 0.5,
+            4.0 + (index / 30) as f64,
+            (index / 30) as f64 + 0.5,
+        )))?;
+    }
+    out.push(measure(
+        "physics.thousand_bodies_step_flat",
+        "The same substep against a flat fixture: the solver without the world lookup",
+        Budget {
+            iterations_per_sample: 4,
+            ..budget
+        },
+        || {
+            flat_crowd.wake_in(everywhere);
+            consume(flat_crowd.step_once(&flat, SUBSTEP).simulated);
+        },
+    ));
+
+    // The primitive underneath all of it.
+    let body_box = Aabb::from_center(
+        Vec3::new(4.5, (surface + 3) as f64, 4.5),
+        Vec3::new(0.3, 0.9, 0.3),
+    )
+    .expect("valid body box");
+    out.push(measure(
+        "physics.box_sweep",
+        "Resolve one box move on three axes against generated terrain",
+        Budget {
+            iterations_per_sample: 5_000,
+            ..budget
+        },
+        || {
+            consume(
+                resolve(&voxels, body_box, Vec3::new(0.07, -0.16, 0.07))
+                    .applied
+                    .y,
+            );
+        },
+    ));
+
+    out.push(measure(
+        "physics.depenetration_check",
+        "The per-body test for having started inside terrain, when it has not",
+        Budget {
+            iterations_per_sample: 10_000,
+            ..budget
+        },
+        || {
+            consume(depenetrate(&voxels, body_box).is_some());
+        },
+    ));
+
+    // The query every tool, cursor and AI obstacle check runs.
+    let ray_origin = Vec3::new(4.5, (surface + 40) as f64, 4.5);
+    out.push(measure(
+        "physics.raycast_40m",
+        "Walk a 40 m ray down through generated terrain until it hits",
+        Budget {
+            iterations_per_sample: 5_000,
+            ..budget
+        },
+        || {
+            consume(
+                raycast(&voxels, ray_origin, Vec3::new(0.0, -1.0, 0.0), 60.0).map(|hit| hit.cell.y),
+            );
+        },
+    ));
+
+    // The accumulator every one of the above runs behind.
+    let mut accumulator = FixedStep::per_second(TICKS_PER_SECOND)?;
+    out.push(measure(
+        "physics.timestep_accumulate",
+        "Fold one world tick into the fixed-step accumulator",
+        Budget {
+            iterations_per_sample: 20_000,
+            ..budget
+        },
+        || {
+            consume(
+                accumulator
+                    .accumulate(WorldDuration::from_ticks(1))
+                    .substeps,
+            );
+        },
+    ));
+
+    // What sleeping is worth: the same population, settled.
+    let mut settled = PhysicsWorld::new(
+        GravityField::earthlike(),
+        FixedStep::per_second(TICKS_PER_SECOND)?,
+    );
+    for index in 0..POPULATION {
+        settled.spawn(BodyDescriptor::dynamic().at(Vec3::new(
+            (index % 30) as f64 + 0.5,
+            4.0,
+            (index / 30) as f64 + 0.5,
+        )))?;
+    }
+    for _ in 0..600 {
+        settled.step_once(&flat, SUBSTEP);
+    }
+    out.push(record_quantity(
+        "physics.sleeping_bodies_of_1000",
+        "Bodies asleep after ten seconds: what sleeping actually saves",
+        (settled.len() - settled.awake_count()) as u64,
+    ));
+    out.push(measure(
+        "physics.thousand_sleeping_step",
+        "One substep with the same 1,000 bodies asleep",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        || {
+            consume(settled.step_once(&flat, SUBSTEP).simulated);
+        },
+    ));
+
+    Ok(out)
+}
+
+/// The vertical slice of `NEXORA TECHNOLOGY BENCHMARK PLAN.md`, verbatim.
+///
+/// Every stage must appear in exactly one of [`measured_stages`] and
+/// [`unmeasured_stages`]. Keeping the plan's own list here is what makes that
+/// checkable: a stage that becomes measurable and is not moved leaves the two
+/// lists overlapping, and the test below fails.
+pub const PLAN_SLICE_STAGES: [&str; 13] = [
+    "window",
+    "input",
+    "RHI",
+    "camera",
+    "16³ voxel chunk",
+    "mesh generation",
+    "1,000 entities",
+    "physics",
+    "jobs",
+    "streaming",
+    "save/load",
+    "headless server",
+    "mod boundary",
+];
+
+/// The plan's slice stages this build actually measures.
+#[must_use]
+pub fn measured_stages() -> Vec<&'static str> {
+    vec![
+        "16³ voxel chunk",
+        "1,000 entities",
+        "physics",
+        "jobs",
+        "save/load",
+        "headless server",
+    ]
+}
+
 /// The stages of the plan's vertical slice that Phase 0 cannot measure.
 ///
 /// Listed rather than skipped: a benchmark table with silent gaps reads as a
@@ -706,14 +950,6 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
         Unmeasured {
             name: "mesh generation",
             reason: "no renderer to consume a mesh",
-        },
-        Unmeasured {
-            name: "1,000 entities",
-            reason: "entity system not implemented; ADR-0005",
-        },
-        Unmeasured {
-            name: "physics",
-            reason: "depends on entities",
         },
         Unmeasured {
             name: "streaming",
@@ -803,27 +1039,41 @@ mod tests {
             .is_empty());
         assert!(!startup(budget).expect("startup").is_empty());
         assert!(!entities(budget).expect("entities").is_empty());
+        assert!(!physics(budget).expect("physics").is_empty());
 
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
     #[test]
-    fn the_unmeasured_list_covers_every_missing_slice_stage() {
-        let stages = unmeasured_stages();
-        for expected in [
-            "window",
-            "RHI",
-            "mesh generation",
-            "1,000 entities",
-            "physics",
-            "streaming",
-        ] {
+    fn every_plan_stage_is_either_measured_or_declared_missing_and_never_both() {
+        // This is the check that would have caught "1,000 entities" being left
+        // in the unmeasured list after the entity suite started measuring it:
+        // the report claimed the stage was missing on the same page it printed
+        // numbers for it.
+        let measured = measured_stages();
+        let unmeasured = unmeasured_stages();
+
+        for stage in PLAN_SLICE_STAGES {
+            let is_measured = measured.contains(&stage);
+            let is_declared = unmeasured.iter().any(|entry| entry.name == stage);
             assert!(
-                stages.iter().any(|entry| entry.name == expected),
-                "the plan's `{expected}` stage is neither measured nor declared missing"
+                is_measured || is_declared,
+                "the plan's `{stage}` stage is neither measured nor declared missing"
+            );
+            assert!(
+                !(is_measured && is_declared),
+                "the plan's `{stage}` stage is both measured and declared missing"
             );
         }
+
+        for stage in &measured {
+            assert!(
+                PLAN_SLICE_STAGES.contains(stage),
+                "`{stage}` is claimed as measured but is not a stage of the plan"
+            );
+        }
+
         // Every gap must carry a reason; an empty one is a silent omission.
-        assert!(stages.iter().all(|entry| !entry.reason.is_empty()));
+        assert!(unmeasured.iter().all(|entry| !entry.reason.is_empty()));
     }
 }

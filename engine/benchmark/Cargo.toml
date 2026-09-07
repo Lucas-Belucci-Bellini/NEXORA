@@ -21,6 +21,8 @@ nexora-runtime.workspace = true
 nexora-persistence.workspace = true
 nexora-world.workspace = true
 nexora-entity.workspace = true
+nexora-physics.workspace = true
+nexora-simulation.workspace = true
 
 [lints]
 workspace = true

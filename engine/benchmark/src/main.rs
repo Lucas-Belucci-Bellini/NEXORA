@@ -109,6 +109,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::voxel(standard)?);
     measurements.extend(suites::worldgen(coarse)?);
     measurements.extend(suites::entities(coarse)?);
+    measurements.extend(suites::physics(coarse)?);
     measurements.extend(suites::jobs(coarse)?);
     measurements.extend(suites::persistence(coarse, &options.scratch)?);
 
