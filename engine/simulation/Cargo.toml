@@ -1,0 +1,21 @@
+[package]
+name = "nexora-simulation"
+description = "NEXORA simulation layer: the composition point where the voxel world meets physics."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Simulation layer per NEXORA DEPENDENCY MATRIX.md: "Simulation | World, Data
+# Runtime, Jobs". This is the only crate allowed to know about both the world
+# and physics, which is what keeps `nexora-physics` free of world concepts and
+# `nexora-world` free of physics ones.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+nexora-world.workspace = true
+nexora-physics.workspace = true
+
+[lints]
+workspace = true

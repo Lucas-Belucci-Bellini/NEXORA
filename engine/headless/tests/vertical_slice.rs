@@ -66,6 +66,71 @@ fn the_slice_completes_and_verifies_itself() {
 }
 
 #[test]
+fn the_physics_stage_lands_everything_it_dropped() {
+    // The claim the stage exists to check: the solver and the *generated*
+    // world agree about where the ground is. A flat test fixture cannot show
+    // that, because a flat fixture is not what the generator produces.
+    let scratch = Scratch::new("physics");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+
+    assert_eq!(
+        report.physics_settled,
+        report.physics_bodies,
+        "{} of {} bodies never came to rest",
+        report.physics_bodies - report.physics_settled,
+        report.physics_bodies
+    );
+    assert!(report.physics_substeps > 0);
+    assert!(
+        report.physics_contacts > 0,
+        "nothing ever touched the ground"
+    );
+    assert!(
+        report.physics_drop_cm > 0,
+        "the character did not fall at all: it was spawned on the ground rather \
+         than having to find it"
+    );
+}
+
+#[test]
+fn physics_does_not_depend_on_the_worker_count_either() {
+    // Physics runs after generation and must not disturb the save. If it wrote
+    // to the world, or read it in a scheduling-dependent way, the two saves
+    // would differ and the determinism guarantee would be gone.
+    let scratch = Scratch::new("physics-threads");
+    let single = run_slice(&SliceConfig {
+        seed: 4_242,
+        worker_threads: 1,
+        ..config(&scratch, "one.nxsv")
+    })
+    .expect("single-threaded run");
+    let many = run_slice(&SliceConfig {
+        seed: 4_242,
+        worker_threads: 8,
+        ..config(&scratch, "many.nxsv")
+    })
+    .expect("multi-threaded run");
+
+    assert_eq!(single.physics_drop_cm, many.physics_drop_cm);
+    assert_eq!(single.physics_contacts, many.physics_contacts);
+    assert_eq!(single.physics_settled, many.physics_settled);
+    assert_eq!(
+        fs::read(scratch.save("one.nxsv")).expect("read"),
+        fs::read(scratch.save("many.nxsv")).expect("read"),
+        "the physics stage must leave the world untouched"
+    );
+}
+
+#[test]
+fn the_module_graph_orders_physics_after_the_world() {
+    let scratch = Scratch::new("module-order");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+    // The slice would have failed to resolve if the edge were missing; this
+    // records that the run really did get past module resolution with it.
+    assert!(report.phases.contains(&"module-resolution"));
+}
+
+#[test]
 fn a_headless_run_never_enters_presentation() {
     let scratch = Scratch::new("phases");
     let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
@@ -206,6 +271,9 @@ fn the_report_renders_every_field() {
         "blocks edited",
         "ticks advanced",
         "save size",
+        "physics bodies",
+        "physics substeps",
+        "character drop",
         "probes verified",
         "lifecycle phases",
     ] {

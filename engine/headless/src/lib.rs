@@ -9,6 +9,7 @@
 //!   -> create a world from a seed
 //!   -> generate chunks in parallel through the job system
 //!   -> mutate voxels
+//!   -> drop a character onto the terrain and simulate it
 //!   -> advance the world clock
 //!   -> save
 //!   -> shut down in reverse order
@@ -33,13 +34,18 @@ use nexora_foundation::diagnostics::{Category, Diagnostics, Level, Record, Stder
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
 use nexora_foundation::spatial::{BlockPos, ChunkCoord};
-use nexora_foundation::time::{CalendarConfig, TimeScale, WorldTime};
+use nexora_foundation::time::{CalendarConfig, TimeScale, WorldDuration, WorldTime};
 use nexora_persistence::SaveContainer;
+use nexora_physics::body::BodyDescriptor;
+use nexora_physics::collision::overlaps_solid;
+use nexora_physics::math::Vec3;
+use nexora_physics::world::PhysicsWorld;
 use nexora_runtime::jobs::{JobOutcome, JobSystem, Priority};
 use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
+use nexora_simulation::{PhysicsModule, WorldVoxels};
 use nexora_world::persist;
 use nexora_world::voxel::BlockStateId;
 use nexora_world::world::{World, WorldDescriptor};
@@ -90,6 +96,16 @@ pub struct SliceReport {
     pub storage_bytes: usize,
     /// Non-air blocks across resident chunks.
     pub non_air_blocks: u64,
+    /// Physics substeps run.
+    pub physics_substeps: u32,
+    /// Bodies simulated.
+    pub physics_bodies: usize,
+    /// Contacts resolved against the voxel grid.
+    pub physics_contacts: u32,
+    /// Bodies that settled and went to sleep.
+    pub physics_settled: usize,
+    /// How far the dropped character fell before landing, in centimetres.
+    pub physics_drop_cm: i64,
     /// Probes checked after reloading.
     pub probes_verified: usize,
     /// Lifecycle phases entered, in order.
@@ -194,6 +210,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     let mut modules = ModuleManager::new();
     modules.register(Box::new(WorldModule))?;
     modules.register(Box::new(RendererModule))?;
+    modules.register(Box::new(PhysicsModule))?;
     modules.register(Box::new(FoundationModule))?;
     lifecycle.advance_to(Phase::ModuleDiscovery)?;
 
@@ -236,6 +253,15 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     diagnostics
         .counters()
         .add("blocks.edited", blocks_edited as u64);
+
+    // --- physics -----------------------------------------------------------
+    // Runs against the world but never writes to it, so the save below - and
+    // the byte-identical determinism check over it - is unaffected.
+    let physics = simulate_physics(&world, &diagnostics)?;
+    diagnostics
+        .counters()
+        .add("physics.substeps", u64::from(physics.substeps));
+    log(&diagnostics, "physics settled");
 
     // --- time --------------------------------------------------------------
     let before = world.clock().now();
@@ -306,6 +332,11 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         save_bytes,
         storage_bytes,
         non_air_blocks,
+        physics_substeps: physics.substeps,
+        physics_bodies: physics.bodies,
+        physics_contacts: physics.contacts,
+        physics_settled: physics.settled,
+        physics_drop_cm: physics.drop_cm,
         probes_verified: probes.len(),
         phases: lifecycle
             .history()
@@ -472,6 +503,18 @@ pub fn format_report(report: &SliceReport) -> String {
     out.push_str(&format!("blocks edited      {}\n", report.blocks_edited));
     out.push_str(&format!("ticks advanced     {}\n", report.ticks_advanced));
     out.push_str(&format!("save size          {} bytes\n", report.save_bytes));
+    out.push_str(&format!(
+        "physics bodies     {} ({} settled)\n",
+        report.physics_bodies, report.physics_settled
+    ));
+    out.push_str(&format!(
+        "physics substeps   {} ({} contacts)\n",
+        report.physics_substeps, report.physics_contacts
+    ));
+    out.push_str(&format!(
+        "character drop     {} cm\n",
+        report.physics_drop_cm
+    ));
     out.push_str(&format!("probes verified    {}\n", report.probes_verified));
     out.push_str(&format!("lifecycle phases   {}\n", report.phases.len()));
     out.push_str(&format!(
@@ -479,6 +522,110 @@ pub fn format_report(report: &SliceReport) -> String {
         report.phases.join(" -> ")
     ));
     out
+}
+
+/// What the physics stage observed.
+struct PhysicsOutcome {
+    substeps: u32,
+    bodies: usize,
+    contacts: u32,
+    settled: usize,
+    drop_cm: i64,
+}
+
+/// Drop a character and a handful of crates onto the generated terrain, and
+/// simulate until they settle.
+///
+/// This is the `physics` stage of the vertical slice in
+/// `NEXORA TECHNOLOGY BENCHMARK PLAN.md`. It proves the thing that cannot be
+/// proved by a unit test against a flat fixture: that the solver and the real
+/// generated world agree about where the ground is.
+fn simulate_physics(world: &World, diagnostics: &Diagnostics) -> Result<PhysicsOutcome> {
+    let voxels = WorldVoxels::new(world);
+    let ticks_per_second = world.clock().calendar().ticks_per_second();
+    let mut physics = PhysicsWorld::earthlike(ticks_per_second)?;
+
+    // Spawn above the column's surface so that landing is something the solver
+    // has to work out rather than something the spawn asserted.
+    let surface = world.surface_height(0, 0);
+    let spawn_y = (surface + 12) as f64;
+    let character = physics.spawn(BodyDescriptor::character().at(Vec3::new(0.5, spawn_y, 0.5)))?;
+    for index in 0..8i64 {
+        // Sample the surface of the column the crate actually occupies. Taking
+        // a neighbour's height buries the body at spawn, because the generator
+        // lets adjacent columns differ by more than the drop clearance.
+        let cell_x = index + 2;
+        physics.spawn(BodyDescriptor::dynamic().at(Vec3::new(
+            cell_x as f64 + 0.5,
+            (world.surface_height(cell_x, 3) + 6) as f64,
+            3.5,
+        )))?;
+    }
+    let bodies = physics.len();
+
+    let mut substeps = 0;
+    let mut contacts = 0;
+    // Ten world seconds, in one-tick slices, so the accumulator is exercised
+    // the way a running server would exercise it rather than in one bulk call.
+    for _ in 0..(ticks_per_second * 10) {
+        let report = physics.advance(&voxels, WorldDuration::from_ticks(1));
+        substeps += report.substeps;
+        contacts += report.stats.contacts;
+        if report.stats.stuck > 0 {
+            return Err(Error::new(
+                Domain::Physics,
+                "slice/physics",
+                "a body was buried in terrain and could not be freed",
+            )
+            .with_context("bodies", report.stats.stuck.to_string()));
+        }
+    }
+
+    let landed = physics.require_body(character)?;
+    if !landed.grounded {
+        return Err(Error::new(
+            Domain::Physics,
+            "slice/physics",
+            "the character never landed on the generated terrain",
+        )
+        .with_context("spawned_at", spawn_y.to_string())
+        .with_context("ended_at", landed.center.y.to_string()));
+    }
+    let drop_cm = ((spawn_y - landed.center.y) * 100.0).round() as i64;
+
+    for (id, body) in physics.iter() {
+        if overlaps_solid(&voxels, body.aabb()) {
+            return Err(Error::new(
+                Domain::Physics,
+                "slice/physics",
+                "a body came to rest inside the terrain",
+            )
+            .with_context("body", id.index().to_string())
+            .with_context(
+                "at",
+                format!(
+                    "{:.3},{:.3},{:.3}",
+                    body.center.x, body.center.y, body.center.z
+                ),
+            ));
+        }
+    }
+    let settled = bodies - physics.awake_count();
+
+    diagnostics.log(
+        Level::Debug,
+        Category::World,
+        "slice/physics",
+        "bodies settled on generated terrain",
+    );
+
+    Ok(PhysicsOutcome {
+        substeps,
+        bodies,
+        contacts,
+        settled,
+        drop_cm,
+    })
 }
 
 /// A world time helper used by the binary's summary output.
