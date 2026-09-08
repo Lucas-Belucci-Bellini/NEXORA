@@ -771,7 +771,17 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   compressor ela não muda nada), então entra junto.
 - **TRIGGER:** já disparado pela medição acima.
 - **TARGET STAGE:** imediatamente após a FASE 3
-- **STATUS:** OPEN (medido)
+- **STATUS:** CLOSED (2026-09-08)
+- **RESOLUÇÃO:** `tools/texture-forge/src/deflate.rs` — Huffman fixo com
+  localizador por cadeia de hash, mais a escolha de filtro por scanline no
+  `png.rs`. Vinte PNGs de um conjunto PBR completo foram inflados pelo `zlib`
+  do Python e cada pixel voltou idêntico; o codificador escolheu quatro dos
+  cinco filtros.
+  **E uma correção ao número acima:** os 12,11× foram medidos sobre seis mapas
+  que eram só albedo e altura, e albedo quantizado é o melhor caso que existe.
+  Sobre o conjunto PBR inteiro — vinte mapas, com normal, roughness e oclusão,
+  que são contínuos — o alcançável é **6,79×** (zlib -9) e este codificador
+  entrega **4,73×**. Ver o `DEBT-0034` para a diferença que sobra.
 
 ### DEBT-0032 — Metallic é constante porque nenhuma receita tem metal por texel
 
@@ -809,3 +819,28 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro mapa de 16 bits, ou banding visível num normal.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
+
+
+### DEBT-0034 — O compressor é 1,40× pior que o zlib -9
+
+- **SYSTEM:** `tools/texture-forge::deflate`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** o compressor usa **Huffman fixo** (a tabela que os dois lados
+  já conhecem, sem árvore no fluxo) e **correspondência gulosa** (a primeira
+  correspondência mais longa encontrada, sem olhar se adiar um byte renderia
+  uma melhor). O `zlib -9` faz Huffman dinâmico e correspondência preguiçosa.
+- **IMPACT:** medido sobre as mesmas vinte scanlines filtradas de um conjunto
+  PBR completo: **59 518 bytes** contra **42 472** do `zlib -9` — 1,40× maior,
+  com o pior arquivo individual a 1,50× (`sand_64_height`). Na escala de dez
+  mil materiais isso é da ordem de 120 MB contra 85 MB.
+- **RISK:** baixo. É espaço, não correção, e o formato de saída continua sendo
+  PNG válido para qualquer decodificador.
+- **PROPOSED REMEDIATION:** duas coisas independentes, nesta ordem de retorno:
+  **(1) correspondência preguiçosa** — adiar um byte quando a posição seguinte
+  oferece uma correspondência maior; é ~20 linhas e costuma valer a maior parte
+  da diferença. **(2) Huffman dinâmico** — contar frequências, construir o
+  código canônico e emitir a árvore; é a metade cara e rende menos.
+- **TRIGGER:** quando o repositório de assets passar de algumas centenas de
+  megabytes, ou antes de empacotar uma release.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN (medido)

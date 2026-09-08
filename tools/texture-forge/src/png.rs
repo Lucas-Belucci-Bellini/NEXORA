@@ -7,19 +7,22 @@
 //! against the published `0xCBF43926` vector. What was missing was Adler-32,
 //! which is twelve lines.
 //!
-//! # Stored deflate, on purpose and for now
+//! # Compression, and why it arrived second
 //!
-//! `IDAT` carries a zlib stream, and a zlib stream may legally consist of
-//! **stored** deflate blocks — uncompressed, framed by a length and its
-//! complement. Every decoder in existence reads them, because they are the
-//! fallback every compressor emits for incompressible data.
+//! The first version wrote **stored** deflate blocks: legal, read by every
+//! decoder, and compressing nothing. That was deliberate — correctness first,
+//! then a measurement to decide whether a compressor was worth writing. The
+//! measurement said 12.11x, so [`crate::deflate`] exists and this module now
+//! uses it. Nothing that calls the encoder changed, which was the point of
+//! putting the seam here.
 //!
-//! So the encoder is correct today and compresses nothing. That is a real
-//! cost, it is measured rather than estimated (see the size report the tool
-//! prints and DEBT-0031), and the fix — a fixed-Huffman deflate — is an
-//! addition inside this module rather than a change to anything that calls it.
-//! Writing a compressor before knowing what the files actually weigh would
-//! have been guessing.
+//! # Filtering pays only in front of a compressor
+//!
+//! PNG lets each scanline choose one of five filters, and the choice is made
+//! here by the standard minimum-sum-of-absolute-differences heuristic. That is
+//! worth doing now and was not worth doing before: measured against stored
+//! blocks, filtering changed nothing at all; measured against deflate, it took
+//! a 128-square height map from 6,405 bytes to 4,228.
 
 use nexora_asset::texture::{ChannelLayout, TextureMap};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
@@ -27,9 +30,6 @@ use nexora_foundation::hashing::crc32;
 
 /// The eight bytes that begin every PNG file.
 pub const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-
-/// Largest payload a single stored deflate block can carry.
-const MAX_STORED_BLOCK: usize = 0xFFFF;
 
 /// zlib header: deflate, 32 KiB window, no preset dictionary.
 ///
@@ -96,14 +96,7 @@ pub fn encode_raw(
         return Err(unsupported("a PNG needs a non-zero extent"));
     }
 
-    // Scanlines, each prefixed with its filter byte. Filter 0 is "none":
-    // filtering only pays for itself in front of a compressor, and there is
-    // not one here yet. When there is, this is where the choice belongs.
-    let mut raw = Vec::with_capacity(expected + height as usize);
-    for row in pixels.chunks_exact(stride) {
-        raw.push(0);
-        raw.extend_from_slice(row);
-    }
+    let raw = filter_scanlines(pixels, stride, layout.count() as usize);
 
     let mut out = Vec::with_capacity(raw.len() + 1024);
     out.extend_from_slice(&SIGNATURE);
@@ -118,33 +111,99 @@ pub fn encode_raw(
     header.push(0); // interlace: none
     write_chunk(&mut out, b"IHDR", &header);
 
-    write_chunk(&mut out, b"IDAT", &zlib_stored(&raw));
+    write_chunk(&mut out, b"IDAT", &zlib(&raw));
     write_chunk(&mut out, b"IEND", &[]);
     Ok(out)
 }
 
-/// Wrap bytes in a zlib stream made of stored deflate blocks.
-fn zlib_stored(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len() + data.len() / MAX_STORED_BLOCK * 5 + 16);
+/// Wrap a deflate stream in the zlib framing `IDAT` requires.
+fn zlib(data: &[u8]) -> Vec<u8> {
+    let compressed = crate::deflate::deflate(data);
+    let mut out = Vec::with_capacity(compressed.len() + 6);
     out.extend_from_slice(&ZLIB_HEADER);
-
-    if data.is_empty() {
-        // A stream still needs one block, and it still needs to say it is last.
-        out.extend_from_slice(&[0x01, 0x00, 0x00, 0xFF, 0xFF]);
-    } else {
-        let mut blocks = data.chunks(MAX_STORED_BLOCK).peekable();
-        while let Some(block) = blocks.next() {
-            let final_block = u8::from(blocks.peek().is_none());
-            out.push(final_block); // BFINAL in bit 0, BTYPE 00 (stored)
-            let len = block.len() as u16;
-            out.extend_from_slice(&len.to_le_bytes());
-            out.extend_from_slice(&(!len).to_le_bytes());
-            out.extend_from_slice(block);
-        }
-    }
-
+    out.extend_from_slice(&compressed);
+    // The trailing checksum covers the *uncompressed* data, which is what
+    // makes it a check on the whole round trip rather than on the framing.
     out.extend_from_slice(&adler32(data).to_be_bytes());
     out
+}
+
+/// Choose a filter for each scanline and apply it.
+///
+/// PNG's filters are transforms on the *bytes* of a row, taken relative to the
+/// byte one pixel to the left (`a`), the byte above (`b`) and the byte above
+/// and to the left (`c`). The heuristic is the one the specification suggests:
+/// pick the filter whose output has the smallest sum of absolute signed
+/// values, on the theory that small residuals compress well.
+fn filter_scanlines(pixels: &[u8], stride: usize, bytes_per_pixel: usize) -> Vec<u8> {
+    let rows = pixels.len() / stride;
+    let mut out = Vec::with_capacity(pixels.len() + rows);
+    let mut previous = vec![0u8; stride];
+    let mut candidate = vec![0u8; stride];
+    let mut best = vec![0u8; stride];
+
+    for row in 0..rows {
+        let line = &pixels[row * stride..(row + 1) * stride];
+        let mut best_kind = 0u8;
+        let mut best_score = u64::MAX;
+
+        for kind in 0..5u8 {
+            let mut score = 0u64;
+            for index in 0..stride {
+                let a = if index >= bytes_per_pixel {
+                    line[index - bytes_per_pixel]
+                } else {
+                    0
+                };
+                let b = previous[index];
+                let c = if index >= bytes_per_pixel {
+                    previous[index - bytes_per_pixel]
+                } else {
+                    0
+                };
+                let predicted = match kind {
+                    0 => 0,
+                    1 => a,
+                    2 => b,
+                    3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+                    _ => paeth(a, b, c),
+                };
+                let value = line[index].wrapping_sub(predicted);
+                candidate[index] = value;
+                // Treat the byte as signed: a residual of 255 is -1, which is
+                // as cheap as +1 and must not score as expensive.
+                score += u64::from(value.min(value.wrapping_neg()));
+            }
+            if score < best_score {
+                best_score = score;
+                best_kind = kind;
+                best.copy_from_slice(&candidate);
+            }
+        }
+
+        out.push(best_kind);
+        out.extend_from_slice(&best);
+        previous.copy_from_slice(line);
+    }
+    out
+}
+
+/// PNG's Paeth predictor: whichever of the three neighbours is closest to
+/// their linear estimate.
+fn paeth(a: u8, b: u8, c: u8) -> u8 {
+    let estimate = i32::from(a) + i32::from(b) - i32::from(c);
+    let (pa, pb, pc) = (
+        (estimate - i32::from(a)).abs(),
+        (estimate - i32::from(b)).abs(),
+        (estimate - i32::from(c)).abs(),
+    );
+    if pa <= pb && pa <= pc {
+        a
+    } else if pb <= pc {
+        b
+    } else {
+        c
+    }
 }
 
 /// Length, type, data, CRC — the shape of every PNG chunk.
@@ -180,7 +239,45 @@ fn unsupported(message: &'static str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deflate::reference::Inflater;
     use nexora_asset::texture::{MapRole, Resolution, TextureFormat};
+
+    /// Undo PNG's per-scanline filtering, so a test can compare pixels.
+    fn unfilter(raw: &[u8], width: usize, channels: usize) -> Vec<u8> {
+        let stride = width * channels;
+        let mut out: Vec<u8> = Vec::with_capacity(raw.len());
+        for row in 0..raw.len() / (stride + 1) {
+            let kind = raw[row * (stride + 1)];
+            let line = &raw[row * (stride + 1) + 1..(row + 1) * (stride + 1)];
+            for index in 0..stride {
+                let a = if index >= channels {
+                    out[out.len() - channels]
+                } else {
+                    0
+                };
+                let b = if row > 0 {
+                    out[(row - 1) * stride + index]
+                } else {
+                    0
+                };
+                let c = if row > 0 && index >= channels {
+                    out[(row - 1) * stride + index - channels]
+                } else {
+                    0
+                };
+                let predicted = match kind {
+                    0 => 0,
+                    1 => a,
+                    2 => b,
+                    3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+                    4 => paeth(a, b, c),
+                    other => panic!("unknown filter {other}"),
+                };
+                out.push(line[index].wrapping_add(predicted));
+            }
+        }
+        out
+    }
 
     fn map(layout: ChannelLayout, edge: u32) -> TextureMap {
         let format = TextureFormat::eight_bit(layout);
@@ -260,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn the_zlib_stream_is_well_formed_and_carries_the_scanlines() {
+    fn the_zlib_stream_is_well_formed_and_inflates_to_the_scanlines() {
         let source = map(ChannelLayout::Grey, 8);
         let png = encode(&source).unwrap();
         let idat = &chunks(&png)[1].1;
@@ -269,58 +366,67 @@ mod tests {
         // The two header bytes together must be divisible by 31.
         assert_eq!((u32::from(idat[0]) * 256 + u32::from(idat[1])) % 31, 0);
 
-        // Walk the stored blocks and rebuild the raw scanlines.
-        let mut at = 2usize;
-        let mut raw = Vec::new();
-        loop {
-            let header = idat[at];
-            assert_eq!(header & 0b110, 0, "BTYPE must be stored");
-            let len = u16::from_le_bytes(idat[at + 1..at + 3].try_into().unwrap());
-            let nlen = u16::from_le_bytes(idat[at + 3..at + 5].try_into().unwrap());
-            assert_eq!(len, !nlen, "LEN and NLEN must be complements");
-            raw.extend_from_slice(&idat[at + 5..at + 5 + len as usize]);
-            at += 5 + len as usize;
-            if header & 1 == 1 {
-                break;
-            }
-        }
+        // Inflated by the reference decoder, which was written from RFC 1951
+        // separately from the encoder it is checking.
+        let raw = Inflater::new(&idat[2..idat.len() - 4]).inflate();
         assert_eq!(
-            u32::from_be_bytes(idat[at..at + 4].try_into().unwrap()),
+            u32::from_be_bytes(idat[idat.len() - 4..].try_into().unwrap()),
             adler32(&raw),
             "the trailing Adler-32 must cover the uncompressed data"
         );
-        assert_eq!(at + 4, idat.len(), "trailing bytes in the zlib stream");
 
         // Nine bytes per row: one filter byte plus eight grey samples.
         assert_eq!(raw.len(), 8 * 9);
-        for (row, chunk) in raw.chunks_exact(9).enumerate() {
-            assert_eq!(chunk[0], 0, "row {row} must use filter None");
-            assert_eq!(&chunk[1..], &source.pixels()[row * 8..row * 8 + 8]);
+        assert_eq!(
+            unfilter(&raw, 8, 1),
+            source.pixels(),
+            "the scanlines must reconstruct"
+        );
+    }
+
+    #[test]
+    fn every_scanline_reconstructs_through_whichever_filter_was_chosen() {
+        // Each layout exercises a different `bytes_per_pixel`, which is the
+        // parameter every filter but `Up` depends on. A filter chosen with the
+        // wrong stride reconstructs to garbage rather than to an error.
+        for layout in [
+            ChannelLayout::Grey,
+            ChannelLayout::GreyAlpha,
+            ChannelLayout::Rgb,
+            ChannelLayout::Rgba,
+        ] {
+            let source = map(layout, 32);
+            let png = encode(&source).unwrap();
+            let idat = &chunks(&png)[1].1;
+            let raw = Inflater::new(&idat[2..idat.len() - 4]).inflate();
+            assert_eq!(
+                unfilter(&raw, 32, layout.count() as usize),
+                source.pixels(),
+                "{layout:?} did not reconstruct"
+            );
         }
     }
 
     #[test]
-    fn an_image_larger_than_one_stored_block_is_split_and_still_reassembles() {
-        // 160x160 RGBA is 102 400 bytes of pixels plus 160 filter bytes: two
-        // blocks. A single-block encoder passes every smaller test there is.
-        let png = encode(&map(ChannelLayout::Rgba, 128)).unwrap();
-        let idat = &chunks(&png)[1].1;
-
-        let mut at = 2usize;
-        let mut blocks = 0;
-        let mut total = 0usize;
-        loop {
-            let header = idat[at];
-            let len = u16::from_le_bytes(idat[at + 1..at + 3].try_into().unwrap()) as usize;
-            blocks += 1;
-            total += len;
-            at += 5 + len;
-            if header & 1 == 1 {
-                break;
-            }
-        }
-        assert!(blocks > 1, "expected more than one block, got {blocks}");
-        assert_eq!(total, 128 * 128 * 4 + 128);
+    fn compression_actually_compresses_a_texture_shaped_image() {
+        // Not a tautology: the first version of this encoder wrote stored
+        // blocks, and this assertion would have failed on it. Bands of one
+        // colour are what a palette-quantised albedo looks like.
+        let edge = 64u32;
+        let pixels: Vec<u8> = (0..edge)
+            .flat_map(|y| (0..edge).map(move |x| (x, y)))
+            .flat_map(|(x, _)| {
+                let band = ((x / 4) * 16) as u8;
+                [band, band / 2, band / 3, 255]
+            })
+            .collect();
+        let png = encode_raw(edge, edge, ChannelLayout::Rgba, &pixels).unwrap();
+        assert!(
+            png.len() * 8 < pixels.len(),
+            "{} raw bytes became {} of PNG, under 8x",
+            pixels.len(),
+            png.len()
+        );
     }
 
     #[test]
