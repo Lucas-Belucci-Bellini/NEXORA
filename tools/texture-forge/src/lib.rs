@@ -26,6 +26,7 @@
 
 pub mod color;
 pub mod deflate;
+pub mod forge;
 pub mod layout;
 pub mod noise;
 pub mod pbr;
@@ -36,6 +37,7 @@ pub mod recipe;
 pub mod validator;
 
 pub use color::{Ramp, Rgba};
+pub use forge::{Forge, Listing, Outcome, WriteStatus};
 pub use noise::Noise;
 pub use pbr::{PbrPipeline, PBR_PIPELINE, PBR_VERSION};
 pub use png::{adler32, decode as decode_png, encode as encode_png, Decoded};

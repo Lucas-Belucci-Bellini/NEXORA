@@ -23,7 +23,8 @@ use std::path::Path;
 
 use nexora_asset::generator::GeneratedMaterial;
 use nexora_asset::material::BlendMode;
-use nexora_asset::texture::{ChannelLayout, MapRole, TextureMap};
+use nexora_asset::material::SurfaceMaterial;
+use nexora_asset::texture::{ChannelLayout, MapRole, MapSet, TextureMap};
 use nexora_asset::validation::{Check, Finding, TextureValidationResult};
 
 use crate::layout;
@@ -78,8 +79,33 @@ impl Validator {
 
     /// Check a material that is still in memory.
     pub fn material(&self, generated: &GeneratedMaterial) -> TextureValidationResult {
-        let definition = generated.definition();
         let mut result = generated.validate_completeness();
+        result.merge(self.maps(generated.definition(), generated.maps()));
+
+        // Runtime compatibility: every map has to survive the trip to a file
+        // and back, because that is the form the runtime will load.
+        for map in generated.maps().iter() {
+            match png::encode(map) {
+                Ok(bytes) => result.merge(self.encoded(&bytes, map)),
+                Err(error) => result.push(
+                    Finding::failure(
+                        Check::RuntimeCompatibility,
+                        format!("this map cannot be written as a PNG: {error}"),
+                    )
+                    .about(map.role()),
+                ),
+            }
+        }
+        result
+    }
+
+    /// Check a set of maps against the definition that asked for them.
+    ///
+    /// Shared by [`Self::material`] and by anything holding maps that came
+    /// from disk rather than from a generator, so a file and the thing it was
+    /// written from are judged by the same rules.
+    pub fn maps(&self, definition: &SurfaceMaterial, maps: &MapSet) -> TextureValidationResult {
+        let mut result = TextureValidationResult::new();
 
         // Metadata: the origin record has to satisfy the registry's own rules,
         // and a material whose provenance is broken must never reach a file.
@@ -98,7 +124,7 @@ impl Validator {
             ));
         }
 
-        for map in generated.maps().iter() {
+        for map in maps.iter() {
             let role = map.role();
 
             // Resolution: a map that disagrees with its material would tile at
@@ -159,31 +185,12 @@ impl Validator {
         }
 
         // Material integrity: every map has to agree with every other on size.
-        let sizes: Vec<_> = generated
-            .maps()
-            .iter()
-            .map(|map| map.resolution())
-            .collect();
+        let sizes: Vec<_> = maps.iter().map(|map| map.resolution()).collect();
         if sizes.windows(2).any(|pair| pair[0] != pair[1]) {
             result.push(Finding::failure(
                 Check::MaterialIntegrity,
                 "the maps in this material are not all the same size".to_owned(),
             ));
-        }
-
-        // Runtime compatibility: every map has to survive the trip to a file
-        // and back, because that is the form the runtime will load.
-        for map in generated.maps().iter() {
-            match png::encode(map) {
-                Ok(bytes) => result.merge(self.encoded(&bytes, map)),
-                Err(error) => result.push(
-                    Finding::failure(
-                        Check::RuntimeCompatibility,
-                        format!("this map cannot be written as a PNG: {error}"),
-                    )
-                    .about(map.role()),
-                ),
-            }
         }
 
         result

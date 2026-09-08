@@ -476,6 +476,20 @@ impl SurfaceMaterial {
         })
     }
 
+    /// The same material, numbered differently.
+    ///
+    /// Used when a definition replaces one already on disk: the replacement
+    /// has to be numbered above what it replaced, or the record of which came
+    /// first is lost. Distinct from [`Self::revised`], which is "this material
+    /// moved on"; this is "start counting from here".
+    #[must_use]
+    pub fn at_revision(&self, revision: Revision) -> Self {
+        Self {
+            revision,
+            ..self.clone()
+        }
+    }
+
     /// A hash over every field that decides what the material looks like.
     ///
     /// Excludes the revision and the origin record: two revisions that describe
@@ -767,6 +781,19 @@ mod tests {
         // The surface itself did not change, and the hash says so.
         assert_eq!(first.appearance_hash(), second.appearance_hash());
         assert!(Revision(u32::MAX).next().is_err());
+    }
+
+    #[test]
+    fn a_material_can_be_renumbered_without_changing_its_surface() {
+        let base = material();
+        let renumbered = base.at_revision(Revision(9));
+        assert_eq!(renumbered.revision(), Revision(9));
+        assert_eq!(renumbered.appearance_hash(), base.appearance_hash());
+        assert_eq!(
+            base.revision(),
+            Revision::FIRST,
+            "the original is untouched"
+        );
     }
 
     #[test]
