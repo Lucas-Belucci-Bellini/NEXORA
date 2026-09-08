@@ -648,3 +648,81 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   de processo no motor em execução.
 - **TARGET STAGE:** Phase 3
 - **STATUS:** CLOSED (2026-09-07)
+
+### DEBT-0026 — O mesher só conhece uma classe de opacidade
+
+- **SYSTEM:** `engine/mesh`, `engine/world::world::BlockDefinition`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `RENDERER and GRAPHICS.md` RENDER-10 pede quatro malhas por
+  chunk — `opaqueMesh`, `cutoutMesh`, `transparentMesh`, `waterMesh`. O
+  `BlockDefinition` de hoje carrega só `solid`: não há como saber que vidro é
+  transparente. Construir as quatro camadas seria inventar dado de bloco, o que
+  a §3 do briefing proíbe.
+- **IMPACT:** vidro, folhagem, água e qualquer bloco não-opaco vão ocluir a face
+  do vizinho e sumir do mundo visível. Não é um defeito do mesher — é a única
+  resposta que o dado disponível permite.
+- **RISK:** baixo hoje (não existe bloco não-opaco), alto no dia em que existir,
+  porque o sintoma é "o mundo está sólido demais" e não um erro.
+- **PROPOSED REMEDIATION:** dar ao `BlockDefinition` uma camada de render e
+  sobrescrever `VoxelView::occludes` no `WorldSurfaces` — o método já é `trait`
+  method com default exatamente para isso, então é **uma função**, não uma
+  reescrita. Depois separar a saída por camada.
+- **TRIGGER:** o primeiro bloco não-opaco no registro.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0027 — Meshing roda na thread que pedir, não em worker
+
+- **SYSTEM:** `engine/mesh`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** RENDER-12 quer a geração de malha fora da thread principal,
+  *"crucial para mineração/construção sem travar a câmera"*. O mesher é uma
+  função pura hoje; nada o agenda.
+- **IMPACT:** medido — `mesh.region_32` custa **26,12 ms**, mais de um quadro a
+  60 Hz. Uma região de 32³ remeshada na thread do tick é um engasgo visível.
+- **RISK:** alto assim que houver um loop de quadro, e exatamente zero antes.
+- **PROPOSED REMEDIATION:** submeter ao job system, com o snapshot do
+  `DEBT-0029` como entrada — é ele que torna o meshing off-thread **seguro**,
+  não só mais rápido, porque o worker deixa de tocar o mundo.
+- **TRIGGER:** existir um loop de quadro.
+- **TARGET STAGE:** Phase 2/5
+- **STATUS:** OPEN (medido)
+
+### DEBT-0028 — Não há malha de LOD
+
+- **SYSTEM:** `engine/mesh`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `RENDERER and GRAPHICS.md` prevê malha simplificada para
+  distância, e o `STREAMING SYSTEM.md` já tem a escada `FULL → REGIONAL →
+  ABSTRACT`. O mesher só produz detalhe completo.
+- **IMPACT:** nenhum hoje — nada desenha. Quando desenhar, a contagem de
+  triângulos cresce com o volume visível em vez de com o que dá para distinguir.
+- **RISK:** baixo até existir renderização a distância.
+- **PROPOSED REMEDIATION:** o `RENDER-9` já lista Surface Nets, Marching Cubes e
+  Dual Contouring como algoritmos futuros; a `VoxelView` é a fronteira por onde
+  um deles entra sem tocar no resto.
+- **TRIGGER:** o primeiro nível de LOD que precise desenhar.
+- **TARGET STAGE:** Phase 5
+- **STATUS:** OPEN
+
+### DEBT-0029 — 91% do meshing é lookup no mundo, não meshing
+
+- **SYSTEM:** `engine/simulation::surfaces`, `engine/mesh`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** descoberto pela medição em par, não por suspeita
+  ([Apêndice F](docs/benchmarks/PHASE-0-BASELINE.md), achado 22): a mesma região
+  de 16³ custa **3,30 ms** lida do mundo e **295,45 µs** lida de um array denso
+  pré-carregado. **11,2×.** O `mesh.cull_only_16` a 3,20 ms diz o mesmo pelo
+  outro lado — a fusão gulosa é ~3% do total.
+- **IMPACT:** otimizar o algoritmo do mesher renderia no máximo 9%. O ganho está
+  em ler os voxels uma vez.
+- **RISK:** médio, e o mesmo padrão do `DEBT-0011` (49% de um passo de física é
+  o lookup de voxel). Duas medições independentes apontando para o mesmo lugar.
+- **PROPOSED REMEDIATION:** um `DenseSnapshot` de verdade em `nexora-mesh` — a
+  região mais uma borda de uma célula, lida de uma vez. O benchmark já tem a
+  versão-fixture que produziu o número; promovê-la é pequeno. **E resolve duas
+  coisas:** é também o que torna o `DEBT-0027` (meshing off-thread) seguro, já
+  que o worker passa a não tocar o mundo.
+- **TRIGGER:** o primeiro remesh no caminho de um quadro.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN (medido)

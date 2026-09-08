@@ -9,6 +9,7 @@ dependencies = [
  "nexora-entity",
  "nexora-ffi-probe",
  "nexora-foundation",
+ "nexora-mesh",
  "nexora-persistence",
  "nexora-physics",
  "nexora-runtime",
@@ -57,6 +58,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-mesh"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+]
+
+[[package]]
 name = "nexora-persistence"
 version = "0.0.1"
 dependencies = [
@@ -83,6 +91,7 @@ version = "0.0.1"
 dependencies = [
  "nexora-command",
  "nexora-foundation",
+ "nexora-mesh",
  "nexora-physics",
  "nexora-runtime",
  "nexora-streaming",

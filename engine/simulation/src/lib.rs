@@ -17,8 +17,10 @@
 
 pub mod commands;
 pub mod residency;
+pub mod surfaces;
 pub mod terrain;
 
 pub use commands::{BreakBlockHandler, PlaceBlockHandler};
 pub use residency::{RetainedChunks, WorldResidency};
+pub use surfaces::WorldSurfaces;
 pub use terrain::{PhysicsModule, WorldVoxels};

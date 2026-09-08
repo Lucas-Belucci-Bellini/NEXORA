@@ -1,0 +1,22 @@
+[package]
+name = "nexora-mesh"
+description = "Turns voxels into surfaces: face culling and greedy merging, with no renderer and no GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_mesh"
+path = "src/lib.rs"
+
+# Foundation only. A mesher reads voxels and produces geometry; it has no
+# business knowing about chunk storage, block registries or a render backend.
+# Terrain arrives through `VoxelView`, the same shape physics uses for
+# `VoxelSource` (ADR-0007) and streaming for `ResidencyBackend` (ADR-0008).
+[dependencies]
+nexora-foundation.workspace = true
+
+[lints]
+workspace = true
