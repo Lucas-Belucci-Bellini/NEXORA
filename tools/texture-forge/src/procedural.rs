@@ -409,105 +409,26 @@ mod tests {
         assert!(with_normal.maps().contains(MapRole::Height));
     }
 
-    /// Mean absolute step between neighbouring texels across the wrapping
-    /// seam, divided by the same mean over the interior.
-    ///
-    /// A texture that tiles has no distinguished edge, so the two means match.
-    /// A texture that does not has a step across the seam like the difference
-    /// between two unrelated samples, and the ratio climbs.
-    fn seam_ratio(pixels: &[u8], width: usize, vertical: bool) -> f64 {
-        let stride = width * 4;
-        let channel = |x: usize, y: usize, c: usize| i32::from(pixels[y * stride + x * 4 + c]);
-        let (mut seam, mut interior) = (0f64, 0f64);
-        for a in 0..width {
-            for c in 0..3 {
-                for b in 0..width - 1 {
-                    let (p, q) = if vertical {
-                        ((a, b), (a, b + 1))
-                    } else {
-                        ((b, a), (b + 1, a))
-                    };
-                    interior += f64::from((channel(p.0, p.1, c) - channel(q.0, q.1, c)).abs());
-                }
-                let (p, q) = if vertical {
-                    ((a, width - 1), (a, 0))
-                } else {
-                    ((width - 1, a), (0, a))
-                };
-                seam += f64::from((channel(p.0, p.1, c) - channel(q.0, q.1, c)).abs());
-            }
-        }
-        let interior = interior / ((width * (width - 1) * 3) as f64);
-        let seam = seam / ((width * 3) as f64);
-        if interior < 0.01 {
-            return 0.0;
-        }
-        seam / interior
-    }
-
-    /// Seeds averaged over before judging a category.
-    ///
-    /// One sample is not enough. Measured over twenty-four samples per
-    /// category, the per-sample ratio reaches 3.2 on Mineral — not because the
-    /// texture fails to tile, but because a hard-edged speckle grain landing on
-    /// the boundary makes that one edge locally busier. The mean is the stable
-    /// statistic; the maximum is noise.
-    const SEAM_SEEDS: u64 = 8;
-
-    /// The largest mean seam ratio a tiling texture may show.
-    ///
-    /// From measurement, not taste. Over twenty-four samples each, the fifteen
-    /// categories mean between 0.00 and 1.46, the worst being Soil. A field
-    /// deliberately sampled at a scale that cannot tile measures above 4.
-    /// 1.8 sits above every real category and well under the broken one, and
-    /// `a_field_that_cannot_tile_is_caught_by_the_same_measure` keeps that
-    /// claim honest by failing the check on purpose.
-    const MAX_SEAM_RATIO: f64 = 1.8;
-
     #[test]
     fn every_category_tiles_on_both_axes() {
+        // One seam measure in this crate, not two: `validator::seam_ratio` and
+        // its threshold are what the validator holds finished materials to,
+        // and they are what the generator is held to here.
+        use crate::validator::{seam_ratio, MAX_SEAM_RATIO};
         for category in MaterialCategory::ALL {
-            let mut total = 0.0;
-            let mut samples = 0.0;
-            for seed in 0..SEAM_SEEDS {
+            for seed in 0..4u64 {
                 let generated = generate(definition("nexora:material/tile", category, 64), seed);
                 let albedo = generated.maps().get(MapRole::Albedo).unwrap();
                 for vertical in [false, true] {
-                    total += seam_ratio(albedo.pixels(), 64, vertical);
-                    samples += 1.0;
+                    let ratio = seam_ratio(albedo, vertical);
+                    assert!(
+                        ratio <= MAX_SEAM_RATIO,
+                        "{category:?} seed {seed} {} seam ratio {ratio:.3}",
+                        if vertical { "vertical" } else { "horizontal" }
+                    );
                 }
             }
-            let mean = total / samples;
-            assert!(
-                mean <= MAX_SEAM_RATIO,
-                "{category:?} mean seam ratio {mean:.3} over {samples} samples"
-            );
         }
-    }
-
-    #[test]
-    fn a_field_that_cannot_tile_is_caught_by_the_same_measure() {
-        // The control. Without it, `every_category_tiles_on_both_axes` would
-        // pass just as happily on a measure that cannot fail.
-        use crate::noise::Noise;
-        let noise = Noise::new(0xC0FF_EE00);
-        let width = 64usize;
-        let mut pixels = Vec::with_capacity(width * width * 4);
-        for y in 0..width {
-            for x in 0..width {
-                let u = (x as f64 + 0.5) / width as f64;
-                let v = (y as f64 + 0.5) / width as f64;
-                // 1.37 periods across the texture: the lattice wraps, the
-                // texture does not.
-                let value = (noise.fbm(u * 1.37, v * 1.37, 4, 4, 5) * 255.0) as u8;
-                pixels.extend_from_slice(&[value, value, value, 255]);
-            }
-        }
-        let ratio = seam_ratio(&pixels, width, true);
-        assert!(
-            ratio > MAX_SEAM_RATIO,
-            "a non-tiling field measured {ratio:.3}, which the check would accept"
-        );
     }
 
     #[test]

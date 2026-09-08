@@ -24,7 +24,7 @@
 //! blocks, filtering changed nothing at all; measured against deflate, it took
 //! a 128-square height map from 6,405 bytes to 4,228.
 
-use nexora_asset::texture::{ChannelLayout, TextureMap};
+use nexora_asset::texture::{ChannelLayout, Resolution, TextureMap};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::hashing::crc32;
 
@@ -114,6 +114,190 @@ pub fn encode_raw(
     write_chunk(&mut out, b"IDAT", &zlib(&raw));
     write_chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+/// What a decoded PNG turned out to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decoded {
+    /// The image's dimensions.
+    pub resolution: Resolution,
+    /// The channel layout its colour type names.
+    pub layout: ChannelLayout,
+    /// The unfiltered pixels, row-major from the top-left.
+    pub pixels: Vec<u8>,
+}
+
+/// Decode a PNG this project could have written.
+///
+/// Exists so the validator can answer *"does this file decode?"* by decoding
+/// it, rather than by checking that it looks plausible. Every failure names
+/// what was wrong, because "invalid PNG" is a message that costs an hour.
+///
+/// # Errors
+///
+/// Returns an error for a wrong signature, a truncated or mis-checksummed
+/// chunk, a colour type or bit depth this project does not write, an
+/// interlaced image, a zlib stream that will not inflate, or scanlines that do
+/// not add up to the dimensions the header declares.
+pub fn decode(data: &[u8]) -> Result<Decoded> {
+    if data.len() < SIGNATURE.len() || data[..SIGNATURE.len()] != SIGNATURE {
+        return Err(malformed("the file does not begin with the PNG signature"));
+    }
+
+    let mut at = SIGNATURE.len();
+    let mut header: Option<(u32, u32, u8, u8)> = None;
+    let mut idat = Vec::new();
+    let mut ended = false;
+
+    while at < data.len() {
+        let length = u32::from_be_bytes(
+            data.get(at..at + 4)
+                .ok_or_else(|| malformed("a chunk length is truncated"))?
+                .try_into()
+                .expect("four bytes"),
+        ) as usize;
+        let kind: [u8; 4] = data
+            .get(at + 4..at + 8)
+            .ok_or_else(|| malformed("a chunk type is truncated"))?
+            .try_into()
+            .expect("four bytes");
+        let payload = data
+            .get(at + 8..at + 8 + length)
+            .ok_or_else(|| malformed("a chunk is shorter than its declared length"))?;
+        let stated = u32::from_be_bytes(
+            data.get(at + 8 + length..at + 12 + length)
+                .ok_or_else(|| malformed("a chunk's checksum is truncated"))?
+                .try_into()
+                .expect("four bytes"),
+        );
+        let actual = crc32(&data[at + 4..at + 8 + length]);
+        if stated != actual {
+            return Err(malformed("a chunk's checksum does not match its contents")
+                .with_context("chunk", String::from_utf8_lossy(&kind).into_owned())
+                .with_context("stated", format!("{stated:#010x}"))
+                .with_context("actual", format!("{actual:#010x}")));
+        }
+
+        match &kind {
+            b"IHDR" => {
+                if payload.len() != 13 {
+                    return Err(malformed("IHDR is not thirteen bytes"));
+                }
+                let width = u32::from_be_bytes(payload[0..4].try_into().expect("four bytes"));
+                let height = u32::from_be_bytes(payload[4..8].try_into().expect("four bytes"));
+                if payload[10] != 0 || payload[11] != 0 {
+                    return Err(malformed(
+                        "IHDR names a compression or filter method PNG does not define",
+                    ));
+                }
+                if payload[12] != 0 {
+                    return Err(malformed("interlaced images are not read by this decoder"));
+                }
+                header = Some((width, height, payload[8], payload[9]));
+            }
+            b"IDAT" => idat.extend_from_slice(payload),
+            b"IEND" => ended = true,
+            // Ancillary chunks are legal and carry nothing this project needs.
+            _ => {}
+        }
+        at += 12 + length;
+    }
+
+    if !ended {
+        return Err(malformed("the file has no IEND chunk"));
+    }
+    let (width, height, depth, color) =
+        header.ok_or_else(|| malformed("the file has no IHDR chunk"))?;
+    if depth != 8 {
+        return Err(malformed("this decoder reads eight bits per channel")
+            .with_context("bits", depth.to_string()));
+    }
+    let layout = match color {
+        0 => ChannelLayout::Grey,
+        2 => ChannelLayout::Rgb,
+        4 => ChannelLayout::GreyAlpha,
+        6 => ChannelLayout::Rgba,
+        other => {
+            return Err(
+                malformed("the colour type is one this project does not write")
+                    .with_context("colour_type", other.to_string()),
+            )
+        }
+    };
+    let resolution = Resolution::new(width, height)?;
+
+    if idat.len() < 6 {
+        return Err(malformed("the zlib stream is too short to be one"));
+    }
+    if (u32::from(idat[0]) * 256 + u32::from(idat[1])) % 31 != 0 {
+        return Err(malformed("the zlib header fails its own check value"));
+    }
+    let raw = crate::deflate::inflate(&idat[2..idat.len() - 4])?;
+    let stated = u32::from_be_bytes(idat[idat.len() - 4..].try_into().expect("four bytes"));
+    if stated != adler32(&raw) {
+        return Err(
+            malformed("the zlib checksum does not match the decompressed data")
+                .with_context("stated", format!("{stated:#010x}")),
+        );
+    }
+
+    let channels = layout.count() as usize;
+    let stride = width as usize * channels;
+    if raw.len() != (stride + 1) * height as usize {
+        return Err(
+            malformed("the scanlines do not add up to the declared size")
+                .with_context("expected", ((stride + 1) * height as usize).to_string())
+                .with_context("found", raw.len().to_string()),
+        );
+    }
+
+    let mut pixels: Vec<u8> = Vec::with_capacity(stride * height as usize);
+    for row in 0..height as usize {
+        let kind = raw[row * (stride + 1)];
+        let line = &raw[row * (stride + 1) + 1..(row + 1) * (stride + 1)];
+        for index in 0..stride {
+            let a = if index >= channels {
+                pixels[pixels.len() - channels]
+            } else {
+                0
+            };
+            let b = if row > 0 {
+                pixels[(row - 1) * stride + index]
+            } else {
+                0
+            };
+            let c = if row > 0 && index >= channels {
+                pixels[(row - 1) * stride + index - channels]
+            } else {
+                0
+            };
+            let predicted = match kind {
+                0 => 0,
+                1 => a,
+                2 => b,
+                3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+                4 => paeth(a, b, c),
+                other => {
+                    return Err(malformed("a scanline names a filter PNG does not define")
+                        .with_context("filter", other.to_string())
+                        .with_context("row", row.to_string()))
+                }
+            };
+            pixels.push(line[index].wrapping_add(predicted));
+        }
+    }
+
+    Ok(Decoded {
+        resolution,
+        layout,
+        pixels,
+    })
+}
+
+fn malformed(message: &'static str) -> Error {
+    // Quarantine, not reject: a damaged file is set aside for a person, not
+    // declared meaningless.
+    Error::new(Domain::Content, "png", message).with_recovery(Recovery::Quarantine)
 }
 
 /// Wrap a deflate stream in the zlib framing `IDAT` requires.
@@ -239,7 +423,7 @@ fn unsupported(message: &'static str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deflate::reference::Inflater;
+    use crate::deflate::inflate;
     use nexora_asset::texture::{MapRole, Resolution, TextureFormat};
 
     /// Undo PNG's per-scanline filtering, so a test can compare pixels.
@@ -368,7 +552,7 @@ mod tests {
 
         // Inflated by the reference decoder, which was written from RFC 1951
         // separately from the encoder it is checking.
-        let raw = Inflater::new(&idat[2..idat.len() - 4]).inflate();
+        let raw = inflate(&idat[2..idat.len() - 4]).expect("the stream must inflate");
         assert_eq!(
             u32::from_be_bytes(idat[idat.len() - 4..].try_into().unwrap()),
             adler32(&raw),
@@ -398,7 +582,7 @@ mod tests {
             let source = map(layout, 32);
             let png = encode(&source).unwrap();
             let idat = &chunks(&png)[1].1;
-            let raw = Inflater::new(&idat[2..idat.len() - 4]).inflate();
+            let raw = inflate(&idat[2..idat.len() - 4]).expect("the stream must inflate");
             assert_eq!(
                 unfilter(&raw, 32, layout.count() as usize),
                 source.pixels(),
@@ -427,6 +611,77 @@ mod tests {
             pixels.len(),
             png.len()
         );
+    }
+
+    #[test]
+    fn every_layout_survives_encode_then_decode() {
+        for layout in [
+            ChannelLayout::Grey,
+            ChannelLayout::GreyAlpha,
+            ChannelLayout::Rgb,
+            ChannelLayout::Rgba,
+        ] {
+            let source = map(layout, 32);
+            let decoded = decode(&encode(&source).unwrap()).expect("our own file must decode");
+            assert_eq!(decoded.layout, layout);
+            assert_eq!(decoded.resolution, source.resolution());
+            assert_eq!(decoded.pixels, source.pixels(), "{layout:?} round trip");
+        }
+        // Non-square too, where a transposed stride would pass every square test.
+        let png = encode_raw(64, 16, ChannelLayout::Rgb, &vec![9; 64 * 16 * 3]).unwrap();
+        let decoded = decode(&png).unwrap();
+        assert_eq!(decoded.resolution.width, 64);
+        assert_eq!(decoded.resolution.height, 16);
+    }
+
+    #[test]
+    fn a_corrupted_file_is_named_rather_than_guessed_at() {
+        let good = encode(&map(ChannelLayout::Rgba, 16)).unwrap();
+
+        // Wrong signature.
+        let mut bad = good.clone();
+        bad[1] = b'X';
+        assert!(decode(&bad).unwrap_err().to_string().contains("signature"));
+
+        // A flipped bit inside IDAT: the chunk CRC catches it first.
+        let mut bad = good.clone();
+        let middle = bad.len() / 2;
+        bad[middle] ^= 0xFF;
+        let err = decode(&bad).expect_err("a flipped bit must not decode silently");
+        assert!(err.to_string().contains("checksum"), "{err}");
+        assert_eq!(err.recovery(), Recovery::Quarantine);
+
+        // Truncated: the last chunk is incomplete and IEND is gone.
+        let err = decode(&good[..good.len() - 8]).expect_err("truncation must be caught");
+        assert!(
+            err.to_string().contains("truncated") || err.to_string().contains("IEND"),
+            "{err}"
+        );
+
+        // Nothing at all.
+        assert!(decode(&[]).is_err());
+        assert!(decode(&SIGNATURE).is_err());
+    }
+
+    #[test]
+    fn a_header_this_project_does_not_write_is_refused_by_name() {
+        let good = encode(&map(ChannelLayout::Grey, 8)).unwrap();
+        // IHDR's payload starts 8 (signature) + 8 (length and type) in.
+        let ihdr = SIGNATURE.len() + 8;
+
+        let rewrite = |offset: usize, value: u8| {
+            let mut bad = good.clone();
+            bad[ihdr + offset] = value;
+            // Repair the chunk CRC so the header check is what fails, not the
+            // checksum: otherwise this test proves nothing about IHDR.
+            let crc = crc32(&bad[ihdr - 4..ihdr + 13]);
+            bad[ihdr + 13..ihdr + 17].copy_from_slice(&crc.to_be_bytes());
+            decode(&bad).expect_err("must be refused")
+        };
+
+        assert!(rewrite(8, 16).to_string().contains("eight bits"));
+        assert!(rewrite(9, 3).to_string().contains("colour type"));
+        assert!(rewrite(12, 1).to_string().contains("interlaced"));
     }
 
     #[test]
