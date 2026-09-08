@@ -14,6 +14,7 @@ repository.workspace = true
 [dependencies]
 nexora-foundation.workspace = true
 nexora-runtime.workspace = true
+nexora-asset.workspace = true
 nexora-world.workspace = true
 nexora-command.workspace = true
 nexora-mesh.workspace = true

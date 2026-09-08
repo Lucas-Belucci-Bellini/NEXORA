@@ -1382,7 +1382,7 @@ pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
             ..budget
         },
         || {
-            consume(mesh_region(&WorldSurfaces::new(&world), across).len());
+            consume(mesh_region(&WorldSurfaces::untextured(&world), across).len());
         },
     ));
 
@@ -1394,7 +1394,7 @@ pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
             ..budget
         },
         || {
-            consume(mesh_region(&WorldSurfaces::new(&world), chunk_sized).len());
+            consume(mesh_region(&WorldSurfaces::untextured(&world), chunk_sized).len());
         },
     ));
 
@@ -1406,7 +1406,10 @@ pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
             ..budget
         },
         || {
-            consume(unmerged_face_count(&WorldSurfaces::new(&world), across));
+            consume(unmerged_face_count(
+                &WorldSurfaces::untextured(&world),
+                across,
+            ));
         },
     ));
 
@@ -1415,7 +1418,7 @@ pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
     // produced every useful answer in this harness: run the identical workload
     // twice, differing in exactly one thing. Here that thing is where the
     // voxels come from.
-    let snapshot = DenseSnapshot::read(&WorldSurfaces::new(&world), across);
+    let snapshot = DenseSnapshot::read(&WorldSurfaces::untextured(&world), across);
     out.push(measure(
         "mesh.region_16_from_snapshot",
         "The same 16 cubed region, meshed from a pre-read dense array",
@@ -1431,7 +1434,7 @@ pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
     // What the two reductions actually bought, on this terrain. Recorded rather
     // than asserted: a ratio depends entirely on how smooth the ground is, and
     // quoting one as if it were a property of the mesher would be wrong.
-    let surfaces = WorldSurfaces::new(&world);
+    let surfaces = WorldSurfaces::untextured(&world);
     let mesh = mesh_region(&surfaces, across);
     let visible = unmerged_face_count(&surfaces, across);
     let total_cube_faces = across.cells() * 6;

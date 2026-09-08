@@ -13,7 +13,7 @@
 #     physics     -> foundation
 #     streaming   -> foundation
 #     mesh        -> foundation
-#     simulation  -> foundation, runtime, world, physics, streaming, command
+#     simulation  -> foundation, runtime, asset, world, physics, streaming, command
 #     headless    -> all of the above
 #
 # Outside engine/, over the public contracts only:

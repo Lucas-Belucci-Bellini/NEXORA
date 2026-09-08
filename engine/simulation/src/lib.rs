@@ -22,5 +22,5 @@ pub mod terrain;
 
 pub use commands::{BreakBlockHandler, PlaceBlockHandler};
 pub use residency::{RetainedChunks, WorldResidency};
-pub use surfaces::WorldSurfaces;
+pub use surfaces::{SurfaceTable, SurfaceTableBuilder, WorldSurfaces, UNMAPPED_SURFACE};
 pub use terrain::{PhysicsModule, WorldVoxels};

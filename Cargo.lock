@@ -97,6 +97,7 @@ dependencies = [
 name = "nexora-simulation"
 version = "0.0.1"
 dependencies = [
+ "nexora-asset",
  "nexora-command",
  "nexora-foundation",
  "nexora-mesh",

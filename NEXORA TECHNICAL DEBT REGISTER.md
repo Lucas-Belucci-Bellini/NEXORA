@@ -669,7 +669,19 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   reescrita. Depois separar a saída por camada.
 - **TRIGGER:** o primeiro bloco não-opaco no registro.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-09-08)
+- **RESOLUÇÃO:** o `SurfaceMaterial` carrega o `BlendMode` do RENDER-13, e a
+  `SurfaceTable` do `engine/simulation` resolve bloco → material → `occludes`.
+  O mesher **não mudou uma linha**: o método do trait tinha default para
+  exatamente este dia.
+  Uma diferença em relação ao que estava proposto: a camada de render **não**
+  foi para o `BlockDefinition`. Ela mora no material, e um bloco aponta para um
+  material por tabela lateral — o mesmo padrão que o `WorldVoxels` usa para
+  material físico. Isso mantém o `BlockDefinition` com um campo só, como o
+  `CORE.md` §5 pede, e faz vidro e vidro-tingido compartilharem a decisão em
+  vez de repeti-la.
+  **Fecha só metade do que este item descrevia.** As quatro malhas por chunk do
+  RENDER-10 continuam não existindo — ver `DEBT-0035`.
 
 ### DEBT-0027 — Meshing roda na thread que pedir, não em worker
 
@@ -844,3 +856,27 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   megabytes, ou antes de empacotar uma release.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN (medido)
+
+### DEBT-0035 — A malha ainda sai numa camada só, não nas quatro do RENDER-10
+
+- **SYSTEM:** `engine/mesh`, `engine/simulation::surfaces`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** a metade restante do `DEBT-0026`. O `RENDER-10` pede
+  `opaqueMesh`, `cutoutMesh`, `transparentMesh` e `waterMesh` por chunk, porque
+  superfícies transparentes precisam ser desenhadas depois das opacas e
+  ordenadas de trás para frente. O `mesh_region` devolve **uma** `ChunkMesh`
+  com tudo dentro.
+- **IMPACT:** com o `BlendMode` já disponível, o dado para separar existe — o
+  que não existe é a separação. Um vidro desenhado junto com a pedra vai
+  compor errado assim que houver blending de verdade.
+- **RISK:** baixo hoje (não há renderizador), alto no primeiro frame com
+  transparência, e o sintoma é "o vidro está preto" ou "o vidro some quando
+  olho de certo ângulo" — nenhum dos dois parece um bug de meshing.
+- **PROPOSED REMEDIATION:** `mesh_region` passa a devolver uma malha por
+  camada, e o `VoxelView` ganha um método que diz a camada de uma superfície
+  (com default `Opaque`, como o `occludes` teve). A `SurfaceTable` já sabe a
+  resposta; é propagá-la.
+- **TRIGGER:** o primeiro renderizador que faça blending, ou o primeiro bloco
+  `Cutout` (folhagem) no conteúdo.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
