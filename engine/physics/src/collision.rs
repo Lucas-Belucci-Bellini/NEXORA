@@ -8,7 +8,7 @@
 //! left it, is what produces sliding — and it is exact for boxes against cubes,
 //! because every contact plane is axis-aligned.
 //!
-//! The order is fixed at [`Axis::RESOLUTION_ORDER`] — **vertical first**. That
+//! The order is fixed at [`crate::math::RESOLUTION_ORDER`] — **vertical first**. That
 //! is not arbitrary: landing before moving horizontally is what lets a body
 //! walk along the surface it just landed on within the same step. A different
 //! order is defensible; a *varying* order is not, because
@@ -374,7 +374,7 @@ pub fn resolve<S: VoxelSource + ?Sized>(source: &S, aabb: Aabb, motion: Vec3) ->
     let mut applied = Vec3::ZERO;
     let mut contacts: [Option<Contact>; 3] = [None; 3];
 
-    for axis in Axis::RESOLUTION_ORDER {
+    for axis in crate::math::RESOLUTION_ORDER {
         let sweep = sweep_axis(source, current, axis, motion.axis(axis));
         current = current.moved(axis, sweep.allowed);
         applied = applied.with_axis(axis, sweep.allowed);

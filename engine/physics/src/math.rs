@@ -47,57 +47,18 @@ pub fn snap_to_plane(value: f64) -> f64 {
 /// One of the three world axes.
 ///
 /// Collision is resolved one axis at a time, so the axis is a value the solver
-/// passes around rather than three copies of the same code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Axis {
-    /// East-west.
-    X,
-    /// Up-down.
-    Y,
-    /// North-south.
-    Z,
-}
+/// One of the three coordinate axes.
+///
+/// Re-exported from the foundation rather than redefined: an axis is spatial
+/// vocabulary, not a physics concept. What *is* a physics concept is the order
+/// collision resolves them in, which stays here as [`RESOLUTION_ORDER`].
+pub use nexora_foundation::spatial::Axis;
 
-impl Axis {
-    /// The three axes in resolution order: vertical first.
-    ///
-    /// See [`crate::collision`] for why the order is fixed and why it is this
-    /// one.
-    pub const RESOLUTION_ORDER: [Self; 3] = [Self::Y, Self::X, Self::Z];
-
-    /// All three axes in coordinate order.
-    pub const ALL: [Self; 3] = [Self::X, Self::Y, Self::Z];
-
-    /// Index into a three-component array.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        match self {
-            Self::X => 0,
-            Self::Y => 1,
-            Self::Z => 2,
-        }
-    }
-
-    /// The other two axes, in coordinate order.
-    #[must_use]
-    pub const fn others(self) -> [Self; 2] {
-        match self {
-            Self::X => [Self::Y, Self::Z],
-            Self::Y => [Self::X, Self::Z],
-            Self::Z => [Self::X, Self::Y],
-        }
-    }
-
-    /// Stable lowercase name, safe to emit in diagnostics.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::X => "x",
-            Self::Y => "y",
-            Self::Z => "z",
-        }
-    }
-}
+/// The three axes in the order collision resolves them: **vertical first**.
+///
+/// See [`crate::collision`] for why the order is fixed and why it is this one.
+/// A physics policy, so it lives with physics rather than with the axis type.
+pub const RESOLUTION_ORDER: [Axis; 3] = [Axis::Y, Axis::X, Axis::Z];
 
 /// A three-component vector: velocity, force, half-extent or normal.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -453,7 +414,7 @@ mod tests {
 
     #[test]
     fn vertical_is_resolved_first() {
-        assert_eq!(Axis::RESOLUTION_ORDER[0], Axis::Y);
+        assert_eq!(RESOLUTION_ORDER[0], Axis::Y);
     }
 
     #[test]

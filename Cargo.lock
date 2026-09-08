@@ -3,12 +3,21 @@
 version = 4
 
 [[package]]
+name = "nexora-asset"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+ "nexora-runtime",
+]
+
+[[package]]
 name = "nexora-benchmark"
 version = "0.0.1"
 dependencies = [
  "nexora-entity",
  "nexora-ffi-probe",
  "nexora-foundation",
+ "nexora-mesh",
  "nexora-persistence",
  "nexora-physics",
  "nexora-runtime",
@@ -57,6 +66,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-mesh"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+]
+
+[[package]]
 name = "nexora-persistence"
 version = "0.0.1"
 dependencies = [
@@ -81,8 +97,10 @@ dependencies = [
 name = "nexora-simulation"
 version = "0.0.1"
 dependencies = [
+ "nexora-asset",
  "nexora-command",
  "nexora-foundation",
+ "nexora-mesh",
  "nexora-physics",
  "nexora-runtime",
  "nexora-streaming",
@@ -93,6 +111,14 @@ dependencies = [
 name = "nexora-streaming"
 version = "0.0.1"
 dependencies = [
+ "nexora-foundation",
+]
+
+[[package]]
+name = "nexora-texture-forge"
+version = "0.0.1"
+dependencies = [
+ "nexora-asset",
  "nexora-foundation",
 ]
 

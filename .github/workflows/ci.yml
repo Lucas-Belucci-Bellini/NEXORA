@@ -79,6 +79,26 @@ jobs:
           ./target/release/nexora-benchmark --smoke \
             --scratch "${RUNNER_TEMP}/bench" > /dev/null
 
+      # The texture forge is code too, and its output is content: generate a
+      # material from a checked-in definition, then read it back off disk and
+      # validate it. A tool that writes something it cannot then read is the
+      # failure this stage exists to catch.
+      - name: Smoke test the texture forge
+        run: |
+          for definition in content/materials/*.json; do
+            ./target/release/nexora-texture-forge generate "$definition" \
+              --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE
+          done
+          ./target/release/nexora-texture-forge list --out "${RUNNER_TEMP}/materials"
+          ./target/release/nexora-texture-forge validate nexora:material/stone_rough \
+            --out "${RUNNER_TEMP}/materials"
+          ./target/release/nexora-texture-forge validate nexora:material/dark_oak_plank \
+            --out "${RUNNER_TEMP}/materials"
+          # Generating again must change nothing: the run is deterministic, and
+          # a second pass that rewrites files would mean it is not.
+          ./target/release/nexora-texture-forge generate content/materials/stone_rough.json \
+            --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE | grep -q '^unchanged'
+
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its
       # timings mean anything, so the agreement is checked on every push rather

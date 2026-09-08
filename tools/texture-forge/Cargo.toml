@@ -1,0 +1,27 @@
+[package]
+name = "nexora-texture-forge"
+description = "NEXORA Texture Forge: generates, transforms, validates and records surface materials. A content tool, not an engine crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_texture_forge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexora-texture-forge"
+path = "src/main.rs"
+
+# Asset contracts and foundation, and nothing else. `NEXORA DEPENDENCY MATRIX.md`
+# places tools at the end of the dependency direction, depending on public
+# contracts; a content tool that reached into the world or the simulation would
+# be a tool that cannot run without a running game.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-asset.workspace = true
+
+[lints]
+workspace = true

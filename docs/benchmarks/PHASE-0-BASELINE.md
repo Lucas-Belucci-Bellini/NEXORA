@@ -858,3 +858,86 @@ write in the run, including the command handlers' — which never learned the
 journal exists, because the journal lives on the world rather than wrapped
 around it. 76 is every probe holding in a world that was reconstructed rather
 than loaded.
+
+---
+
+# Appendix F — meshing (2026-09-08, later run)
+
+The stage this document listed as unmeasurable, and the reason that was wrong.
+
+## The correction first
+
+Earlier appendices carried `mesh generation` on the **not measured** list with
+the reason *"no renderer to consume a mesh"*. That put it beside the window and
+the RHI, as though it were blocked on hardware. It was not.
+
+**Displaying** a mesh needs a renderer. **Building** one does not, and neither
+does checking it. RENDER-11's pipeline is `block changed → chunk dirty →
+neighbour check → remesh → GPU update`, and only the last arrow needs hardware.
+A mesh is a data structure with properties a test can check: a solid region must
+emit only its shell, merging must preserve surface area exactly, a border face
+must be culled by the neighbouring chunk, and the same voxels must always
+produce the same geometry.
+
+Mesh generation is now measured. ADR-0012 has the design.
+
+## Finding 22 — the mesher is not the slow part; the world lookup is
+
+The same 16³ region across the ground/air boundary, meshed two ways, differing
+in exactly one thing — where the voxels come from:
+
+| measurement | median | rel. σ |
+| --- | ---: | ---: |
+| `mesh.region_16` (read from the world) | **3.30 ms** | 3.5% |
+| `mesh.region_16_from_snapshot` (pre-read dense array) | **295.45 µs** | 1.7% |
+| `mesh.cull_only_16` (culling, no merging) | **3.20 ms** | 2.5% |
+| `mesh.region_32` (32³, the engine's section size) | **26.12 ms** | 3.0% |
+
+**11.2×.** So **91% of meshing is the voxel lookup** — not culling, not merging.
+`mesh.cull_only_16` confirms it from the other direction: strip merging out
+entirely and you save about 3%.
+
+This is [finding 10](#) again — 49% of a physics step is the voxel lookup — and
+here it is far more extreme. Two independent measurements now point at the same
+place, which is worth more than either alone.
+
+**The consequence is architectural, not merely an optimisation note.** A region
+snapshotted into a dense array can be meshed on a worker thread *without
+touching the world at all*. So the fix for meshing speed and the mechanism that
+makes RENDER-12's async meshing **safe** are the same change. `DEBT-0029` and
+`DEBT-0027` are one piece of work wearing two labels.
+
+`mesh.region_32` at **26.12 ms** is the other half of why: that is more than a
+60 Hz frame, for one section, on the tick thread.
+
+## What culling and merging actually buy
+
+Measured on generated terrain at the ground/air boundary, 16³:
+
+| | faces |
+| --- | ---: |
+| every cell, all six sides (a naive mesher) | **24,576** |
+| after face culling | **2,471** |
+| after greedy merging | **807 rectangles** |
+| vertices a renderer would upload | **3,228** |
+
+Recorded as quantities, not as a ratio. How much merging wins depends entirely
+on how smooth the ground is — a checkerboard merges nothing at all — and
+quoting one terrain's ratio as a property of the mesher would be exactly the
+kind of unearned claim the earlier appendices were corrected for.
+
+## What the slice's remaining gaps are
+
+| stage | state |
+| --- | --- |
+| **Mesh generation** | **done** — this appendix |
+| 16³ voxel chunk, entities, physics, streaming, jobs, save/load | done |
+| Same kernels on a second stack, FFI cost | done — Appendix D |
+| Durability and crash recovery | done — Appendix E |
+| RHI, window, camera, input, frame time | missing — needs a GPU |
+| Same *engine* on a second stack | missing — out of scope, ADR-0009 |
+| Build and iteration time | not captured by this harness |
+
+Of the plan's vertical-slice stages, what is left is the render path and the
+things that only exist inside one. **The list of "blocked on hardware" items is
+one shorter than it was, and it was one too long.**

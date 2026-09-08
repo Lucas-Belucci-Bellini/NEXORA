@@ -23,6 +23,60 @@ pub const MAX_BLOCK_COORD: i64 = 1 << 40;
 /// Largest accepted extent of a chunk section on one axis.
 pub const MAX_SECTION_EXTENT: u32 = 256;
 
+/// One of the three coordinate axes.
+///
+/// Shared vocabulary rather than each system's own: physics resolves collision
+/// one axis at a time, the mesher sweeps one axis at a time, and a third copy
+/// of the same three-variant enum would mean three places to disagree about
+/// what "the other two axes" means.
+///
+/// Policies that happen to be *about* axes stay with the system that owns them
+/// — the order collision resolves in is a physics decision and lives there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Axis {
+    /// East-west.
+    X,
+    /// Up-down.
+    Y,
+    /// North-south.
+    Z,
+}
+
+impl Axis {
+    /// All three axes in coordinate order.
+    pub const ALL: [Self; 3] = [Self::X, Self::Y, Self::Z];
+
+    /// Index into a three-component array.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::X => 0,
+            Self::Y => 1,
+            Self::Z => 2,
+        }
+    }
+
+    /// The other two axes, in coordinate order.
+    #[must_use]
+    pub const fn others(self) -> [Self; 2] {
+        match self {
+            Self::X => [Self::Y, Self::Z],
+            Self::Y => [Self::X, Self::Z],
+            Self::Z => [Self::X, Self::Y],
+        }
+    }
+
+    /// Stable lowercase name, safe to emit in diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::X => "x",
+            Self::Y => "y",
+            Self::Z => "z",
+        }
+    }
+}
+
 /// A canonical integer block position in a dimension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockPos {

@@ -1276,6 +1276,193 @@ pub const PLAN_SLICE_STAGES: [&str; 13] = [
     "mod boundary",
 ];
 
+/// A region of voxels read once into a dense array.
+///
+/// A measurement fixture, not engine code: it exists to answer "how much of
+/// meshing is the mesher and how much is the world lookup" by removing the
+/// lookup. Deliberately not built into `nexora-mesh` — the answer decides
+/// whether that is worth doing, and building it first would be assuming it.
+struct DenseSnapshot {
+    origin: BlockPos,
+    size: [usize; 3],
+    cells: Vec<Option<nexora_mesh::mesh::SurfaceId>>,
+}
+
+impl DenseSnapshot {
+    /// Read `extent` plus a one-cell border, so border culling still works.
+    fn read<V: nexora_mesh::view::VoxelView>(view: &V, extent: nexora_mesh::view::Extent) -> Self {
+        let size = [
+            extent.size[0] as usize + 2,
+            extent.size[1] as usize + 2,
+            extent.size[2] as usize + 2,
+        ];
+        let origin = BlockPos::new(
+            extent.origin.x - 1,
+            extent.origin.y - 1,
+            extent.origin.z - 1,
+        );
+        let mut cells = Vec::with_capacity(size[0] * size[1] * size[2]);
+        for z in 0..size[2] {
+            for y in 0..size[1] {
+                for x in 0..size[0] {
+                    cells.push(view.surface_at(BlockPos::new(
+                        origin.x + x as i64,
+                        origin.y + y as i64,
+                        origin.z + z as i64,
+                    )));
+                }
+            }
+        }
+        Self {
+            origin,
+            size,
+            cells,
+        }
+    }
+
+    fn index(&self, position: BlockPos) -> Option<usize> {
+        let dx = position.x - self.origin.x;
+        let dy = position.y - self.origin.y;
+        let dz = position.z - self.origin.z;
+        if dx < 0 || dy < 0 || dz < 0 {
+            return None;
+        }
+        let (x, y, z) = (dx as usize, dy as usize, dz as usize);
+        if x >= self.size[0] || y >= self.size[1] || z >= self.size[2] {
+            return None;
+        }
+        Some((z * self.size[1] + y) * self.size[0] + x)
+    }
+}
+
+impl nexora_mesh::view::VoxelView for DenseSnapshot {
+    fn surface_at(&self, position: BlockPos) -> Option<nexora_mesh::mesh::SurfaceId> {
+        self.cells[self.index(position)?]
+    }
+
+    fn occludes(&self, position: BlockPos) -> bool {
+        // Outside the snapshot is unknown, and unknown occludes -- the same
+        // call `WorldSurfaces` makes for a non-resident chunk.
+        self.index(position)
+            .is_none_or(|index| self.cells[index].is_some())
+    }
+}
+
+/// Turning voxels into surfaces (RENDER-9).
+///
+/// Measures the two reductions separately, because they answer different
+/// questions: culling decides how much surface exists, merging decides how many
+/// primitives describe it. A single "meshing took N µs" would hide which half
+/// to optimise — the same mistake a single physics number would have made
+/// (finding 10).
+///
+/// # Errors
+///
+/// Returns an error when the benchmark world cannot be built.
+pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
+    use nexora_mesh::greedy::unmerged_face_count;
+    use nexora_mesh::mesh_region;
+    use nexora_mesh::view::Extent;
+    use nexora_simulation::WorldSurfaces;
+
+    let world = populated_world()?;
+    let surface = world.surface_height(8, 8);
+    let mut out = Vec::new();
+
+    // Straddling the ground/air boundary: the only place there is surface to
+    // build. Meshing buried rock measures culling finding nothing.
+    let across = Extent::cubic(BlockPos::new(0, surface - 8, 0), 16)?;
+    let chunk_sized = Extent::cubic(BlockPos::new(0, surface - 16, 0), 32)?;
+
+    out.push(measure(
+        "mesh.region_16",
+        "Cull and merge a 16 cubed region across the ground/air boundary",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        || {
+            consume(mesh_region(&WorldSurfaces::untextured(&world), across).len());
+        },
+    ));
+
+    out.push(measure(
+        "mesh.region_32",
+        "The same at 32 cubed, the engine's default section size",
+        Budget {
+            iterations_per_sample: 5,
+            ..budget
+        },
+        || {
+            consume(mesh_region(&WorldSurfaces::untextured(&world), chunk_sized).len());
+        },
+    ));
+
+    out.push(measure(
+        "mesh.cull_only_16",
+        "Count visible faces without merging them: the culling half alone",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        || {
+            consume(unmerged_face_count(
+                &WorldSurfaces::untextured(&world),
+                across,
+            ));
+        },
+    ));
+
+    // --- is the mesher slow, or is the world lookup slow? --------------------
+    // The same question finding 10 asked of physics, and the pattern that has
+    // produced every useful answer in this harness: run the identical workload
+    // twice, differing in exactly one thing. Here that thing is where the
+    // voxels come from.
+    let snapshot = DenseSnapshot::read(&WorldSurfaces::untextured(&world), across);
+    out.push(measure(
+        "mesh.region_16_from_snapshot",
+        "The same 16 cubed region, meshed from a pre-read dense array",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        || {
+            consume(mesh_region(&snapshot, across).len());
+        },
+    ));
+
+    // What the two reductions actually bought, on this terrain. Recorded rather
+    // than asserted: a ratio depends entirely on how smooth the ground is, and
+    // quoting one as if it were a property of the mesher would be wrong.
+    let surfaces = WorldSurfaces::untextured(&world);
+    let mesh = mesh_region(&surfaces, across);
+    let visible = unmerged_face_count(&surfaces, across);
+    let total_cube_faces = across.cells() * 6;
+
+    out.push(record_quantity(
+        "mesh.cube_faces_16",
+        "Faces a naive mesher would emit: every cell, all six sides",
+        total_cube_faces,
+    ));
+    out.push(record_quantity(
+        "mesh.visible_faces_16",
+        "Faces left after culling",
+        visible,
+    ));
+    out.push(record_quantity(
+        "mesh.quads_16",
+        "Rectangles left after greedy merging",
+        mesh.len() as u64,
+    ));
+    out.push(record_quantity(
+        "mesh.vertices_16",
+        "Vertices a renderer would upload, at four per rectangle",
+        mesh.vertex_count(),
+    ));
+
+    Ok(out)
+}
+
 /// What one crossing of a language boundary costs.
 ///
 /// Three rungs of the same ladder, so the differences separate two costs the
@@ -1411,6 +1598,7 @@ pub fn ffi(budget: Budget) -> Vec<Measurement> {
 pub fn measured_stages() -> Vec<&'static str> {
     vec![
         "16³ voxel chunk",
+        "mesh generation",
         "1,000 entities",
         "physics",
         "jobs",
@@ -1442,10 +1630,6 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
         Unmeasured {
             name: "camera",
             reason: "depends on the RHI",
-        },
-        Unmeasured {
-            name: "mesh generation",
-            reason: "no renderer to consume a mesh",
         },
         Unmeasured {
             name: "mod boundary",

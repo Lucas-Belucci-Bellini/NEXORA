@@ -648,3 +648,235 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   de processo no motor em execução.
 - **TARGET STAGE:** Phase 3
 - **STATUS:** CLOSED (2026-09-07)
+
+### DEBT-0026 — O mesher só conhece uma classe de opacidade
+
+- **SYSTEM:** `engine/mesh`, `engine/world::world::BlockDefinition`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `RENDERER and GRAPHICS.md` RENDER-10 pede quatro malhas por
+  chunk — `opaqueMesh`, `cutoutMesh`, `transparentMesh`, `waterMesh`. O
+  `BlockDefinition` de hoje carrega só `solid`: não há como saber que vidro é
+  transparente. Construir as quatro camadas seria inventar dado de bloco, o que
+  a §3 do briefing proíbe.
+- **IMPACT:** vidro, folhagem, água e qualquer bloco não-opaco vão ocluir a face
+  do vizinho e sumir do mundo visível. Não é um defeito do mesher — é a única
+  resposta que o dado disponível permite.
+- **RISK:** baixo hoje (não existe bloco não-opaco), alto no dia em que existir,
+  porque o sintoma é "o mundo está sólido demais" e não um erro.
+- **PROPOSED REMEDIATION:** dar ao `BlockDefinition` uma camada de render e
+  sobrescrever `VoxelView::occludes` no `WorldSurfaces` — o método já é `trait`
+  method com default exatamente para isso, então é **uma função**, não uma
+  reescrita. Depois separar a saída por camada.
+- **TRIGGER:** o primeiro bloco não-opaco no registro.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** CLOSED (2026-09-08)
+- **RESOLUÇÃO:** o `SurfaceMaterial` carrega o `BlendMode` do RENDER-13, e a
+  `SurfaceTable` do `engine/simulation` resolve bloco → material → `occludes`.
+  O mesher **não mudou uma linha**: o método do trait tinha default para
+  exatamente este dia.
+  Uma diferença em relação ao que estava proposto: a camada de render **não**
+  foi para o `BlockDefinition`. Ela mora no material, e um bloco aponta para um
+  material por tabela lateral — o mesmo padrão que o `WorldVoxels` usa para
+  material físico. Isso mantém o `BlockDefinition` com um campo só, como o
+  `CORE.md` §5 pede, e faz vidro e vidro-tingido compartilharem a decisão em
+  vez de repeti-la.
+  **Fecha só metade do que este item descrevia.** As quatro malhas por chunk do
+  RENDER-10 continuam não existindo — ver `DEBT-0035`.
+
+### DEBT-0027 — Meshing roda na thread que pedir, não em worker
+
+- **SYSTEM:** `engine/mesh`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** RENDER-12 quer a geração de malha fora da thread principal,
+  *"crucial para mineração/construção sem travar a câmera"*. O mesher é uma
+  função pura hoje; nada o agenda.
+- **IMPACT:** medido — `mesh.region_32` custa **26,12 ms**, mais de um quadro a
+  60 Hz. Uma região de 32³ remeshada na thread do tick é um engasgo visível.
+- **RISK:** alto assim que houver um loop de quadro, e exatamente zero antes.
+- **PROPOSED REMEDIATION:** submeter ao job system, com o snapshot do
+  `DEBT-0029` como entrada — é ele que torna o meshing off-thread **seguro**,
+  não só mais rápido, porque o worker deixa de tocar o mundo.
+- **TRIGGER:** existir um loop de quadro.
+- **TARGET STAGE:** Phase 2/5
+- **STATUS:** OPEN (medido)
+
+### DEBT-0028 — Não há malha de LOD
+
+- **SYSTEM:** `engine/mesh`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** `RENDERER and GRAPHICS.md` prevê malha simplificada para
+  distância, e o `STREAMING SYSTEM.md` já tem a escada `FULL → REGIONAL →
+  ABSTRACT`. O mesher só produz detalhe completo.
+- **IMPACT:** nenhum hoje — nada desenha. Quando desenhar, a contagem de
+  triângulos cresce com o volume visível em vez de com o que dá para distinguir.
+- **RISK:** baixo até existir renderização a distância.
+- **PROPOSED REMEDIATION:** o `RENDER-9` já lista Surface Nets, Marching Cubes e
+  Dual Contouring como algoritmos futuros; a `VoxelView` é a fronteira por onde
+  um deles entra sem tocar no resto.
+- **TRIGGER:** o primeiro nível de LOD que precise desenhar.
+- **TARGET STAGE:** Phase 5
+- **STATUS:** OPEN
+
+### DEBT-0029 — 91% do meshing é lookup no mundo, não meshing
+
+- **SYSTEM:** `engine/simulation::surfaces`, `engine/mesh`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** descoberto pela medição em par, não por suspeita
+  ([Apêndice F](docs/benchmarks/PHASE-0-BASELINE.md), achado 22): a mesma região
+  de 16³ custa **3,30 ms** lida do mundo e **295,45 µs** lida de um array denso
+  pré-carregado. **11,2×.** O `mesh.cull_only_16` a 3,20 ms diz o mesmo pelo
+  outro lado — a fusão gulosa é ~3% do total.
+- **IMPACT:** otimizar o algoritmo do mesher renderia no máximo 9%. O ganho está
+  em ler os voxels uma vez.
+- **RISK:** médio, e o mesmo padrão do `DEBT-0011` (49% de um passo de física é
+  o lookup de voxel). Duas medições independentes apontando para o mesmo lugar.
+- **PROPOSED REMEDIATION:** um `DenseSnapshot` de verdade em `nexora-mesh` — a
+  região mais uma borda de uma célula, lida de uma vez. O benchmark já tem a
+  versão-fixture que produziu o número; promovê-la é pequeno. **E resolve duas
+  coisas:** é também o que torna o `DEBT-0027` (meshing off-thread) seguro, já
+  que o worker passa a não tocar o mundo.
+- **TRIGGER:** o primeiro remesh no caminho de um quadro.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN (medido)
+
+### DEBT-0030 — A inclinação do normal map não tem significado físico
+
+- **SYSTEM:** `tools/texture-forge::pbr`, `engine/asset::material`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** um material declara `metres_per_tile`, mas **não declara a
+  amplitude do relevo em metros**. O campo de altura vive em `0.0..=1.0` e não
+  há como convertê-lo honestamente em gradiente real. O `normal_strength` é,
+  portanto, um controle **estilístico**, e o pipeline diz isso em vez de
+  inventar uma constante que pareceria física.
+- **IMPACT:** duas texturas com o mesmo relevo aparente e escalas físicas
+  diferentes produzem normais iguais. Sob luz rasante, a parede de tijolo e o
+  tijolo isolado vão reagir igual, o que está errado.
+- **RISK:** baixo enquanto não houver iluminação; médio no dia em que houver,
+  porque o sintoma é "o relevo parece raso demais" e não um erro.
+- **PROPOSED REMEDIATION:** um campo `relief_metres` na `SurfaceMaterial` (ou
+  derivado de `physical_scale` × uma fração declarada), e o Sobel passa a
+  produzir gradiente em metros por metro. É **um campo e três linhas** — o que
+  falta é a decisão de arte sobre o valor, não o código.
+- **TRIGGER:** a primeira luz direcional no renderizador.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0031 — O PNG sai sem compressão, e a compressão vale 12×
+
+- **SYSTEM:** `tools/texture-forge::png`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** o codificador escreve blocos **deflate armazenados** —
+  legais, lidos por qualquer decodificador, e sem compressão nenhuma. Foi a
+  escolha certa para nascer correto; escrever um compressor antes de saber
+  quanto os arquivos pesam seria adivinhar.
+- **IMPACT:** medido, não estimado. Seis mapas gerados (albedo e altura de
+  wood/stone a 64², brick a 128²) pesam **123 805 bytes** como estão e
+  **10 220 bytes** com deflate real: **12,11× maior**. Os albedos comprimem 16
+  a 48× justamente porque a quantização de paleta produz corridas longas; as
+  alturas, 2 a 10×.
+- **RISK:** alto na escala declarada pelo operador. Dez mil materiais × 6
+  mapas × 64² são da ordem de **1 GB** como está, contra **~85 MB** comprimido.
+  Isso é a diferença entre caber num repositório e não caber.
+- **PROPOSED REMEDIATION:** deflate de Huffman fixo com um localizador de
+  correspondências simples, **dentro deste módulo** — nada que o chame muda.
+  A filtragem adaptativa do PNG só paga na frente de um compressor (medido: sem
+  compressor ela não muda nada), então entra junto.
+- **TRIGGER:** já disparado pela medição acima.
+- **TARGET STAGE:** imediatamente após a FASE 3
+- **STATUS:** CLOSED (2026-09-08)
+- **RESOLUÇÃO:** `tools/texture-forge/src/deflate.rs` — Huffman fixo com
+  localizador por cadeia de hash, mais a escolha de filtro por scanline no
+  `png.rs`. Vinte PNGs de um conjunto PBR completo foram inflados pelo `zlib`
+  do Python e cada pixel voltou idêntico; o codificador escolheu quatro dos
+  cinco filtros.
+  **E uma correção ao número acima:** os 12,11× foram medidos sobre seis mapas
+  que eram só albedo e altura, e albedo quantizado é o melhor caso que existe.
+  Sobre o conjunto PBR inteiro — vinte mapas, com normal, roughness e oclusão,
+  que são contínuos — o alcançável é **6,79×** (zlib -9) e este codificador
+  entrega **4,73×**. Ver o `DEBT-0034` para a diferença que sobra.
+
+### DEBT-0032 — Metallic é constante porque nenhuma receita tem metal por texel
+
+- **SYSTEM:** `tools/texture-forge::pbr`, `tools/texture-forge::recipe`
+- **CLASS:** CONTENT
+- **WHY CREATED:** o pipeline emite o valor declarado pelo material em todo
+  texel. Não é um mock: é a resposta correta para uma superfície uniforme, e é
+  tudo que o dado disponível permite. O que não existe é receita que produza
+  metal **variável** — ferrugem, veio de minério, verniz descascado.
+- **IMPACT:** um bloco de minério não pode ter o minério metálico e a rocha
+  dielétrica. O mapa gasta bytes para dizer uma constante.
+- **RISK:** baixo. O caminho está pronto: basta uma receita emitir uma máscara.
+- **PROPOSED REMEDIATION:** uma quarta saída opcional da `Recipe` (uma máscara
+  em `0.0..=1.0`), consumida pelo pipeline no lugar da constante. E, quando o
+  mapa for constante, **não emiti-lo** — o valor já está na definição.
+- **TRIGGER:** o primeiro material com metal parcial.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0033 — O codificador escreve oito bits por canal e recusa dezesseis
+
+- **SYSTEM:** `tools/texture-forge::png`
+- **CLASS:** TEMPORARY
+- **WHY CREATED:** `TextureFormat::sixteen_bit` existe no contrato porque um
+  mapa de altura com banding visível é um problema real, mas **nada produz 16
+  bits ainda**. Escrever a codificação seria código não testado por dado que
+  não existe; o codificador recusa alto em vez disso.
+- **IMPACT:** um mapa de altura de 8 bits tem 256 degraus. Em relevo suave e
+  larga escala isso aparece como faixas no normal derivado.
+- **RISK:** baixo hoje. As alturas atuais vêm de receitas com quantização de
+  paleta, onde 256 degraus não é o limitante.
+- **PROPOSED REMEDIATION:** PNG guarda amostras de 16 bits em big-endian; são
+  ~5 linhas no laço de scanline mais o `bit_depth` no IHDR. O que falta é um
+  gerador que produza o dado, para que exista teste.
+- **TRIGGER:** o primeiro mapa de 16 bits, ou banding visível num normal.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+
+### DEBT-0034 — O compressor é 1,40× pior que o zlib -9
+
+- **SYSTEM:** `tools/texture-forge::deflate`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** o compressor usa **Huffman fixo** (a tabela que os dois lados
+  já conhecem, sem árvore no fluxo) e **correspondência gulosa** (a primeira
+  correspondência mais longa encontrada, sem olhar se adiar um byte renderia
+  uma melhor). O `zlib -9` faz Huffman dinâmico e correspondência preguiçosa.
+- **IMPACT:** medido sobre as mesmas vinte scanlines filtradas de um conjunto
+  PBR completo: **59 518 bytes** contra **42 472** do `zlib -9` — 1,40× maior,
+  com o pior arquivo individual a 1,50× (`sand_64_height`). Na escala de dez
+  mil materiais isso é da ordem de 120 MB contra 85 MB.
+- **RISK:** baixo. É espaço, não correção, e o formato de saída continua sendo
+  PNG válido para qualquer decodificador.
+- **PROPOSED REMEDIATION:** duas coisas independentes, nesta ordem de retorno:
+  **(1) correspondência preguiçosa** — adiar um byte quando a posição seguinte
+  oferece uma correspondência maior; é ~20 linhas e costuma valer a maior parte
+  da diferença. **(2) Huffman dinâmico** — contar frequências, construir o
+  código canônico e emitir a árvore; é a metade cara e rende menos.
+- **TRIGGER:** quando o repositório de assets passar de algumas centenas de
+  megabytes, ou antes de empacotar uma release.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN (medido)
+
+### DEBT-0035 — A malha ainda sai numa camada só, não nas quatro do RENDER-10
+
+- **SYSTEM:** `engine/mesh`, `engine/simulation::surfaces`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** a metade restante do `DEBT-0026`. O `RENDER-10` pede
+  `opaqueMesh`, `cutoutMesh`, `transparentMesh` e `waterMesh` por chunk, porque
+  superfícies transparentes precisam ser desenhadas depois das opacas e
+  ordenadas de trás para frente. O `mesh_region` devolve **uma** `ChunkMesh`
+  com tudo dentro.
+- **IMPACT:** com o `BlendMode` já disponível, o dado para separar existe — o
+  que não existe é a separação. Um vidro desenhado junto com a pedra vai
+  compor errado assim que houver blending de verdade.
+- **RISK:** baixo hoje (não há renderizador), alto no primeiro frame com
+  transparência, e o sintoma é "o vidro está preto" ou "o vidro some quando
+  olho de certo ângulo" — nenhum dos dois parece um bug de meshing.
+- **PROPOSED REMEDIATION:** `mesh_region` passa a devolver uma malha por
+  camada, e o `VoxelView` ganha um método que diz a camada de uma superfície
+  (com default `Opaque`, como o `occludes` teve). A `SurfaceTable` já sabe a
+  resposta; é propagá-la.
+- **TRIGGER:** o primeiro renderizador que faça blending, ou o primeiro bloco
+  `Cutout` (folhagem) no conteúdo.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
