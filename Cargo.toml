@@ -16,6 +16,9 @@
 #     simulation  -> foundation, runtime, world, physics, streaming, command
 #     headless    -> all of the above
 #
+# Outside engine/, over the public contracts only:
+#     texture-forge -> foundation, asset
+#
 # A crate cannot depend "upwards", because Cargo rejects cycles. The matrix is
 # therefore checked by the build rather than by review alone.
 
@@ -35,6 +38,8 @@ members = [
     "engine/simulation",
     "engine/headless",
     "engine/benchmark",
+    # Not an engine crate: a content tool, over the public asset contracts.
+    "tools/texture-forge",
     # Not an engine crate: the only place `unsafe` is allowed, because measuring
     # a language boundary means calling across one. ADR-0009.
     "benchmarks/ffi-probe",
@@ -60,6 +65,7 @@ nexora-streaming = { path = "engine/streaming", version = "0.0.1" }
 nexora-mesh = { path = "engine/mesh", version = "0.0.1" }
 nexora-simulation = { path = "engine/simulation", version = "0.0.1" }
 nexora-ffi-probe = { path = "benchmarks/ffi-probe", version = "0.0.1" }
+nexora-texture-forge = { path = "tools/texture-forge", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -114,6 +114,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-texture-forge"
+version = "0.0.1"
+dependencies = [
+ "nexora-asset",
+ "nexora-foundation",
+]
+
+[[package]]
 name = "nexora-world"
 version = "0.0.1"
 dependencies = [
