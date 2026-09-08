@@ -26,12 +26,16 @@
 
 pub mod color;
 pub mod noise;
+pub mod pbr;
+pub mod png;
 pub mod procedural;
 pub mod raster;
 pub mod recipe;
 
 pub use color::{Ramp, Rgba};
 pub use noise::Noise;
+pub use pbr::{PbrPipeline, PBR_PIPELINE, PBR_VERSION};
+pub use png::{adler32, encode as encode_png};
 pub use procedural::{ProceduralGenerator, AUTHOR, PROCEDURAL_GENERATOR, PROCEDURAL_VERSION, TOOL};
 pub use raster::Canvas;
 pub use recipe::Recipe;

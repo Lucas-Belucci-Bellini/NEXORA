@@ -261,6 +261,79 @@ impl GeneratedMaterial {
         })
     }
 
+    /// Reassemble after a pipeline transformed the material.
+    ///
+    /// The counterpart of [`Self::assemble`], and it enforces the same rule
+    /// from the other side: a pipeline cannot hand back output whose record
+    /// names a different pipeline, or a different version of itself. Between
+    /// the two, every map in the system is traceable to the generator that
+    /// drew it and the pipeline that derived it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the definition carries no generation trace, when
+    /// the trace does not name this pipeline at this version, or when a map's
+    /// resolution disagrees with the definition.
+    pub fn transformed(
+        pipeline: &dyn TexturePipeline,
+        definition: SurfaceMaterial,
+        maps: MapSet,
+        preview: Option<TextureMap>,
+    ) -> Result<Self> {
+        let Some(trace) = definition.provenance().generation.as_ref() else {
+            return Err(
+                unattributable("transformed output carries no generation trace")
+                    .with_context("material", definition.id().to_string()),
+            );
+        };
+        if trace.pipeline.as_ref() != Some(pipeline.id()) {
+            return Err(
+                unattributable("the trace does not name the pipeline that ran")
+                    .with_context("material", definition.id().to_string())
+                    .with_context(
+                        "recorded",
+                        trace
+                            .pipeline
+                            .as_ref()
+                            .map_or_else(|| "none".to_owned(), ToString::to_string),
+                    )
+                    .with_context("actual", pipeline.id().to_string()),
+            );
+        }
+        if trace.pipeline_version != Some(pipeline.version()) {
+            return Err(
+                unattributable("the trace names a different version of this pipeline")
+                    .with_context("material", definition.id().to_string())
+                    .with_context("actual", pipeline.version().to_string()),
+            );
+        }
+
+        let expected = definition.resolution();
+        for map in maps.iter() {
+            if map.resolution() != expected {
+                return Err(invalid("a map does not match the material's resolution")
+                    .with_context("material", definition.id().to_string())
+                    .with_context("map", map.role().as_str()));
+            }
+        }
+
+        Ok(Self {
+            definition,
+            maps,
+            preview,
+        })
+    }
+
+    /// Take the material apart, so a pipeline can add to it.
+    ///
+    /// Consuming rather than borrowing: a pipeline produces a new material
+    /// from an old one, and handing out the pieces by value is what stops the
+    /// old one being used as though it were still current.
+    #[must_use]
+    pub fn into_parts(self) -> (SurfaceMaterial, MapSet, Option<TextureMap>) {
+        (self.definition, self.maps, self.preview)
+    }
+
     /// The definition this realises.
     #[must_use]
     pub const fn definition(&self) -> &SurfaceMaterial {

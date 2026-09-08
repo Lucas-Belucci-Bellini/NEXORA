@@ -726,3 +726,86 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro remesh no caminho de um quadro.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN (medido)
+
+### DEBT-0030 — A inclinação do normal map não tem significado físico
+
+- **SYSTEM:** `tools/texture-forge::pbr`, `engine/asset::material`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** um material declara `metres_per_tile`, mas **não declara a
+  amplitude do relevo em metros**. O campo de altura vive em `0.0..=1.0` e não
+  há como convertê-lo honestamente em gradiente real. O `normal_strength` é,
+  portanto, um controle **estilístico**, e o pipeline diz isso em vez de
+  inventar uma constante que pareceria física.
+- **IMPACT:** duas texturas com o mesmo relevo aparente e escalas físicas
+  diferentes produzem normais iguais. Sob luz rasante, a parede de tijolo e o
+  tijolo isolado vão reagir igual, o que está errado.
+- **RISK:** baixo enquanto não houver iluminação; médio no dia em que houver,
+  porque o sintoma é "o relevo parece raso demais" e não um erro.
+- **PROPOSED REMEDIATION:** um campo `relief_metres` na `SurfaceMaterial` (ou
+  derivado de `physical_scale` × uma fração declarada), e o Sobel passa a
+  produzir gradiente em metros por metro. É **um campo e três linhas** — o que
+  falta é a decisão de arte sobre o valor, não o código.
+- **TRIGGER:** a primeira luz direcional no renderizador.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0031 — O PNG sai sem compressão, e a compressão vale 12×
+
+- **SYSTEM:** `tools/texture-forge::png`
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** o codificador escreve blocos **deflate armazenados** —
+  legais, lidos por qualquer decodificador, e sem compressão nenhuma. Foi a
+  escolha certa para nascer correto; escrever um compressor antes de saber
+  quanto os arquivos pesam seria adivinhar.
+- **IMPACT:** medido, não estimado. Seis mapas gerados (albedo e altura de
+  wood/stone a 64², brick a 128²) pesam **123 805 bytes** como estão e
+  **10 220 bytes** com deflate real: **12,11× maior**. Os albedos comprimem 16
+  a 48× justamente porque a quantização de paleta produz corridas longas; as
+  alturas, 2 a 10×.
+- **RISK:** alto na escala declarada pelo operador. Dez mil materiais × 6
+  mapas × 64² são da ordem de **1 GB** como está, contra **~85 MB** comprimido.
+  Isso é a diferença entre caber num repositório e não caber.
+- **PROPOSED REMEDIATION:** deflate de Huffman fixo com um localizador de
+  correspondências simples, **dentro deste módulo** — nada que o chame muda.
+  A filtragem adaptativa do PNG só paga na frente de um compressor (medido: sem
+  compressor ela não muda nada), então entra junto.
+- **TRIGGER:** já disparado pela medição acima.
+- **TARGET STAGE:** imediatamente após a FASE 3
+- **STATUS:** OPEN (medido)
+
+### DEBT-0032 — Metallic é constante porque nenhuma receita tem metal por texel
+
+- **SYSTEM:** `tools/texture-forge::pbr`, `tools/texture-forge::recipe`
+- **CLASS:** CONTENT
+- **WHY CREATED:** o pipeline emite o valor declarado pelo material em todo
+  texel. Não é um mock: é a resposta correta para uma superfície uniforme, e é
+  tudo que o dado disponível permite. O que não existe é receita que produza
+  metal **variável** — ferrugem, veio de minério, verniz descascado.
+- **IMPACT:** um bloco de minério não pode ter o minério metálico e a rocha
+  dielétrica. O mapa gasta bytes para dizer uma constante.
+- **RISK:** baixo. O caminho está pronto: basta uma receita emitir uma máscara.
+- **PROPOSED REMEDIATION:** uma quarta saída opcional da `Recipe` (uma máscara
+  em `0.0..=1.0`), consumida pelo pipeline no lugar da constante. E, quando o
+  mapa for constante, **não emiti-lo** — o valor já está na definição.
+- **TRIGGER:** o primeiro material com metal parcial.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0033 — O codificador escreve oito bits por canal e recusa dezesseis
+
+- **SYSTEM:** `tools/texture-forge::png`
+- **CLASS:** TEMPORARY
+- **WHY CREATED:** `TextureFormat::sixteen_bit` existe no contrato porque um
+  mapa de altura com banding visível é um problema real, mas **nada produz 16
+  bits ainda**. Escrever a codificação seria código não testado por dado que
+  não existe; o codificador recusa alto em vez disso.
+- **IMPACT:** um mapa de altura de 8 bits tem 256 degraus. Em relevo suave e
+  larga escala isso aparece como faixas no normal derivado.
+- **RISK:** baixo hoje. As alturas atuais vêm de receitas com quantização de
+  paleta, onde 256 degraus não é o limitante.
+- **PROPOSED REMEDIATION:** PNG guarda amostras de 16 bits em big-endian; são
+  ~5 linhas no laço de scanline mais o `bit_depth` no IHDR. O que falta é um
+  gerador que produza o dado, para que exista teste.
+- **TRIGGER:** o primeiro mapa de 16 bits, ou banding visível num normal.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
