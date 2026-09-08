@@ -7,6 +7,7 @@
 #     foundation  -> (nothing)
 #     persistence -> foundation
 #     runtime     -> foundation
+#     asset       -> foundation, runtime
 #     command     -> foundation, runtime
 #     world       -> foundation, runtime, persistence
 #     physics     -> foundation
@@ -23,6 +24,7 @@ resolver = "2"
 members = [
     "engine/foundation",
     "engine/runtime",
+    "engine/asset",
     "engine/command",
     "engine/persistence",
     "engine/world",
@@ -48,6 +50,7 @@ repository = "https://github.com/Lucas-Belucci-Bellini/NEXORA"
 [workspace.dependencies]
 nexora-foundation = { path = "engine/foundation", version = "0.0.1" }
 nexora-runtime = { path = "engine/runtime", version = "0.0.1" }
+nexora-asset = { path = "engine/asset", version = "0.0.1" }
 nexora-command = { path = "engine/command", version = "0.0.1" }
 nexora-persistence = { path = "engine/persistence", version = "0.0.1" }
 nexora-world = { path = "engine/world", version = "0.0.1" }

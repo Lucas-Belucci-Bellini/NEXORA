@@ -1,0 +1,23 @@
+[package]
+name = "nexora-asset"
+description = "Surface materials, texture maps and asset provenance: what the runtime must know about an asset, and nothing about how one is made."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_asset"
+path = "src/lib.rs"
+
+# Foundation for identifiers, errors, hashing and versions; runtime for the
+# generic `Registry<T>`. Nothing else: a crate that describes assets has no
+# business knowing about a world, a chunk or a renderer, and the dependency
+# matrix would not allow it to.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+
+[lints]
+workspace = true

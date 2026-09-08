@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "nexora-asset"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+ "nexora-runtime",
+]
+
+[[package]]
 name = "nexora-benchmark"
 version = "0.0.1"
 dependencies = [
