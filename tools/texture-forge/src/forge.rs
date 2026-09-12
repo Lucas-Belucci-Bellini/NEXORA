@@ -278,13 +278,18 @@ impl Forge {
     /// produces, and a set nobody can look at is a set nobody checks.
     ///
     /// It is not free, and the number is worth knowing rather than guessing.
-    /// Over the eight-material example set, previews add **69%** on top of the
-    /// maps — the preview is the largest single file a material has, at 9.2 KiB
-    /// against 4.7 KiB for the biggest map, because it is twice the edge and
-    /// three lit channels. Extrapolated to ten thousand materials that is
-    /// ~107 MB of previews beside ~156 MB of maps. Derived output, and
-    /// gitignored, so the default stays on; this is for the runs where nobody
-    /// will look.
+    /// Over the eight-material example set, previews add **40%** on top of the
+    /// maps: 170.1 KiB against 121.7 KiB. The preview is still the largest
+    /// single file a material has — 5.5 KiB against 4.7 KiB for the biggest map
+    /// on a 64² material, because it is twice the edge and three lit channels.
+    /// Extrapolated to ten thousand materials that is ~62 MB of previews beside
+    /// ~156 MB of maps. Derived output, and gitignored, so the default stays
+    /// on; this is for the runs where nobody will look.
+    ///
+    /// An earlier revision of this comment said 69% and ~107 MB. That was
+    /// measured before the shading was corrected, when the render was washing
+    /// the material out; a preview that tracks its albedo compresses much
+    /// closer to it.
     #[must_use]
     pub const fn without_previews(mut self) -> Self {
         self.preview = false;
