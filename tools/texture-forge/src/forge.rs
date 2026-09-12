@@ -34,6 +34,7 @@ use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
 
 use crate::layout;
+use crate::manifest::Manifest;
 use crate::pbr::PbrPipeline;
 use crate::png;
 use crate::procedural::ProceduralGenerator;
@@ -124,6 +125,50 @@ impl Listing {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.materials.is_empty() && self.unreadable.is_empty()
+    }
+}
+
+/// What a whole manifest produced.
+///
+/// # One bad entry does not stop five hundred good ones
+///
+/// [`Forge::batch`] carries on past a failure and collects it. A run that
+/// stopped at the first problem would make the operator fix one material,
+/// re-run, wait, and find the next — which is the slow loop the batch exists
+/// to replace. Every failure is reported, and [`Self::is_clean`] is what the
+/// caller checks before claiming the set was built.
+#[derive(Debug, Default)]
+pub struct BatchReport {
+    /// What happened to each material that was attempted, in manifest order.
+    pub outcomes: Vec<Outcome>,
+    /// Every entry that could not be produced, and why.
+    pub failures: Vec<(Identifier, Error)>,
+}
+
+impl BatchReport {
+    /// How many entries reached the given status.
+    #[must_use]
+    pub fn counted(&self, status: WriteStatus) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| outcome.status == status)
+            .count()
+    }
+
+    /// Total bytes written across the run.
+    #[must_use]
+    pub fn byte_len(&self) -> usize {
+        self.outcomes.iter().map(Outcome::byte_len).sum()
+    }
+
+    /// Whether every entry was produced and none was refused.
+    ///
+    /// A refusal is not clean: the manifest asked for a material that is
+    /// already there and different, and pretending otherwise would let a batch
+    /// report success over a set it did not write.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.failures.is_empty() && self.counted(WriteStatus::Refused) == 0
     }
 }
 
@@ -230,6 +275,24 @@ impl Forge {
             files,
             refusal: None,
         })
+    }
+
+    /// Realise every material a manifest declares.
+    ///
+    /// Does not return `Result`: nothing about the run as a whole can fail,
+    /// only individual entries, and each of those lands in
+    /// [`BatchReport::failures`] beside the id that could not be produced.
+    /// The caller decides what to do about them — [`BatchReport::is_clean`]
+    /// says whether there is anything to decide.
+    pub fn batch(&self, manifest: &Manifest, force: bool) -> BatchReport {
+        let mut report = BatchReport::default();
+        for definition in &manifest.materials {
+            match self.generate(definition, manifest.seed, force) {
+                Ok(outcome) => report.outcomes.push(outcome),
+                Err(cause) => report.failures.push((definition.id().clone(), cause)),
+            }
+        }
+        report
     }
 
     /// Read a material's definition from disk.
@@ -675,5 +738,158 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- batch -------------------------------------------------------
+
+    fn manifest(text: &str) -> Manifest {
+        crate::manifest::from_text(text).expect("the test manifest must read")
+    }
+
+    const SET: &str = r#"{
+        "schema": 1,
+        "name": "temperate forest",
+        "prefix": "temperate_forest",
+        "seed": "0x5eed",
+        "defaults": { "resolution": { "width": 16, "height": 16 },
+                      "maps": ["normal", "height"] },
+        "materials": [ { "name": "oak_bark", "category": "wood" },
+                       { "name": "forest_soil", "category": "soil" },
+                       { "name": "granite", "category": "stone" } ]
+    }"#;
+
+    #[test]
+    fn a_batch_writes_every_material_the_manifest_declares() {
+        let root = scratch("batch-write");
+        let forge = Forge::new(&root).unwrap();
+        let report = forge.batch(&manifest(SET), false);
+
+        assert!(report.is_clean(), "{:?}", report.failures);
+        assert_eq!(report.counted(WriteStatus::Written), 3);
+        assert!(report.byte_len() > 0);
+
+        // And they are where the grouping says they are.
+        for short in ["oak_bark", "forest_soil", "granite"] {
+            // `material_dir` strips the `material/` prefix, so the grouping
+            // segment is what shows up on disk.
+            let directory = root.join("nexora/temperate_forest").join(short);
+            assert!(
+                directory.join(layout::DEFINITION_FILE).is_file(),
+                "{} has no definition",
+                directory.display()
+            );
+        }
+        assert_eq!(forge.list().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn re_running_a_batch_rewrites_nothing() {
+        // The property that makes regenerating ten thousand materials cheap,
+        // measured across a whole set rather than one material at a time.
+        let root = scratch("batch-idempotent");
+        let forge = Forge::new(&root).unwrap();
+        assert!(forge.batch(&manifest(SET), false).is_clean());
+
+        let again = forge.batch(&manifest(SET), false);
+        assert!(again.is_clean());
+        assert_eq!(again.counted(WriteStatus::Unchanged), 3);
+        assert_eq!(again.byte_len(), 0, "nothing should have been rewritten");
+    }
+
+    #[test]
+    fn one_failing_entry_does_not_stop_the_others() {
+        // The whole point of the policy. `..` is a legal identifier segment
+        // and an illegal path segment, so this entry fails at the naming
+        // guard — after the first material and before the last.
+        let root = scratch("batch-partial");
+        let forge = Forge::new(&root).unwrap();
+        let report = forge.batch(
+            &manifest(
+                r#"{
+                    "schema": 1, "name": "mixed",
+                    "defaults": { "resolution": { "width": 16, "height": 16 } },
+                    "materials": [ { "name": "good_one", "category": "stone" },
+                                   { "name": "../escape", "category": "stone" },
+                                   { "name": "good_two", "category": "stone" } ]
+                }"#,
+            ),
+            false,
+        );
+
+        assert!(!report.is_clean(), "a failure must not read as success");
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(
+            report.failures[0].0.to_string(),
+            "nexora:material/../escape"
+        );
+        assert_eq!(
+            report.counted(WriteStatus::Written),
+            2,
+            "the entries either side of the bad one must still be written"
+        );
+    }
+
+    #[test]
+    fn a_batch_over_something_already_written_and_different_is_refused_not_clean() {
+        let root = scratch("batch-refuse");
+        let forge = Forge::new(&root).unwrap();
+        assert!(forge.batch(&manifest(SET), false).is_clean());
+
+        // Same names, one different surface.
+        let changed = manifest(&SET.replace(
+            r#"{ "name": "granite", "category": "stone" }"#,
+            r#"{ "name": "granite", "category": "metal" }"#,
+        ));
+        let report = forge.batch(&changed, false);
+        assert!(!report.is_clean(), "a refusal is not a clean run");
+        assert_eq!(report.counted(WriteStatus::Refused), 1);
+        assert_eq!(report.counted(WriteStatus::Unchanged), 2);
+        assert!(report.failures.is_empty(), "a refusal is not an error");
+
+        // And with --force it goes through, at a newer revision.
+        let forced = forge.batch(&changed, true);
+        assert!(forced.is_clean());
+        assert_eq!(forced.counted(WriteStatus::Replaced), 1);
+        let granite = forge
+            .read_definition(&id("nexora:material/temperate_forest/granite"))
+            .unwrap();
+        assert!(granite.revision() > Revision(1), "{}", granite.revision());
+        assert_eq!(granite.category(), MaterialCategory::Metal);
+    }
+
+    #[test]
+    fn a_manifest_declaring_nothing_writes_nothing_and_is_clean() {
+        let root = scratch("batch-empty");
+        let forge = Forge::new(&root).unwrap();
+        let report = forge.batch(
+            &manifest(r#"{ "schema": 1, "name": "none", "materials": [] }"#),
+            false,
+        );
+        assert!(report.is_clean());
+        assert!(report.outcomes.is_empty());
+        assert_eq!(report.byte_len(), 0);
+    }
+
+    #[test]
+    fn every_material_in_a_set_gets_its_own_noise() {
+        // One manifest carries one seed, so the generator must be mixing the
+        // identifier in — otherwise a set is one texture repeated.
+        let root = scratch("batch-distinct");
+        let forge = Forge::new(&root).unwrap();
+        let report = forge.batch(&manifest(SET), false);
+        assert!(report.is_clean());
+
+        let albedos: Vec<Vec<u8>> = report
+            .outcomes
+            .iter()
+            .map(|outcome| {
+                let path = layout::map_file(&root, outcome.material.id(), MapRole::Albedo);
+                std::fs::read(path).expect("every material has an albedo")
+            })
+            .collect();
+        assert_eq!(albedos.len(), 3);
+        assert_ne!(albedos[0], albedos[1]);
+        assert_ne!(albedos[1], albedos[2]);
+        assert_ne!(albedos[0], albedos[2]);
     }
 }

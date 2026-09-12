@@ -14,8 +14,9 @@ use nexora_asset::texture::MapRole;
 use nexora_asset::validation::Verdict;
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
-use nexora_texture_forge::forge::Forge;
+use nexora_texture_forge::forge::{Forge, WriteStatus};
 use nexora_texture_forge::layout;
+use nexora_texture_forge::manifest;
 
 /// Where materials are written when `--out` is not given.
 const DEFAULT_ROOT: &str = "assets/materials";
@@ -47,13 +48,15 @@ fn usage() -> String {
      \n\
      commands:\n\
      \x20 generate <definition.json>   realise a material and write it\n\
+     \x20 batch    <manifest.json>     realise every material a manifest declares\n\
      \x20 validate <material-id>       check what is on disk for a material\n\
      \x20 inspect  <material-id>       print a material's definition and origin\n\
      \x20 list                         every material written under the root\n\
      \n\
      options:\n\
      \x20 --out <dir>     where materials live (default: assets/materials)\n\
-     \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0)\n\
+     \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0;\n\
+     \x20                 `batch` takes the manifest's seed instead)\n\
      \x20 --force         replace a material that is already written\n\
      \x20 --help          show this message\n\
      \n\
@@ -65,6 +68,11 @@ fn usage() -> String {
 }
 
 enum Command {
+    Batch {
+        manifest: PathBuf,
+        root: PathBuf,
+        force: bool,
+    },
     Generate {
         definition: PathBuf,
         root: PathBuf,
@@ -134,6 +142,11 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     };
 
     match verb.as_str() {
+        "batch" => Ok(Some(Command::Batch {
+            manifest: PathBuf::from(needed("a manifest file")?),
+            root,
+            force,
+        })),
         "generate" => Ok(Some(Command::Generate {
             definition: PathBuf::from(needed("a definition file")?),
             root,
@@ -172,6 +185,11 @@ fn identifier(raw: &str) -> std::result::Result<Identifier, String> {
 
 fn run(command: Command) -> Result<ExitCode> {
     match command {
+        Command::Batch {
+            manifest,
+            root,
+            force,
+        } => batch(&manifest, root, force),
         Command::Generate {
             definition,
             root,
@@ -184,16 +202,45 @@ fn run(command: Command) -> Result<ExitCode> {
     }
 }
 
+fn batch(path: &PathBuf, root: PathBuf, force: bool) -> Result<ExitCode> {
+    let manifest = manifest::from_text(&read_input(path, "the manifest could not be read")?)?;
+
+    let forge = Forge::new(root)?;
+    let report = forge.batch(&manifest, force);
+
+    for outcome in &report.outcomes {
+        println!("{:<10} {}", outcome.status.as_str(), outcome.material.id());
+        if let Some(refusal) = &outcome.refusal {
+            eprintln!("texture-forge: {refusal}");
+        }
+        if outcome.validation.verdict() != Verdict::Pass {
+            println!("{}", outcome.validation);
+        }
+    }
+    for (id, cause) in &report.failures {
+        eprintln!("texture-forge: {id} could not be produced -- {cause}");
+    }
+
+    println!(
+        "\n{} in `{}`: {} written, {} replaced, {} unchanged, {} refused, {} failed ({})",
+        manifest.len(),
+        manifest.name,
+        report.counted(WriteStatus::Written),
+        report.counted(WriteStatus::Replaced),
+        report.counted(WriteStatus::Unchanged),
+        report.counted(WriteStatus::Refused),
+        report.failures.len(),
+        human(report.byte_len()),
+    );
+    Ok(if report.is_clean() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
 fn generate(path: &PathBuf, root: PathBuf, seed: u64, force: bool) -> Result<ExitCode> {
-    let text = std::fs::read_to_string(path).map_err(|cause| {
-        nexora_foundation::error::Error::new(
-            nexora_foundation::error::Domain::Content,
-            "texture-forge",
-            "the definition could not be read",
-        )
-        .with_context("path", path.display().to_string())
-        .with_context("cause", cause.to_string())
-    })?;
+    let text = read_input(path, "the definition could not be read")?;
     let definition = document::from_text(&text)?;
 
     let forge = Forge::new(root)?;
@@ -323,7 +370,7 @@ fn list(root: PathBuf) -> Result<ExitCode> {
             .filter(|role| layout::map_file(forge.root(), material.id(), *role).is_file())
             .count();
         println!(
-            "{:<40} {:<10} {:<4} {}x{}  {} maps",
+            "{:<52} {:<10} {:<4} {}x{}  {} maps",
             material.id().to_string(),
             material.category().as_str(),
             material.revision().to_string(),
@@ -339,6 +386,19 @@ fn list(root: PathBuf) -> Result<ExitCode> {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    })
+}
+
+/// Read a file the command line named, saying which one when it cannot.
+fn read_input(path: &PathBuf, message: &'static str) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|cause| {
+        nexora_foundation::error::Error::new(
+            nexora_foundation::error::Domain::Content,
+            "texture-forge",
+            message,
+        )
+        .with_context("path", path.display().to_string())
+        .with_context("cause", cause.to_string())
     })
 }
 
