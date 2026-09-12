@@ -681,7 +681,8 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `CORE.md` §5 pede, e faz vidro e vidro-tingido compartilharem a decisão em
   vez de repeti-la.
   **Fecha só metade do que este item descrevia.** As quatro malhas por chunk do
-  RENDER-10 continuam não existindo — ver `DEBT-0035`.
+  RENDER-10 continuam não existindo — ver `DEBT-0035`, fechado em 2026-09-12
+  com três das quatro; a quarta virou o `DEBT-0036`.
 
 ### DEBT-0027 — Meshing roda na thread que pedir, não em worker
 
@@ -879,4 +880,50 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro renderizador que faça blending, ou o primeiro bloco
   `Cutout` (folhagem) no conteúdo.
 - **TARGET STAGE:** Phase 2
+- **STATUS:** CLOSED (2026-09-12)
+- **RESOLUÇÃO:** o gatilho disparou por conta própria — o manifesto de exemplo
+  do Texture Forge trouxe `leaf_canopy` com `blend: cutout`, que é literalmente
+  *"o primeiro bloco `Cutout` no conteúdo"*.
+  `mesh_region` devolve `LayeredMesh` e o `VoxelView` ganhou `layer_of`, com
+  default `Opaque` — o mesmo padrão que fez o `occludes` do `DEBT-0026` ser uma
+  função e não uma reescrita.
+  **A varredura e a fusão não mudaram uma linha.** A separação acontece no
+  momento em que um retângulo é emitido, não varrendo a região três vezes: a
+  fusão gulosa só junta faces de superfícies **iguais**, e uma superfície tem
+  exatamente uma camada, então todo retângulo já pertence a um passe quando
+  passa a existir. `layer_of` é chaveado por `SurfaceId` por isso — não por
+  posição, como o `occludes`.
+  Medido: a geometria é a mesma de antes — **807 retângulos, 3 228 vértices**
+  na região de 16³, os números já registrados — e `mesh.region_16` menos
+  `mesh.cull_only_16` é **0,03 ms**, que é a fusão e o roteamento juntos.
+  **Três camadas, não as quatro do RENDER-10.** A `waterMesh` continua sem
+  existir e não por esquecimento: **nada no motor diz que um bloco é água.**
+  Não há conceito de fluido em `engine/world`, nem em `nexora_asset`, nem uma
+  `MaterialCategory` de líquido. Emitir a camada seria inventar o dado que
+  decide o que entra nela — a mesma recusa que o `DEBT-0026` fez. Ver
+  `DEBT-0036`.
+
+### DEBT-0036 — A camada de água do RENDER-10 não tem dado que a defina
+
+- **SYSTEM:** `engine/mesh`, `engine/simulation::surfaces`, sistema de fluidos
+  (inexistente)
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o resto do `DEBT-0035`. O `RENDER-10` pede quatro malhas por
+  chunk e três foram entregues. A quarta, `waterMesh`, não sai do `BlendMode`:
+  água é uma categoria de **conteúdo**, não um modo de composição. Um bloco de
+  água é `Transparent` como o vidro é, e ainda assim precisa de malha própria —
+  shader próprio, animação de superfície própria, ordem própria contra o resto
+  da transparência. Nada disso um `BlendMode` consegue dizer.
+- **IMPACT:** hoje um bloco de água cairia em `Transparent`, que é onde ele
+  pertence entre as três que existem. Isso está certo até haver um shader de
+  água; a partir daí a água precisa ser desenhada separada e ordenada contra a
+  outra transparência, e uma malha só não permite isso.
+- **RISK:** zero hoje (não há fluidos nem renderizador), médio no primeiro
+  shader de água.
+- **PROPOSED REMEDIATION:** quando o sistema de fluidos existir, é ele que diz
+  quais blocos são fluido. Aí `RenderLayer` ganha uma variante e o mapeamento
+  em `layer_of_blend` ganha um braço — e nada mais, porque o roteamento já
+  acontece por superfície.
+- **TRIGGER:** o sistema de fluidos, ou o primeiro shader de água.
+- **TARGET STAGE:** Phase 2/3
 - **STATUS:** OPEN

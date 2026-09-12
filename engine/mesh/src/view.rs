@@ -3,7 +3,7 @@
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::spatial::BlockPos;
 
-use crate::mesh::SurfaceId;
+use crate::mesh::{RenderLayer, SurfaceId};
 
 /// Terrain, as the mesher needs to see it.
 ///
@@ -27,6 +27,23 @@ pub trait VoxelView {
     /// A view whose blocks gain one overrides this; nothing else changes.
     fn occludes(&self, position: BlockPos) -> bool {
         self.surface_at(position).is_some()
+    }
+
+    /// Which pass a surface is drawn in.
+    ///
+    /// Keyed by surface rather than by position, unlike [`Self::occludes`], and
+    /// the difference is not an inconsistency. Occlusion is asked of an
+    /// arbitrary neighbour cell that may be empty; a layer is only ever asked
+    /// of a surface that exists. Keying it by surface is also what makes the
+    /// split free: greedy merging joins faces only when their surfaces are
+    /// equal, so every merged rectangle has exactly one layer by construction.
+    ///
+    /// Defaults to [`RenderLayer::Opaque`], the same posture `occludes` takes:
+    /// a view whose surfaces can say otherwise overrides this, and nothing
+    /// else changes.
+    fn layer_of(&self, surface: SurfaceId) -> RenderLayer {
+        let _ = surface;
+        RenderLayer::Opaque
     }
 }
 
