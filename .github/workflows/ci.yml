@@ -120,6 +120,17 @@ jobs:
           # And repairing something intact is a no-op, not a rewrite.
           ./target/release/nexora-texture-forge repair \
             nexora:material/temperate_forest/granite --out "${RUNNER_TEMP}/sets" | grep -q '^intact'
+          # A lost preview is a lost file too, and comes back the same way.
+          sha256sum "${granite}/preview.png" > "${RUNNER_TEMP}/preview.sha"
+          rm "${granite}/preview.png"
+          ./target/release/nexora-texture-forge repair \
+            nexora:material/temperate_forest/granite --out "${RUNNER_TEMP}/sets"
+          sha256sum --check --status "${RUNNER_TEMP}/preview.sha"
+          # --no-preview writes the maps and nothing else.
+          ./target/release/nexora-texture-forge batch \
+            content/manifests/temperate_forest.json --out "${RUNNER_TEMP}/quiet" --no-preview
+          test ! -e "${RUNNER_TEMP}/quiet/nexora/temperate_forest/granite/preview.png"
+          test -e "${RUNNER_TEMP}/quiet/nexora/temperate_forest/granite/albedo.png"
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its

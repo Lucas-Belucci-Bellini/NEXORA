@@ -27,7 +27,7 @@ use nexora_foundation::ident::Identifier;
 use nexora_foundation::version::{ContentGeneratorVersion, ContentPipelineVersion};
 
 use crate::material::SurfaceMaterial;
-use crate::texture::{MapRole, MapSet, MapStatus, TextureMap};
+use crate::texture::{MapRole, MapSet, MapStatus, Preview};
 use crate::validation::{Check, Finding, TextureValidationResult};
 
 /// What a generation run is for.
@@ -242,7 +242,7 @@ impl GenerationRequest {
 pub struct GeneratedMaterial {
     definition: SurfaceMaterial,
     maps: MapSet,
-    preview: Option<TextureMap>,
+    preview: Option<Preview>,
 }
 
 impl GeneratedMaterial {
@@ -324,7 +324,7 @@ impl GeneratedMaterial {
         pipeline: &dyn TexturePipeline,
         definition: SurfaceMaterial,
         maps: MapSet,
-        preview: Option<TextureMap>,
+        preview: Option<Preview>,
     ) -> Result<Self> {
         let Some(trace) = definition.provenance().generation.as_ref() else {
             return Err(
@@ -376,7 +376,7 @@ impl GeneratedMaterial {
     /// from an old one, and handing out the pieces by value is what stops the
     /// old one being used as though it were still current.
     #[must_use]
-    pub fn into_parts(self) -> (SurfaceMaterial, MapSet, Option<TextureMap>) {
+    pub fn into_parts(self) -> (SurfaceMaterial, MapSet, Option<Preview>) {
         (self.definition, self.maps, self.preview)
     }
 
@@ -394,7 +394,7 @@ impl GeneratedMaterial {
 
     /// The preview image, when one has been rendered.
     #[must_use]
-    pub const fn preview(&self) -> Option<&TextureMap> {
+    pub const fn preview(&self) -> Option<&Preview> {
         self.preview.as_ref()
     }
 
@@ -403,7 +403,7 @@ impl GeneratedMaterial {
     /// # Errors
     ///
     /// Returns an error when a preview is already attached.
-    pub fn attach_preview(&mut self, preview: TextureMap) -> Result<()> {
+    pub fn attach_preview(&mut self, preview: Preview) -> Result<()> {
         if self.preview.is_some() {
             return Err(invalid("this material already has a preview"));
         }
@@ -414,7 +414,7 @@ impl GeneratedMaterial {
     /// Total bytes of pixel data held, preview included.
     #[must_use]
     pub fn byte_len(&self) -> usize {
-        self.maps.byte_len() + self.preview.as_ref().map_or(0, TextureMap::byte_len)
+        self.maps.byte_len() + self.preview.as_ref().map_or(0, Preview::byte_len)
     }
 
     /// Where every map stands.
@@ -529,7 +529,7 @@ mod tests {
     use super::*;
     use crate::material::{MaterialCategory, SurfaceMaterial};
     use crate::provenance::{GenerationTrace, Provenance};
-    use crate::texture::{ChannelLayout, Resolution, TextureFormat};
+    use crate::texture::{Resolution, TextureFormat, TextureMap};
 
     fn id(raw: &str) -> Identifier {
         Identifier::parse(raw).expect("test identifier must be valid")
@@ -704,13 +704,7 @@ mod tests {
             .unwrap();
         assert!(generated.preview().is_none());
 
-        let preview = TextureMap::new(
-            MapRole::Albedo,
-            TextureFormat::eight_bit(ChannelLayout::Rgb),
-            Resolution::square(16).unwrap(),
-            vec![0; 16 * 16 * 3],
-        )
-        .unwrap();
+        let preview = Preview::new(Resolution::square(16).unwrap(), vec![0; 16 * 16 * 3]).unwrap();
         generated.attach_preview(preview.clone()).expect("attaches");
         assert!(generated.preview().is_some());
         assert!(generated.attach_preview(preview).is_err());

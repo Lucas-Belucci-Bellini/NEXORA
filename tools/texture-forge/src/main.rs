@@ -62,6 +62,7 @@ fn usage() -> String {
      \x20 --force         replace a material that is already written\n\
      \x20 --of <material-id>  the material a variant is varied from (required)\n\
      \x20 --index <n>     which variant, counted from one (default: 1)\n\
+     \x20 --no-preview    skip the lit preview image\n\
      \x20 --help          show this message\n\
      \n\
      exit codes:\n\
@@ -79,21 +80,25 @@ enum Command {
         root: PathBuf,
         seed: u64,
         force: bool,
+        preview: bool,
     },
     Repair {
         id: Identifier,
         root: PathBuf,
+        preview: bool,
     },
     Batch {
         manifest: PathBuf,
         root: PathBuf,
         force: bool,
+        preview: bool,
     },
     Generate {
         definition: PathBuf,
         root: PathBuf,
         seed: u64,
         force: bool,
+        preview: bool,
     },
     Validate {
         id: Identifier,
@@ -125,6 +130,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     let mut force = false;
     let mut of: Option<String> = None;
     let mut index = 1u32;
+    let mut preview = true;
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -142,6 +148,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
                 seed = parse_seed(&raw)?;
             }
             "--force" => force = true,
+            "--no-preview" => preview = false,
             "--of" => {
                 of = Some(
                     args.next()
@@ -181,21 +188,25 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
             root,
             seed,
             force,
+            preview,
         })),
         "repair" => Ok(Some(Command::Repair {
             id: identifier(&needed("a material id")?)?,
             root,
+            preview,
         })),
         "batch" => Ok(Some(Command::Batch {
             manifest: PathBuf::from(needed("a manifest file")?),
             root,
             force,
+            preview,
         })),
         "generate" => Ok(Some(Command::Generate {
             definition: PathBuf::from(needed("a definition file")?),
             root,
             seed,
             force,
+            preview,
         })),
         "validate" => Ok(Some(Command::Validate {
             id: identifier(&needed("a material id")?)?,
@@ -236,23 +247,36 @@ fn run(command: Command) -> Result<ExitCode> {
             root,
             seed,
             force,
-        } => variant(&definition, &of, index, root, seed, force),
-        Command::Repair { id, root } => repair(&id, root),
+            preview,
+        } => variant(&definition, &of, index, root, seed, force, preview),
+        Command::Repair { id, root, preview } => repair(&id, root, preview),
         Command::Batch {
             manifest,
             root,
             force,
-        } => batch(&manifest, root, force),
+            preview,
+        } => batch(&manifest, root, force, preview),
         Command::Generate {
             definition,
             root,
             seed,
             force,
-        } => generate(&definition, root, seed, force),
+            preview,
+        } => generate(&definition, root, seed, force, preview),
         Command::Validate { id, root } => validate(&id, root),
         Command::Inspect { id, root } => inspect(&id, root),
         Command::List { root } => list(root),
     }
+}
+
+/// Build a forge, honouring `--no-preview`.
+fn forge(root: PathBuf, preview: bool) -> Result<Forge> {
+    let built = Forge::new(root)?;
+    Ok(if preview {
+        built
+    } else {
+        built.without_previews()
+    })
 }
 
 fn variant(
@@ -262,15 +286,16 @@ fn variant(
     root: PathBuf,
     seed: u64,
     force: bool,
+    preview: bool,
 ) -> Result<ExitCode> {
     let definition = document::from_text(&read_input(path, "the definition could not be read")?)?;
-    let forge = Forge::new(root)?;
+    let forge = forge(root, preview)?;
     let outcome = forge.variant(&definition, of, index, seed, force)?;
     report(&outcome)
 }
 
-fn repair(id: &Identifier, root: PathBuf) -> Result<ExitCode> {
-    let forge = Forge::new(root)?;
+fn repair(id: &Identifier, root: PathBuf, preview: bool) -> Result<ExitCode> {
+    let forge = forge(root, preview)?;
     let definition = forge.read_definition(id)?;
 
     // What is wrong is printed before anything is done about it: a repair that
@@ -309,10 +334,10 @@ fn report(outcome: &Outcome) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn batch(path: &PathBuf, root: PathBuf, force: bool) -> Result<ExitCode> {
+fn batch(path: &PathBuf, root: PathBuf, force: bool, preview: bool) -> Result<ExitCode> {
     let manifest = manifest::from_text(&read_input(path, "the manifest could not be read")?)?;
 
-    let forge = Forge::new(root)?;
+    let forge = forge(root, preview)?;
     let report = forge.batch(&manifest, force);
 
     for outcome in &report.outcomes {
@@ -346,12 +371,16 @@ fn batch(path: &PathBuf, root: PathBuf, force: bool) -> Result<ExitCode> {
     })
 }
 
-fn generate(path: &PathBuf, root: PathBuf, seed: u64, force: bool) -> Result<ExitCode> {
+fn generate(
+    path: &PathBuf,
+    root: PathBuf,
+    seed: u64,
+    force: bool,
+    preview: bool,
+) -> Result<ExitCode> {
     let text = read_input(path, "the definition could not be read")?;
     let definition = document::from_text(&text)?;
-
-    let forge = Forge::new(root)?;
-    report(&forge.generate(&definition, seed, force)?)
+    report(&forge(root, preview)?.generate(&definition, seed, force)?)
 }
 
 fn validate(id: &Identifier, root: PathBuf) -> Result<ExitCode> {
