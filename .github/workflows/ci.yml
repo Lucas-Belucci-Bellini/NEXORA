@@ -138,9 +138,14 @@ jobs:
           ! ./target/release/nexora-texture-forge generate \
             content/materials/stone_rough.json --out "${RUNNER_TEMP}/never" --backend ai
           test ! -d "${RUNNER_TEMP}/never"
+          # `|| status=$?` rather than `; test $?`: this step runs under
+          # `bash -e`, so a bare failing command aborts before the next one
+          # can inspect its code. A failure inside a `||` list does not.
+          status=0
           ./target/release/nexora-texture-forge generate \
             content/materials/stone_rough.json --out "${RUNNER_TEMP}/never" \
-            --backend nonsense; test $? -eq 2
+            --backend nonsense || status=$?
+          test "${status}" -eq 2
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its
