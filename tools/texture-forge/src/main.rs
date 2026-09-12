@@ -14,7 +14,7 @@ use nexora_asset::texture::MapRole;
 use nexora_asset::validation::Verdict;
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
-use nexora_texture_forge::forge::{Forge, WriteStatus};
+use nexora_texture_forge::forge::{Forge, Outcome, WriteStatus};
 use nexora_texture_forge::layout;
 use nexora_texture_forge::manifest;
 
@@ -49,6 +49,8 @@ fn usage() -> String {
      commands:\n\
      \x20 generate <definition.json>   realise a material and write it\n\
      \x20 batch    <manifest.json>     realise every material a manifest declares\n\
+     \x20 variant  <definition.json>    another material like one already written\n\
+     \x20 repair   <material-id>        restore maps that are lost or corrupt\n\
      \x20 validate <material-id>       check what is on disk for a material\n\
      \x20 inspect  <material-id>       print a material's definition and origin\n\
      \x20 list                         every material written under the root\n\
@@ -58,6 +60,8 @@ fn usage() -> String {
      \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0;\n\
      \x20                 `batch` takes the manifest's seed instead)\n\
      \x20 --force         replace a material that is already written\n\
+     \x20 --of <material-id>  the material a variant is varied from (required)\n\
+     \x20 --index <n>     which variant, counted from one (default: 1)\n\
      \x20 --help          show this message\n\
      \n\
      exit codes:\n\
@@ -68,6 +72,18 @@ fn usage() -> String {
 }
 
 enum Command {
+    Variant {
+        definition: PathBuf,
+        of: Identifier,
+        index: u32,
+        root: PathBuf,
+        seed: u64,
+        force: bool,
+    },
+    Repair {
+        id: Identifier,
+        root: PathBuf,
+    },
     Batch {
         manifest: PathBuf,
         root: PathBuf,
@@ -107,6 +123,8 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     let mut root = PathBuf::from(DEFAULT_ROOT);
     let mut seed = 0u64;
     let mut force = false;
+    let mut of: Option<String> = None;
+    let mut index = 1u32;
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -124,6 +142,20 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
                 seed = parse_seed(&raw)?;
             }
             "--force" => force = true,
+            "--of" => {
+                of = Some(
+                    args.next()
+                        .ok_or_else(|| "--of needs a material id".to_owned())?,
+                );
+            }
+            "--index" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| "--index needs a number".to_owned())?;
+                index = raw
+                    .parse()
+                    .map_err(|_| format!("`{raw}` is not a variant index"))?;
+            }
             other if other.starts_with('-') => {
                 return Err(format!("unknown option `{other}`"));
             }
@@ -142,6 +174,18 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     };
 
     match verb.as_str() {
+        "variant" => Ok(Some(Command::Variant {
+            definition: PathBuf::from(needed("a definition file")?),
+            of: identifier(&of.ok_or_else(|| "`variant` needs --of <material-id>".to_owned())?)?,
+            index,
+            root,
+            seed,
+            force,
+        })),
+        "repair" => Ok(Some(Command::Repair {
+            id: identifier(&needed("a material id")?)?,
+            root,
+        })),
         "batch" => Ok(Some(Command::Batch {
             manifest: PathBuf::from(needed("a manifest file")?),
             root,
@@ -185,6 +229,15 @@ fn identifier(raw: &str) -> std::result::Result<Identifier, String> {
 
 fn run(command: Command) -> Result<ExitCode> {
     match command {
+        Command::Variant {
+            definition,
+            of,
+            index,
+            root,
+            seed,
+            force,
+        } => variant(&definition, &of, index, root, seed, force),
+        Command::Repair { id, root } => repair(&id, root),
         Command::Batch {
             manifest,
             root,
@@ -200,6 +253,60 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Inspect { id, root } => inspect(&id, root),
         Command::List { root } => list(root),
     }
+}
+
+fn variant(
+    path: &PathBuf,
+    of: &Identifier,
+    index: u32,
+    root: PathBuf,
+    seed: u64,
+    force: bool,
+) -> Result<ExitCode> {
+    let definition = document::from_text(&read_input(path, "the definition could not be read")?)?;
+    let forge = Forge::new(root)?;
+    let outcome = forge.variant(&definition, of, index, seed, force)?;
+    report(&outcome)
+}
+
+fn repair(id: &Identifier, root: PathBuf) -> Result<ExitCode> {
+    let forge = Forge::new(root)?;
+    let definition = forge.read_definition(id)?;
+
+    // What is wrong is printed before anything is done about it: a repair that
+    // only says "replaced" leaves nobody any wiser about what was lost.
+    let survey = forge.survey(&definition);
+    for (role, health) in &survey {
+        if !health.is_intact() {
+            println!("  {:<18} {}", role.as_str(), health.as_str());
+        }
+    }
+
+    let outcome = forge.repair(id)?;
+    if outcome.status == WriteStatus::Unchanged {
+        println!("intact {id}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    report(&outcome)
+}
+
+/// Print what one run did, the same way for every verb that does one.
+fn report(outcome: &Outcome) -> Result<ExitCode> {
+    println!("{} {}", outcome.status.as_str(), outcome.material.id());
+    if let Some(refusal) = &outcome.refusal {
+        eprintln!("texture-forge: {refusal}");
+        return Ok(ExitCode::FAILURE);
+    }
+    if outcome.status.wrote_files() {
+        for (file, size) in &outcome.files {
+            println!("  {:>9}  {}", human(*size), file.display());
+        }
+        println!("  {:>9}  total", human(outcome.byte_len()));
+    }
+    if outcome.validation.verdict() != Verdict::Pass {
+        println!("{}", outcome.validation);
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn batch(path: &PathBuf, root: PathBuf, force: bool) -> Result<ExitCode> {
@@ -244,23 +351,7 @@ fn generate(path: &PathBuf, root: PathBuf, seed: u64, force: bool) -> Result<Exi
     let definition = document::from_text(&text)?;
 
     let forge = Forge::new(root)?;
-    let outcome = forge.generate(&definition, seed, force)?;
-
-    println!("{} {}", outcome.status.as_str(), outcome.material.id());
-    if let Some(refusal) = &outcome.refusal {
-        eprintln!("texture-forge: {refusal}");
-        return Ok(ExitCode::FAILURE);
-    }
-    if outcome.status.wrote_files() {
-        for (file, size) in &outcome.files {
-            println!("  {:>9}  {}", human(*size), file.display());
-        }
-        println!("  {:>9}  total", human(outcome.byte_len()));
-    }
-    if outcome.validation.verdict() != Verdict::Pass {
-        println!("{}", outcome.validation);
-    }
-    Ok(ExitCode::SUCCESS)
+    report(&forge.generate(&definition, seed, force)?)
 }
 
 fn validate(id: &Identifier, root: PathBuf) -> Result<ExitCode> {

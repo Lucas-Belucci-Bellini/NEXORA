@@ -12,6 +12,26 @@
 //! deriving them is a pipeline's job — a generator that also derived them would
 //! have to be reimplemented by every future backend, which is exactly the
 //! coupling the trait exists to prevent.
+//!
+//! # The three modes differ only in where the seed comes from
+//!
+//! Everything downstream of the seed is one code path, because a variant that
+//! rendered differently from a generation would be a second renderer to keep
+//! in step.
+//!
+//! | mode | seed |
+//! | --- | --- |
+//! | generate | derived from the material's own identity and appearance |
+//! | variant | derived from the **source's** identity and the variant index |
+//! | repair | read verbatim from the record of the generation being repaired |
+//!
+//! Each row is a decision worth stating. A **variant** seeds from the source
+//! so that "variant 3 of oak" names one specific surface no matter what the
+//! result is called — seeding from the new material's own name would make
+//! renaming it repaint it. A **repair** does not re-derive at all: it has to
+//! land beside maps it did not touch, and a re-derived seed is only equal to
+//! the original by coincidence of nothing having changed. Reading the recorded
+//! seed makes the restored map identical by construction rather than by luck.
 
 use std::collections::BTreeMap;
 
@@ -80,6 +100,72 @@ impl ProceduralGenerator {
         hasher.finish()
     }
 
+    /// The seed a variant renders with.
+    ///
+    /// Deliberately independent of the variant's own identifier: two materials
+    /// both claiming to be variant 3 of `nexora:material/oak` *are* the same
+    /// surface, and naming one of them differently should not change its
+    /// pixels. The index is mixed in rather than added, so consecutive
+    /// variants are unrelated rather than neighbouring.
+    #[must_use]
+    pub fn variant_seed(of: &Identifier, index: u32, requested: u64) -> u64 {
+        let mut hasher = Fnv1a64::new();
+        hasher.write_str("variant");
+        hasher.write_str(&of.to_string());
+        hasher.write_u64(u64::from(index));
+        hasher.write_u64(u64::from(PROCEDURAL_VERSION.0));
+        hasher.write_u64(requested);
+        hasher.finish()
+    }
+
+    /// The seed a repair renders with: the one the record already names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the material carries no generation record, when
+    /// that record names a different generator, or when it names a version
+    /// this build is not. Each is a case where the pixels this build would
+    /// produce are not the pixels being repaired, and producing them anyway
+    /// would leave a material half from one algorithm and half from another.
+    fn recorded_seed(&self, definition: &SurfaceMaterial) -> Result<u64> {
+        let Some(trace) = definition.provenance().generation.as_ref() else {
+            return Err(unsupported(
+                "a repair needs the record that says how the material was made, and there is none",
+            )
+            .with_context("material", definition.id().to_string()));
+        };
+        if trace.generator != self.id {
+            return Err(
+                unsupported("this generator cannot reproduce what another one made")
+                    .with_context("recorded", trace.generator.to_string())
+                    .with_context("this", self.id.to_string()),
+            );
+        }
+        if trace.generator_version != PROCEDURAL_VERSION {
+            return Err(unsupported(
+                "this build's algorithm is not the one that made the material",
+            )
+            .with_context("recorded", trace.generator_version.to_string())
+            .with_context("this", PROCEDURAL_VERSION.to_string()));
+        }
+        Ok(trace.seed)
+    }
+
+    /// The seed this request renders with, whichever mode it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only in repair mode; see [`Self::recorded_seed`].
+    fn seed_for(&self, request: &GenerationRequest) -> Result<u64> {
+        match &request.mode {
+            GenerationMode::Generate => Ok(Self::effective_seed(&request.definition, request.seed)),
+            GenerationMode::Variant { of, index } => {
+                Ok(Self::variant_seed(of, *index, request.seed))
+            }
+            GenerationMode::Repair { .. } => self.recorded_seed(&request.definition),
+        }
+    }
+
     fn trace(
         &self,
         definition: &SurfaceMaterial,
@@ -115,15 +201,19 @@ impl ProceduralGenerator {
             parameters.insert(key.clone(), value.clone());
         }
 
-        let mut trace = GenerationTrace::new(
-            self.id.clone(),
-            PROCEDURAL_VERSION,
-            Self::effective_seed(definition, request.seed),
-        )
-        .from_preset(Identifier::nexora(&format!(
-            "preset/{}",
-            definition.category().as_str()
-        ))?);
+        if let GenerationMode::Variant { index, .. } = &request.mode {
+            parameters.insert("variant_index".to_owned(), index.to_string());
+        }
+
+        // The seed recorded is the one that rendered, not the one requested —
+        // that is what makes the record enough to rebuild the pixels, and what
+        // a later repair reads back.
+        let mut trace =
+            GenerationTrace::new(self.id.clone(), PROCEDURAL_VERSION, self.seed_for(request)?)
+                .from_preset(Identifier::nexora(&format!(
+                    "preset/{}",
+                    definition.category().as_str()
+                ))?);
         trace.parameters = parameters;
         if let GenerationMode::Variant { of, .. } | GenerationMode::Repair { of } = &request.mode {
             trace.inputs.push(of.clone());
@@ -167,23 +257,17 @@ impl TextureGenerator for ProceduralGenerator {
         Backend::Procedural
     }
 
-    fn supports(&self, mode: &GenerationMode) -> bool {
-        matches!(mode, GenerationMode::Generate)
+    fn supports(&self, _mode: &GenerationMode) -> bool {
+        // All three. The modes differ in where the seed comes from and in
+        // nothing else, so there is no mode this backend can render but not
+        // serve.
+        true
     }
 
     fn generate(&self, request: &GenerationRequest) -> Result<GeneratedMaterial> {
-        if !self.supports(&request.mode) {
-            // Refused rather than quietly served as a plain generation: a
-            // "repair" that silently regenerates everything is a repair that
-            // changes a material nobody asked to change.
-            return Err(unsupported("this generator does not serve that mode yet")
-                .with_context("mode", request.mode.as_str())
-                .with_context("supported", GenerationMode::Generate.as_str()));
-        }
-
         let definition = request.definition.clone();
         let recipe = Recipe::for_category(definition.category())?;
-        let seed = Self::effective_seed(&definition, request.seed);
+        let seed = self.seed_for(request)?;
         let canvas = recipe.render(definition.resolution(), seed);
 
         let mut maps = MapSet::new();
@@ -366,22 +450,254 @@ mod tests {
         assert!(authored.provenance().generation.is_none());
     }
 
+    // ---- variant and repair -------------------------------------------
+
     #[test]
-    fn a_mode_this_generator_does_not_serve_is_refused_not_quietly_reinterpreted() {
+    fn every_mode_is_served() {
         let generator = ProceduralGenerator::new().unwrap();
-        let mut request = GenerationRequest::generate(
-            definition("nexora:material/oak", MaterialCategory::Wood, 16),
-            1,
+        for mode in [
+            GenerationMode::Generate,
+            GenerationMode::Variant {
+                of: id("nexora:material/oak"),
+                index: 1,
+            },
+            GenerationMode::Repair {
+                of: id("nexora:material/oak"),
+            },
+        ] {
+            assert!(generator.supports(&mode), "{}", mode.as_str());
+        }
+    }
+
+    #[test]
+    fn a_variant_is_the_same_recipe_at_a_different_seed() {
+        let generator = ProceduralGenerator::new().unwrap();
+        let source = definition("nexora:material/oak", MaterialCategory::Wood, 32);
+        let original = generator
+            .generate(&GenerationRequest::generate(source.clone(), 0))
+            .unwrap();
+
+        let derived = definition("nexora:material/oak_weathered", MaterialCategory::Wood, 32);
+        let variant = generator
+            .generate(&GenerationRequest::variant(
+                derived,
+                source.id().clone(),
+                1,
+                0,
+            ))
+            .unwrap();
+
+        let a = original.maps().get(MapRole::Albedo).unwrap().pixels();
+        let b = variant.maps().get(MapRole::Albedo).unwrap().pixels();
+        assert_ne!(a, b, "a variant that matches its source is not a variant");
+        assert_eq!(a.len(), b.len(), "and it is still the same recipe and size");
+    }
+
+    #[test]
+    fn variants_of_one_source_differ_from_each_other() {
+        let generator = ProceduralGenerator::new().unwrap();
+        let source = id("nexora:material/oak");
+        let pixels: Vec<Vec<u8>> = (1..=4)
+            .map(|index| {
+                let definition = definition(
+                    &format!("nexora:material/oak_{index}"),
+                    MaterialCategory::Wood,
+                    16,
+                );
+                generator
+                    .generate(&GenerationRequest::variant(
+                        definition,
+                        source.clone(),
+                        index,
+                        0,
+                    ))
+                    .unwrap()
+                    .maps()
+                    .get(MapRole::Albedo)
+                    .unwrap()
+                    .pixels()
+                    .to_vec()
+            })
+            .collect();
+
+        for (left, one) in pixels.iter().enumerate() {
+            for (right, other) in pixels.iter().enumerate().skip(left + 1) {
+                assert_ne!(one, other, "variant {} and variant {}", left + 1, right + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_variant_is_named_by_its_source_and_index_not_by_its_own_name() {
+        // "variant 3 of oak" is one specific surface. Calling the result
+        // something else must not repaint it — otherwise renaming a material
+        // silently changes the world.
+        let generator = ProceduralGenerator::new().unwrap();
+        let source = id("nexora:material/oak");
+        let under_one_name = generator
+            .generate(&GenerationRequest::variant(
+                definition("nexora:material/oak_a", MaterialCategory::Wood, 16),
+                source.clone(),
+                3,
+                0,
+            ))
+            .unwrap();
+        let under_another = generator
+            .generate(&GenerationRequest::variant(
+                definition(
+                    "nexora:material/completely_different",
+                    MaterialCategory::Wood,
+                    16,
+                ),
+                source,
+                3,
+                0,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            under_one_name.maps().get(MapRole::Albedo).unwrap().pixels(),
+            under_another.maps().get(MapRole::Albedo).unwrap().pixels()
         );
-        request.mode = GenerationMode::Repair {
-            of: id("nexora:material/oak"),
-        };
+    }
+
+    #[test]
+    fn a_variant_records_what_it_was_varied_from() {
+        let generator = ProceduralGenerator::new().unwrap();
+        let source = id("nexora:material/oak");
+        let produced = generator
+            .generate(&GenerationRequest::variant(
+                definition("nexora:material/oak_2", MaterialCategory::Wood, 16),
+                source.clone(),
+                2,
+                0,
+            ))
+            .unwrap();
+
+        let trace = produced
+            .definition()
+            .provenance()
+            .generation
+            .as_ref()
+            .expect("a generated material carries its record");
+        assert_eq!(trace.inputs, vec![source]);
+        assert_eq!(
+            trace.parameters.get("mode").map(String::as_str),
+            Some("variant")
+        );
+        assert_eq!(
+            trace.parameters.get("variant_index").map(String::as_str),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn a_repair_reproduces_the_original_pixels_exactly() {
+        // The property the whole mode exists for: a restored map has to sit
+        // beside the ones that were never lost.
+        let generator = ProceduralGenerator::new().unwrap();
+        let original = generator
+            .generate(&GenerationRequest::generate(
+                definition("nexora:material/oak", MaterialCategory::Wood, 32),
+                0xabc_def,
+            ))
+            .unwrap();
+
+        // What a repair starts from is what is on disk: the *generated*
+        // definition, carrying its record.
+        let repaired = generator
+            .generate(&GenerationRequest::repair(original.definition().clone()))
+            .unwrap();
+
+        for role in [MapRole::Albedo, MapRole::Height] {
+            assert_eq!(
+                original.maps().get(role).unwrap().pixels(),
+                repaired.maps().get(role).unwrap().pixels(),
+                "{} came back different",
+                role.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn a_repair_does_not_re_derive_the_seed_it_reads_the_recorded_one() {
+        // A repair request carries no seed of its own — `GenerationRequest`
+        // sets zero, because the seed is not the caller's to choose. So a
+        // generator that re-derived would derive from zero and land somewhere
+        // else entirely. That is what the second assertion pins down.
+        let generator = ProceduralGenerator::new().unwrap();
+        let original = generator
+            .generate(&GenerationRequest::generate(
+                definition("nexora:material/oak", MaterialCategory::Wood, 32),
+                7,
+            ))
+            .unwrap();
+        let recorded = original
+            .definition()
+            .provenance()
+            .generation
+            .as_ref()
+            .unwrap()
+            .seed;
+
+        let repaired = generator
+            .generate(&GenerationRequest::repair(original.definition().clone()))
+            .unwrap();
+        let used = repaired
+            .definition()
+            .provenance()
+            .generation
+            .as_ref()
+            .unwrap()
+            .seed;
+
+        assert_eq!(used, recorded, "the repair rendered with a different seed");
+        assert_ne!(
+            used,
+            ProceduralGenerator::effective_seed(original.definition(), 0),
+            "re-deriving from the repair request would have given this, so the \
+             assertion above is capable of failing"
+        );
+    }
+
+    #[test]
+    fn a_repair_of_a_material_with_no_record_is_refused() {
+        // There is nothing to reproduce *from*, and inventing a seed would
+        // quietly repaint the material.
+        let generator = ProceduralGenerator::new().unwrap();
+        let err = generator
+            .generate(&GenerationRequest::repair(definition(
+                "nexora:material/oak",
+                MaterialCategory::Wood,
+                16,
+            )))
+            .expect_err("a repair without a record must say so");
+        assert_eq!(err.recovery(), Recovery::Reject);
+        assert!(err.to_string().contains("record"), "{err}");
+    }
+
+    #[test]
+    fn a_repair_of_something_another_generator_made_is_refused() {
+        let generator = ProceduralGenerator::new().unwrap();
+        let mut produced = generator
+            .generate(&GenerationRequest::generate(
+                definition("nexora:material/oak", MaterialCategory::Wood, 16),
+                1,
+            ))
+            .unwrap()
+            .definition()
+            .clone();
+
+        let mut provenance = produced.provenance().clone();
+        let mut trace = provenance.generation.clone().unwrap();
+        trace.generator = id("nexora:generator/some_model");
+        provenance.generation = Some(trace);
+        produced = produced.revised(provenance).unwrap();
 
         let err = generator
-            .generate(&request)
-            .expect_err("repair is not implemented yet and must say so");
-        assert_eq!(err.recovery(), Recovery::Reject);
-        assert!(err.to_string().contains("repair"), "{err}");
+            .generate(&GenerationRequest::repair(produced))
+            .expect_err("this build cannot reproduce another generator's pixels");
+        assert!(err.to_string().contains("another one made"), "{err}");
     }
 
     #[test]

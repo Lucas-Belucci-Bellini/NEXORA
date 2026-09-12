@@ -57,6 +57,13 @@ pub enum WriteStatus {
     Refused,
     /// It was there and different, and it was replaced at a new revision.
     Replaced,
+    /// Maps that were lost or corrupt were rebuilt; nothing else changed.
+    ///
+    /// Distinct from `Replaced` on purpose. A replacement is a different
+    /// surface at a new revision; a restoration is the same surface, the same
+    /// revision, and the same pixels that were there before — the only thing
+    /// that changed is that the files exist again.
+    Restored,
 }
 
 impl WriteStatus {
@@ -68,13 +75,51 @@ impl WriteStatus {
             Self::Unchanged => "unchanged",
             Self::Refused => "refused",
             Self::Replaced => "replaced",
+            Self::Restored => "restored",
         }
     }
 
     /// Whether anything reached the filesystem.
     #[must_use]
     pub const fn wrote_files(self) -> bool {
-        matches!(self, Self::Written | Self::Replaced)
+        matches!(self, Self::Written | Self::Replaced | Self::Restored)
+    }
+}
+
+/// What is on disk for one of a material's maps.
+///
+/// Coarser than [`nexora_asset::validation`] on purpose: this answers "can the
+/// file be read back at all", which is the question a repair asks. Whether a
+/// readable map is a *good* map is the validator's question, and its answer
+/// does not make the file repairable — see [`Forge::repair`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapHealth {
+    /// The file is there and decodes at the declared resolution.
+    Present,
+    /// No file.
+    Absent,
+    /// A file that is not a PNG this build can read.
+    Unreadable,
+    /// A PNG, but not the size the definition declares.
+    WrongSize,
+}
+
+impl MapHealth {
+    /// Stable lowercase name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::Unreadable => "unreadable",
+            Self::WrongSize => "wrong_size",
+        }
+    }
+
+    /// Whether the file can be used as it stands.
+    #[must_use]
+    pub const fn is_intact(self) -> bool {
+        matches!(self, Self::Present)
     }
 }
 
@@ -217,6 +262,24 @@ impl Forge {
         seed: u64,
         force: bool,
     ) -> Result<Outcome> {
+        self.produce(
+            definition,
+            GenerationRequest::generate(definition.clone(), seed),
+            force,
+        )
+    }
+
+    /// Everything `generate` and `variant` share: the write policy.
+    ///
+    /// They differ only in the request they build, so the rules about what is
+    /// already on disk live here once. Two copies of "nothing is overwritten
+    /// in silence" would be one copy too many.
+    fn produce(
+        &self,
+        definition: &SurfaceMaterial,
+        request: GenerationRequest,
+        force: bool,
+    ) -> Result<Outcome> {
         layout::check_naming(definition)?;
 
         let existing = self.read_definition(definition.id()).ok();
@@ -255,9 +318,9 @@ impl Forge {
             || definition.clone(),
             |existing| definition.at_revision(existing.revision()),
         );
-        let produced = self
-            .generator
-            .generate(&GenerationRequest::generate(incoming, seed))?;
+        let mut request = request;
+        request.definition = incoming;
+        let produced = self.generator.generate(&request)?;
         let produced = self.pipeline.apply(produced)?;
 
         let validation = self.validator.material(&produced);
@@ -293,6 +356,141 @@ impl Forge {
             }
         }
         report
+    }
+
+    /// Produce another material like one already written.
+    ///
+    /// The source is read from disk only to establish that it is there — the
+    /// variant renders from `definition`, and the source's *identifier* is what
+    /// seeds it. Writing, refusal and revision behave exactly as
+    /// [`Self::generate`], because a variant is a material like any other once
+    /// it exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source is not written, or for any reason
+    /// [`Self::generate`] would.
+    pub fn variant(
+        &self,
+        definition: &SurfaceMaterial,
+        of: &Identifier,
+        index: u32,
+        seed: u64,
+        force: bool,
+    ) -> Result<Outcome> {
+        if index == 0 {
+            return Err(
+                missing("variants are counted from one").with_context("index", index.to_string())
+            );
+        }
+        // Refused rather than allowed: "variant of X" is a claim about X, and
+        // a claim about a material nobody has written is not checkable later.
+        self.read_definition(of).map_err(|cause| {
+            missing("the material being varied is not written")
+                .with_context("source", of.to_string())
+                .with_context("cause", cause.to_string())
+        })?;
+        if definition.id() == of {
+            return Err(missing("a material cannot be a variant of itself")
+                .with_context("material", of.to_string()));
+        }
+        self.produce(
+            definition,
+            GenerationRequest::variant(definition.clone(), of.clone(), index, seed),
+            force,
+        )
+    }
+
+    /// Which of a material's maps are on disk and readable.
+    ///
+    /// Unlike [`Self::read_maps`], a file that does not decode is reported
+    /// rather than fatal — finding out *which* file is broken is the entire
+    /// point of the call, and a survey that stops at the first one cannot say.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the definition itself cannot be read.
+    pub fn survey(&self, definition: &SurfaceMaterial) -> Vec<(MapRole, MapHealth)> {
+        let mut health = Vec::new();
+        for role in MapRole::ALL {
+            if !(role.is_required() || definition.wanted_maps().contains(&role)) {
+                continue;
+            }
+            let path = layout::map_file(&self.root, definition.id(), role);
+            let state = match std::fs::read(&path) {
+                Err(_) => MapHealth::Absent,
+                Ok(bytes) => match png::decode(&bytes) {
+                    Err(_) => MapHealth::Unreadable,
+                    Ok(decoded) if decoded.resolution != definition.resolution() => {
+                        MapHealth::WrongSize
+                    }
+                    Ok(_) => MapHealth::Present,
+                },
+            };
+            health.push((role, state));
+        }
+        health
+    }
+
+    /// Restore a material's maps that are lost or corrupt.
+    ///
+    /// # What a repair is not
+    ///
+    /// It is not a regeneration. It renders with the seed the material's own
+    /// record names, so a restored map is byte-identical to the one that was
+    /// lost, and the maps that were fine are left alone.
+    ///
+    /// It is also not a fix for a map that is *present, readable and failing a
+    /// check*. Regenerating that map produces the same failing map, because
+    /// the recipe is what is wrong. Those are reported by
+    /// [`Self::validate`] and left where they are.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the definition cannot be read, when the material
+    /// carries no generation record to reproduce from, or when generation or
+    /// validation fails.
+    pub fn repair(&self, id: &Identifier) -> Result<Outcome> {
+        let definition = self.read_definition(id)?;
+        let lost: Vec<MapRole> = self
+            .survey(&definition)
+            .into_iter()
+            .filter(|(_, health)| !health.is_intact())
+            .map(|(role, _)| role)
+            .collect();
+
+        if lost.is_empty() {
+            return Ok(Outcome {
+                status: WriteStatus::Unchanged,
+                material: definition,
+                validation: TextureValidationResult::new(),
+                files: Vec::new(),
+                refusal: None,
+            });
+        }
+
+        // The whole set is rendered, and only the lost files are written:
+        // the normal map is derived from height, so a run restricted to the
+        // normal map would have nothing to derive it from.
+        let produced = self
+            .generator
+            .generate(&GenerationRequest::repair(definition.clone()))?;
+        let produced = self.pipeline.apply(produced)?;
+
+        let validation = self.validator.material(&produced);
+        validation.ok(&id.to_string())?;
+
+        // Only the lost ones. The pipeline produced every map the definition
+        // wants, and rewriting the intact ones would be a regeneration wearing
+        // a repair's name — and would touch files a person may have hand-edited.
+        let files = self.write_maps(&produced, &lost)?;
+        Ok(Outcome {
+            status: WriteStatus::Restored,
+            material: definition,
+            validation,
+            files,
+            refusal: None,
+        })
     }
 
     /// Read a material's definition from disk.
@@ -420,6 +618,41 @@ impl Forge {
             .into_iter()
             .filter(|role| role.is_required() || definition.wanted_maps().contains(role))
             .all(|role| layout::map_file(&self.root, definition.id(), role).is_file())
+    }
+
+    /// Write only the named maps, leaving the definition and the rest alone.
+    ///
+    /// What a repair needs: the definition on disk is still correct — the same
+    /// material, the same revision, the same record — and rewriting it would
+    /// claim a change that did not happen.
+    fn write_maps(
+        &self,
+        produced: &GeneratedMaterial,
+        roles: &[MapRole],
+    ) -> Result<Vec<(PathBuf, usize)>> {
+        let id = produced.definition().id();
+        let directory = layout::material_dir(&self.root, id);
+        std::fs::create_dir_all(&directory).map_err(|cause| {
+            unwritable("the material's directory could not be created")
+                .with_context("path", directory.display().to_string())
+                .with_context("cause", cause.to_string())
+        })?;
+
+        let mut files = Vec::new();
+        for role in roles {
+            let Some(map) = produced.maps().get(*role) else {
+                return Err(
+                    unwritable("the pipeline did not produce a map that was lost")
+                        .with_context("material", id.to_string())
+                        .with_context("map", role.as_str()),
+                );
+            };
+            let path = layout::map_file(&self.root, id, *role);
+            let bytes = png::encode(map)?;
+            write_file(&path, &bytes)?;
+            files.push((path, bytes.len()));
+        }
+        Ok(files)
     }
 
     fn write(&self, produced: &GeneratedMaterial) -> Result<Vec<(PathBuf, usize)>> {
@@ -891,5 +1124,272 @@ mod tests {
         assert_ne!(albedos[0], albedos[1]);
         assert_ne!(albedos[1], albedos[2]);
         assert_ne!(albedos[0], albedos[2]);
+    }
+
+    // ---- variant and repair ------------------------------------------
+
+    #[test]
+    fn a_variant_is_a_material_like_any_other_once_it_exists() {
+        let root = scratch("variant");
+        let forge = Forge::new(&root).unwrap();
+        let source = definition("nexora:material/oak", 0.8);
+        forge.generate(&source, 3, false).unwrap();
+
+        let derived = definition("nexora:material/oak_weathered", 0.8);
+        let outcome = forge
+            .variant(&derived, source.id(), 1, 0, false)
+            .expect("the variant is produced");
+
+        assert_eq!(outcome.status, WriteStatus::Written);
+        assert_eq!(outcome.validation.verdict(), Verdict::Pass);
+        assert_eq!(forge.list().unwrap().len(), 2);
+
+        // Same recipe, different pixels.
+        let a = std::fs::read(layout::map_file(&root, source.id(), MapRole::Albedo)).unwrap();
+        let b = std::fs::read(layout::map_file(&root, derived.id(), MapRole::Albedo)).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_variant_of_a_material_that_is_not_written_is_refused() {
+        // "variant of X" is a claim about X. A claim about nothing cannot be
+        // checked later, so it is refused now.
+        let root = scratch("variant-orphan");
+        let forge = Forge::new(&root).unwrap();
+        let error = forge
+            .variant(
+                &definition("nexora:material/oak_2", 0.8),
+                &id("nexora:material/oak"),
+                1,
+                0,
+                false,
+            )
+            .expect_err("there is no source");
+        assert!(error.to_string().contains("not written"), "{error}");
+    }
+
+    #[test]
+    fn a_variant_of_itself_and_a_variant_numbered_zero_are_refused() {
+        let root = scratch("variant-degenerate");
+        let forge = Forge::new(&root).unwrap();
+        let source = definition("nexora:material/oak", 0.8);
+        forge.generate(&source, 3, false).unwrap();
+
+        let itself = forge
+            .variant(&source, source.id(), 1, 0, false)
+            .expect_err("a material cannot be its own variant");
+        assert!(itself.to_string().contains("variant of itself"), "{itself}");
+
+        let zero = forge
+            .variant(
+                &definition("nexora:material/oak_2", 0.8),
+                source.id(),
+                0,
+                0,
+                false,
+            )
+            .expect_err("variants count from one");
+        assert!(zero.to_string().contains("counted from one"), "{zero}");
+    }
+
+    #[test]
+    fn a_survey_reports_every_map_rather_than_stopping_at_the_first_bad_one() {
+        let root = scratch("survey");
+        let forge = Forge::new(&root).unwrap();
+        let material = definition("nexora:material/oak", 0.8);
+        forge.generate(&material, 5, false).unwrap();
+
+        std::fs::remove_file(layout::map_file(&root, material.id(), MapRole::Height)).unwrap();
+        std::fs::write(
+            layout::map_file(&root, material.id(), MapRole::Normal),
+            b"this is not a png",
+        )
+        .unwrap();
+
+        let survey = forge.survey(&material);
+        let state = |role: MapRole| {
+            survey
+                .iter()
+                .find(|(each, _)| *each == role)
+                .map(|(_, health)| *health)
+        };
+        assert_eq!(state(MapRole::Albedo), Some(MapHealth::Present));
+        assert_eq!(state(MapRole::Height), Some(MapHealth::Absent));
+        assert_eq!(state(MapRole::Normal), Some(MapHealth::Unreadable));
+        assert_eq!(
+            survey.len(),
+            3,
+            "only the maps this material wants: {survey:?}"
+        );
+    }
+
+    #[test]
+    fn a_survey_notices_a_png_of_the_wrong_size() {
+        let root = scratch("survey-size");
+        let forge = Forge::new(&root).unwrap();
+        let material = definition("nexora:material/oak", 0.8);
+        forge.generate(&material, 5, false).unwrap();
+
+        // A real PNG, decodable, and not this material's.
+        let smaller = definition("nexora:material/other", 0.8);
+        let produced = ProceduralGenerator::new()
+            .unwrap()
+            .generate(&GenerationRequest::generate(
+                SurfaceMaterial::builder(
+                    id("nexora:material/other"),
+                    MaterialCategory::Wood,
+                    Resolution::square(16).unwrap(),
+                    Provenance::authored("operator", "test"),
+                )
+                .build()
+                .unwrap(),
+                1,
+            ))
+            .unwrap();
+        let _ = smaller;
+        std::fs::write(
+            layout::map_file(&root, material.id(), MapRole::Albedo),
+            png::encode(produced.maps().get(MapRole::Albedo).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let survey = forge.survey(&material);
+        assert_eq!(
+            survey
+                .iter()
+                .find(|(role, _)| *role == MapRole::Albedo)
+                .map(|(_, health)| *health),
+            Some(MapHealth::WrongSize)
+        );
+    }
+
+    #[test]
+    fn a_repair_restores_a_lost_map_byte_for_byte() {
+        // The property the mode exists for. A restored map has to be the one
+        // that was lost, not a new one that happens to be the same shape —
+        // otherwise it does not match the maps beside it.
+        let root = scratch("repair");
+        let forge = Forge::new(&root).unwrap();
+        let material = definition("nexora:material/oak", 0.8);
+        forge.generate(&material, 0xfeed, false).unwrap();
+
+        let before: Vec<(MapRole, Vec<u8>)> = [MapRole::Albedo, MapRole::Height, MapRole::Normal]
+            .into_iter()
+            .map(|role| {
+                (
+                    role,
+                    std::fs::read(layout::map_file(&root, material.id(), role)).unwrap(),
+                )
+            })
+            .collect();
+
+        std::fs::remove_file(layout::map_file(&root, material.id(), MapRole::Normal)).unwrap();
+        let outcome = forge.repair(material.id()).expect("the repair runs");
+        assert_eq!(outcome.status, WriteStatus::Restored);
+        assert_eq!(
+            outcome.files.len(),
+            1,
+            "only the lost map: {:?}",
+            outcome.files
+        );
+
+        for (role, original) in &before {
+            let now = std::fs::read(layout::map_file(&root, material.id(), *role)).unwrap();
+            assert_eq!(&now, original, "{} changed", role.as_str());
+        }
+    }
+
+    #[test]
+    fn a_repair_leaves_the_definition_and_the_intact_maps_untouched() {
+        let root = scratch("repair-untouched");
+        let forge = Forge::new(&root).unwrap();
+        let material = definition("nexora:material/oak", 0.8);
+        forge.generate(&material, 11, false).unwrap();
+
+        let definition_path = layout::definition_file(&root, material.id());
+        let written = forge.read_definition(material.id()).unwrap();
+        let text = std::fs::read(&definition_path).unwrap();
+
+        std::fs::remove_file(layout::map_file(&root, material.id(), MapRole::Albedo)).unwrap();
+        forge.repair(material.id()).unwrap();
+
+        assert_eq!(
+            std::fs::read(&definition_path).unwrap(),
+            text,
+            "a repair that rewrote the definition would claim a change that did not happen"
+        );
+        assert_eq!(
+            forge.read_definition(material.id()).unwrap().revision(),
+            written.revision()
+        );
+    }
+
+    #[test]
+    fn repairing_something_intact_does_nothing() {
+        let root = scratch("repair-noop");
+        let forge = Forge::new(&root).unwrap();
+        let material = definition("nexora:material/oak", 0.8);
+        forge.generate(&material, 2, false).unwrap();
+
+        let outcome = forge.repair(material.id()).unwrap();
+        assert_eq!(outcome.status, WriteStatus::Unchanged);
+        assert!(outcome.files.is_empty());
+        assert_eq!(outcome.byte_len(), 0);
+    }
+
+    #[test]
+    fn a_repair_restores_several_lost_maps_at_once() {
+        let root = scratch("repair-many");
+        let forge = Forge::new(&root).unwrap();
+        let material = definition("nexora:material/oak", 0.8);
+        forge.generate(&material, 4, false).unwrap();
+
+        let before: Vec<Vec<u8>> = [MapRole::Albedo, MapRole::Height, MapRole::Normal]
+            .into_iter()
+            .map(|role| std::fs::read(layout::map_file(&root, material.id(), role)).unwrap())
+            .collect();
+
+        std::fs::remove_file(layout::map_file(&root, material.id(), MapRole::Albedo)).unwrap();
+        std::fs::write(
+            layout::map_file(&root, material.id(), MapRole::Height),
+            b"corrupt",
+        )
+        .unwrap();
+
+        let outcome = forge.repair(material.id()).unwrap();
+        assert_eq!(outcome.files.len(), 2);
+        for (index, role) in [MapRole::Albedo, MapRole::Height, MapRole::Normal]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                std::fs::read(layout::map_file(&root, material.id(), role)).unwrap(),
+                before[index],
+                "{} did not come back",
+                role.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn a_repaired_material_validates() {
+        let root = scratch("repair-validates");
+        let forge = Forge::new(&root).unwrap();
+        let material = definition("nexora:material/oak", 0.8);
+        forge.generate(&material, 9, false).unwrap();
+        std::fs::remove_file(layout::map_file(&root, material.id(), MapRole::Normal)).unwrap();
+
+        // Broken first, so the check is known capable of failing.
+        let (_, broken) = forge.validate(material.id()).unwrap();
+        assert_eq!(broken.verdict(), Verdict::Fail);
+        assert!(broken
+            .findings()
+            .iter()
+            .any(|finding| finding.check == Check::FileExists
+                && finding.severity == Severity::Failure));
+
+        forge.repair(material.id()).unwrap();
+        let (_, healed) = forge.validate(material.id()).unwrap();
+        assert_eq!(healed.verdict(), Verdict::Pass);
     }
 }

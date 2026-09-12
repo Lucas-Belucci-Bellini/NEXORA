@@ -152,6 +152,52 @@ impl GenerationRequest {
         }
     }
 
+    /// A run producing another material like an existing one.
+    ///
+    /// `of` is the material being varied and `index` counts from one. A
+    /// backend is expected to derive its seed from those two rather than from
+    /// the new material's own identity, so that "variant 3 of oak" names one
+    /// specific surface however the caller chooses to name the result.
+    #[must_use]
+    pub fn variant(definition: SurfaceMaterial, of: Identifier, index: u32, seed: u64) -> Self {
+        Self {
+            definition,
+            mode: GenerationMode::Variant { of, index },
+            backend: Backend::Procedural,
+            seed,
+            roles: Vec::new(),
+            prompt: None,
+            parameters: BTreeMap::new(),
+        }
+    }
+
+    /// A run reproducing maps of an existing material that were lost.
+    ///
+    /// Carries no seed of its own on purpose. A repair must land beside the
+    /// maps it did not touch, so the seed is the one in `definition`'s own
+    /// generation record — a backend that invented a fresh one would restore a
+    /// normal map that does not match the albedo next to it.
+    ///
+    /// It carries no role list either, and that is not an omission. A derived
+    /// map cannot be rebuilt without the map it derives from, so restricting
+    /// the run to "just the normal map" would leave the pipeline with no height
+    /// field to build it out of. A repair therefore renders the whole set;
+    /// which files are then *written* is the caller's business, and writing
+    /// only the lost ones is what makes it a repair.
+    #[must_use]
+    pub fn repair(definition: SurfaceMaterial) -> Self {
+        let of = definition.id().clone();
+        Self {
+            definition,
+            mode: GenerationMode::Repair { of },
+            backend: Backend::Procedural,
+            seed: 0,
+            roles: Vec::new(),
+            prompt: None,
+            parameters: BTreeMap::new(),
+        }
+    }
+
     /// Which maps this run should produce.
     ///
     /// An explicit list wins; otherwise it is the required maps plus whatever

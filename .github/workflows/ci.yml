@@ -106,6 +106,20 @@ jobs:
             ./target/release/nexora-texture-forge batch "$manifest" \
               --out "${RUNNER_TEMP}/sets" | grep -q '0 written'
           done
+          # A repair must give back the exact bytes that were lost, not a new
+          # map of the same shape: a restored normal that does not match the
+          # albedo beside it is the failure this checks for. One file deleted,
+          # one corrupted, and both compared by hash afterwards.
+          granite="${RUNNER_TEMP}/sets/nexora/temperate_forest/granite"
+          sha256sum "${granite}/normal.png" "${granite}/albedo.png" > "${RUNNER_TEMP}/before.sha"
+          rm "${granite}/normal.png"
+          printf 'not a png' > "${granite}/albedo.png"
+          ./target/release/nexora-texture-forge repair \
+            nexora:material/temperate_forest/granite --out "${RUNNER_TEMP}/sets"
+          sha256sum --check --status "${RUNNER_TEMP}/before.sha"
+          # And repairing something intact is a no-op, not a rewrite.
+          ./target/release/nexora-texture-forge repair \
+            nexora:material/temperate_forest/granite --out "${RUNNER_TEMP}/sets" | grep -q '^intact'
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its
