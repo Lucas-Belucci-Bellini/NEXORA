@@ -131,6 +131,16 @@ jobs:
             content/manifests/temperate_forest.json --out "${RUNNER_TEMP}/quiet" --no-preview
           test ! -e "${RUNNER_TEMP}/quiet/nexora/temperate_forest/granite/preview.png"
           test -e "${RUNNER_TEMP}/quiet/nexora/temperate_forest/granite/albedo.png"
+          # A backend with no generator installed is refused by name, never
+          # quietly served by the procedural one: a caller who asked for a
+          # model and silently got noise would ship the noise. Exit 1 is "the
+          # answer was no"; exit 2 is a name that is not a backend at all.
+          ! ./target/release/nexora-texture-forge generate \
+            content/materials/stone_rough.json --out "${RUNNER_TEMP}/never" --backend ai
+          test ! -d "${RUNNER_TEMP}/never"
+          ./target/release/nexora-texture-forge generate \
+            content/materials/stone_rough.json --out "${RUNNER_TEMP}/never" \
+            --backend nonsense; test $? -eq 2
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its

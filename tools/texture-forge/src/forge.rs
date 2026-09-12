@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use nexora_asset::document;
 use nexora_asset::generator::{
-    GeneratedMaterial, GenerationRequest, TextureGenerator, TexturePipeline,
+    Backend, GeneratedMaterial, GenerationRequest, TextureGenerator, TexturePipeline,
 };
 use nexora_asset::material::SurfaceMaterial;
 use nexora_asset::texture::{MapRole, MapSet, Preview, TextureFormat, TextureMap};
@@ -222,7 +222,7 @@ impl BatchReport {
 #[derive(Debug)]
 pub struct Forge {
     root: PathBuf,
-    generator: ProceduralGenerator,
+    generator: Box<dyn TextureGenerator>,
     pipeline: PbrPipeline,
     previews: PreviewRenderer,
     validator: Validator,
@@ -239,12 +239,37 @@ impl Forge {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         Ok(Self {
             root: root.into(),
-            generator: ProceduralGenerator::new()?,
+            generator: Box::new(ProceduralGenerator::new()?),
             pipeline: PbrPipeline::new()?,
             previews: PreviewRenderer::new(),
             validator: Validator::new(),
             preview: true,
         })
+    }
+
+    /// A forge that generates with something other than the procedural backend.
+    ///
+    /// The whole of §4's *"um novo backend deve poder ser plugado sem reescrever
+    /// o core"*, in one function. Everything below this line — the write policy,
+    /// the validator, the PBR pipeline, the preview, the layout, batch, repair —
+    /// is written against [`TextureGenerator`] and does not know or care which
+    /// implementation is behind it. The tests install a second backend and run
+    /// the same paths to prove that rather than assert it.
+    ///
+    /// What the core does *not* relax for a new backend is the origin record.
+    /// `GeneratedMaterial::assemble` refuses output whose provenance does not
+    /// match the backend that produced it, so a model-backed generator cannot
+    /// enter this pipeline claiming to be procedural, original, or shippable.
+    #[must_use]
+    pub fn with_generator(mut self, generator: Box<dyn TextureGenerator>) -> Self {
+        self.generator = generator;
+        self
+    }
+
+    /// Which backend this forge generates with.
+    #[must_use]
+    pub fn backend(&self) -> Backend {
+        self.generator.backend()
     }
 
     /// Stop rendering previews.
@@ -779,7 +804,9 @@ fn unwritable(message: &'static str) -> Error {
 mod tests {
     use super::*;
     use nexora_asset::material::{MaterialCategory, PbrParameters, Revision};
-    use nexora_asset::provenance::Provenance;
+    use nexora_asset::provenance::{
+        AssetStatus, GenerationTrace, Provenance, ProvenanceClass, ReleaseStatus,
+    };
     use nexora_asset::texture::Resolution;
     use nexora_asset::validation::{Check, Severity, Verdict};
 
@@ -1556,5 +1583,289 @@ mod tests {
         let decoded = png::decode(&bytes).expect("the preview is a readable png");
         assert_eq!(decoded.resolution.width, material.resolution().width * 2);
         assert_eq!(decoded.resolution.height, material.resolution().height * 2);
+    }
+
+    // ---- the backend seam --------------------------------------------
+
+    /// A second backend, declaring itself non-procedural.
+    ///
+    /// Not a stand-in for a model and not shipped: it exists so the claim that
+    /// a new backend plugs in without the core changing can be *run* rather
+    /// than asserted. Everything below it — the write policy, the validator,
+    /// the PBR pipeline, the preview, batch and repair — is the same code the
+    /// procedural backend goes through.
+    #[derive(Debug)]
+    struct SecondBackend {
+        id: Identifier,
+        backend: Backend,
+        /// What it claims about its own origin, so a lying backend can be
+        /// tested alongside an honest one.
+        provenance: fn(GenerationTrace) -> Provenance,
+    }
+
+    impl SecondBackend {
+        const VERSION: nexora_foundation::version::ContentGeneratorVersion =
+            nexora_foundation::version::ContentGeneratorVersion(1);
+
+        fn honest() -> Self {
+            Self {
+                id: id("nexora:generator/second"),
+                backend: Backend::Ai,
+                provenance: |trace| {
+                    let mut record = Provenance::generated("a model", "second-backend", trace);
+                    // What §17 requires of content this repository did not
+                    // compute: not procedural, not NEXORA-original, and not
+                    // shippable until a person says so.
+                    record.class = ProvenanceClass::Experimental;
+                    record.status = AssetStatus::Experimental;
+                    record.release = ReleaseStatus::Draft;
+                    record
+                },
+            }
+        }
+
+        fn claiming(class: ProvenanceClass, status: AssetStatus, release: ReleaseStatus) -> Self {
+            let mut backend = Self::honest();
+            backend.provenance = match (class, status, release) {
+                (ProvenanceClass::ProceduralDerivative, _, _) => |trace| {
+                    let mut record = Provenance::generated("a model", "second-backend", trace);
+                    record.class = ProvenanceClass::ProceduralDerivative;
+                    record.status = AssetStatus::Experimental;
+                    record
+                },
+                (_, AssetStatus::NexoraOriginal, _) => |trace| {
+                    let mut record = Provenance::generated("a model", "second-backend", trace);
+                    record.class = ProvenanceClass::Experimental;
+                    record.status = AssetStatus::NexoraOriginal;
+                    record
+                },
+                _ => |trace| {
+                    let mut record = Provenance::generated("a model", "second-backend", trace);
+                    record.class = ProvenanceClass::OwnedSource;
+                    record.status = AssetStatus::NexoraDerivedFromOwnSource;
+                    record.release = ReleaseStatus::Cleared;
+                    record.reviewer = Some("nobody".to_owned());
+                    record.reviewed_at = Some(nexora_asset::provenance::Timestamp(0));
+                    record
+                },
+            };
+            let _ = (class, status, release);
+            backend
+        }
+    }
+
+    impl TextureGenerator for SecondBackend {
+        fn id(&self) -> &Identifier {
+            &self.id
+        }
+
+        fn version(&self) -> nexora_foundation::version::ContentGeneratorVersion {
+            Self::VERSION
+        }
+
+        fn backend(&self) -> Backend {
+            self.backend
+        }
+
+        fn generate(&self, request: &GenerationRequest) -> Result<GeneratedMaterial> {
+            let definition = request.definition.clone();
+            let resolution = definition.resolution();
+            let mut maps = MapSet::new();
+            for (role, fill) in [(MapRole::Albedo, 190_u8), (MapRole::Height, 120)] {
+                let layout = role.natural_layout();
+                let count = layout.count() as usize;
+                let mut pixels = Vec::with_capacity(resolution.texels() as usize * count);
+                for _ in 0..resolution.texels() {
+                    for channel in 0..count {
+                        // Opaque alpha, because the material says it is opaque.
+                        // The validator checks that, and it checks it for this
+                        // backend exactly as it does for the procedural one —
+                        // which is how the first draft of this double got
+                        // caught writing 190 into the alpha channel.
+                        pixels.push(if layout.has_alpha() && channel + 1 == count {
+                            255
+                        } else {
+                            fill
+                        });
+                    }
+                }
+                maps.insert(TextureMap::new(
+                    role,
+                    TextureFormat::eight_bit(layout),
+                    resolution,
+                    pixels,
+                )?)?;
+            }
+
+            let mut trace = GenerationTrace::new(self.id.clone(), Self::VERSION, request.seed);
+            trace.backend = self.backend;
+            trace.prompt = request.prompt.clone();
+            let attributed = definition.revised((self.provenance)(trace))?;
+            GeneratedMaterial::assemble(self, attributed, maps)
+        }
+    }
+
+    #[test]
+    fn a_second_backend_runs_the_whole_pipeline_with_the_core_unchanged() {
+        // The one test FASE 10 exists for. Not one line of Forge, the
+        // validator, the PBR pipeline, the preview or the layout knows this
+        // generator exists.
+        let root = scratch("backend-seam");
+        let forge = Forge::new(&root)
+            .unwrap()
+            .with_generator(Box::new(SecondBackend::honest()));
+        assert_eq!(forge.backend(), Backend::Ai);
+
+        let material = definition("nexora:material/from_a_model", 0.8);
+        let outcome = forge
+            .generate(&material, 1, false)
+            .expect("the second backend goes through the same path");
+
+        assert_eq!(outcome.status, WriteStatus::Written);
+        assert_eq!(outcome.validation.verdict(), Verdict::Pass);
+        // Albedo, height, the normal the PBR pipeline derived, the preview and
+        // the definition: every downstream stage ran.
+        assert_eq!(outcome.files.len(), 5, "{:?}", outcome.files);
+        assert!(layout::preview_file(&root, material.id()).is_file());
+        assert_eq!(forge.list().unwrap().len(), 1);
+
+        // Reading it back, validating it and repairing it all work too.
+        let (read, result) = forge.validate(material.id()).unwrap();
+        assert_eq!(result.verdict(), Verdict::Pass);
+        assert_eq!(read.provenance().class, ProvenanceClass::Experimental);
+        std::fs::remove_file(layout::map_file(&root, material.id(), MapRole::Normal)).unwrap();
+        assert_eq!(
+            forge.repair(material.id()).unwrap().status,
+            WriteStatus::Restored
+        );
+    }
+
+    #[test]
+    fn a_second_backend_produces_something_the_procedural_one_does_not() {
+        // Otherwise the test above would pass with a generator that is
+        // secretly the same one.
+        let procedural_root = scratch("backend-procedural");
+        let other_root = scratch("backend-other");
+        let material = definition("nexora:material/compare", 0.8);
+
+        Forge::new(&procedural_root)
+            .unwrap()
+            .generate(&material, 1, false)
+            .unwrap();
+        Forge::new(&other_root)
+            .unwrap()
+            .with_generator(Box::new(SecondBackend::honest()))
+            .generate(&material, 1, false)
+            .unwrap();
+
+        assert_ne!(
+            std::fs::read(layout::map_file(
+                &procedural_root,
+                material.id(),
+                MapRole::Albedo
+            ))
+            .unwrap(),
+            std::fs::read(layout::map_file(
+                &other_root,
+                material.id(),
+                MapRole::Albedo
+            ))
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_batch_and_a_variant_work_through_a_second_backend_too() {
+        let root = scratch("backend-batch");
+        let forge = Forge::new(&root)
+            .unwrap()
+            .with_generator(Box::new(SecondBackend::honest()));
+
+        let report = forge.batch(&manifest(SET), false);
+        assert!(report.is_clean(), "{:?}", report.failures);
+        assert_eq!(report.counted(WriteStatus::Written), 3);
+
+        let source = id("nexora:material/temperate_forest/granite");
+        let derived = definition("nexora:material/temperate_forest/granite_two", 0.8);
+        assert_eq!(
+            forge
+                .variant(&derived, &source, 1, 0, false)
+                .unwrap()
+                .status,
+            WriteStatus::Written
+        );
+    }
+
+    #[test]
+    fn output_from_a_non_reproducible_backend_may_not_ship_unreviewed() {
+        // §17: content this repository did not compute is not NEXORA original,
+        // and a backend cannot clear its own output for release.
+        let root = scratch("backend-origin");
+        let material = definition("nexora:material/claimed", 0.8);
+
+        let honest = Forge::new(&root)
+            .unwrap()
+            .with_generator(Box::new(SecondBackend::honest()))
+            .generate(&material, 1, false)
+            .unwrap();
+        assert!(
+            !honest.material.provenance().may_ship(),
+            "a model's output arrived already shippable"
+        );
+
+        for (class, status, release, expected) in [
+            (
+                ProvenanceClass::ProceduralDerivative,
+                AssetStatus::Experimental,
+                ReleaseStatus::Draft,
+                "procedurally derived",
+            ),
+            (
+                ProvenanceClass::Experimental,
+                AssetStatus::NexoraOriginal,
+                ReleaseStatus::Draft,
+                "NEXORA original",
+            ),
+            (
+                ProvenanceClass::OwnedSource,
+                AssetStatus::NexoraDerivedFromOwnSource,
+                ReleaseStatus::Cleared,
+                "must be reviewed",
+            ),
+        ] {
+            let lying = scratch("backend-lying");
+            let error = Forge::new(&lying)
+                .unwrap()
+                .with_generator(Box::new(SecondBackend::claiming(class, status, release)))
+                .generate(&material, 1, false)
+                .expect_err("a false origin claim must be refused");
+            assert!(
+                error.to_string().contains(expected),
+                "expected `{expected}` in: {error}"
+            );
+            assert!(
+                !layout::definition_file(&lying, material.id()).is_file(),
+                "nothing may be written when the origin claim is refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_procedural_backend_is_still_the_only_one_that_claims_reproducibility() {
+        let root = scratch("backend-reproducible");
+        let procedural = Forge::new(&root).unwrap();
+        assert!(procedural.backend().is_reproducible_from_trace());
+        assert!(!Backend::Ai.is_reproducible_from_trace());
+        assert!(!Backend::Hybrid.is_reproducible_from_trace());
+
+        // And the record says which one ran, as a field rather than a
+        // convention, so nothing has to read the generator's source to know.
+        let material = definition("nexora:material/recorded", 0.8);
+        procedural.generate(&material, 1, false).unwrap();
+        let written = procedural.read_definition(material.id()).unwrap();
+        assert_eq!(
+            written.provenance().generation.as_ref().unwrap().backend,
+            Backend::Procedural
+        );
     }
 }

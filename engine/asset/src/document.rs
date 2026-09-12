@@ -30,7 +30,7 @@ use crate::material::{
     MATERIAL_SCHEMA_VERSION,
 };
 use crate::provenance::{
-    AssetStatus, GenerationTrace, License, Modification, Provenance, ProvenanceClass,
+    AssetStatus, Backend, GenerationTrace, License, Modification, Provenance, ProvenanceClass,
     ReleaseStatus, Timestamp,
 };
 use crate::texture::{MapRole, Resolution};
@@ -164,7 +164,7 @@ pub fn from_json(document: &Json) -> Result<SurfaceMaterial> {
             node.field("height")?.as_u32()?,
         )?
     };
-    let provenance = provenance_from_json(document.field("provenance")?)?;
+    let provenance = provenance_from_json(document.field("provenance")?, schema)?;
 
     let mut builder = SurfaceMaterial::builder(id, category, resolution, provenance)
         .named(document.field("name")?.as_text()?)
@@ -296,6 +296,7 @@ fn generation_to_json(trace: &GenerationTrace) -> Json {
         "generator_version".to_owned(),
         Json::Integer(i64::from(trace.generator_version.0)),
     );
+    fields.insert("backend".to_owned(), Json::text(trace.backend.as_str()));
     fields.insert(
         "pipeline".to_owned(),
         trace
@@ -346,7 +347,7 @@ fn generation_to_json(trace: &GenerationTrace) -> Json {
     Json::Object(fields)
 }
 
-fn provenance_from_json(node: &Json) -> Result<Provenance> {
+fn provenance_from_json(node: &Json, schema: MaterialSchemaVersion) -> Result<Provenance> {
     reject_unknown_fields(
         node,
         &[
@@ -381,14 +382,17 @@ fn provenance_from_json(node: &Json) -> Result<Provenance> {
         reviewer: text_or_null(node.field("reviewer")?)?,
         reviewed_at: timestamp_or_null(node.field("reviewed_at")?)?,
         notes: text_or_null(node.field("notes")?)?,
-        generation: generation_from_json(node.field("generation")?)?,
+        generation: generation_from_json(node.field("generation")?, schema)?,
         recorded_at: Timestamp::parse_rfc3339_utc(node.field("recorded_at")?.as_text()?)?,
     };
     provenance.validate()?;
     Ok(provenance)
 }
 
-fn generation_from_json(node: &Json) -> Result<Option<GenerationTrace>> {
+fn generation_from_json(
+    node: &Json,
+    schema: MaterialSchemaVersion,
+) -> Result<Option<GenerationTrace>> {
     if matches!(node, Json::Null) {
         return Ok(None);
     }
@@ -397,6 +401,7 @@ fn generation_from_json(node: &Json) -> Result<Option<GenerationTrace>> {
         &[
             "generator",
             "generator_version",
+            "backend",
             "pipeline",
             "pipeline_version",
             "preset",
@@ -430,6 +435,19 @@ fn generation_from_json(node: &Json) -> Result<Option<GenerationTrace>> {
         pipeline_version: match node.field("pipeline_version")? {
             Json::Null => None,
             other => Some(ContentPipelineVersion(other.as_u32()?)),
+        },
+        backend: match node.optional_field("backend")? {
+            Some(value) => Backend::parse(value.as_text()?)?,
+            // Absent only in a schema-1 document, and a schema-1 document was
+            // necessarily written by the procedural generator, because it was
+            // the only one that existed. Not a guess — the one answer the
+            // format's own history allows.
+            None if schema.0 < 2 => Backend::Procedural,
+            None => {
+                return Err(unreadable(
+                    "a generation record must say which backend produced it",
+                ))
+            }
         },
         preset: identifier_or_null(node.field("preset")?)?,
         seed: parse_hex_u64(node.field("seed")?.as_text()?)?,

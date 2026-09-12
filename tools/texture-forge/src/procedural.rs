@@ -178,10 +178,6 @@ impl ProceduralGenerator {
         );
         parameters.insert("mode".to_owned(), request.mode.as_str().to_owned());
         parameters.insert(
-            "backend".to_owned(),
-            Backend::Procedural.as_str().to_owned(),
-        );
-        parameters.insert(
             "resolution".to_owned(),
             format!(
                 "{}x{}",
@@ -214,6 +210,7 @@ impl ProceduralGenerator {
                     "preset/{}",
                     definition.category().as_str()
                 ))?);
+        trace.backend = Backend::Procedural;
         trace.parameters = parameters;
         if let GenerationMode::Variant { of, .. } | GenerationMode::Repair { of } = &request.mode {
             trace.inputs.push(of.clone());
@@ -432,7 +429,11 @@ mod tests {
         );
         assert_eq!(trace.parameters["category"], "wood");
         assert_eq!(trace.parameters["resolution"], "16x16");
-        assert_eq!(trace.parameters["backend"], "procedural");
+        // A field on the trace, not an entry in the parameters map: what
+        // decides whether an asset may ship is not a string any generator may
+        // forget to write.
+        assert_eq!(trace.backend, Backend::Procedural);
+        assert!(!trace.parameters.contains_key("backend"));
         // No prompt: this backend takes numbers, and the record says so.
         assert!(trace.prompt.is_none());
     }

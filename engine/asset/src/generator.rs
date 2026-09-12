@@ -27,6 +27,8 @@ use nexora_foundation::ident::Identifier;
 use nexora_foundation::version::{ContentGeneratorVersion, ContentPipelineVersion};
 
 use crate::material::SurfaceMaterial;
+pub use crate::provenance::Backend;
+use crate::provenance::{AssetStatus, ProvenanceClass};
 use crate::texture::{MapRole, MapSet, MapStatus, Preview};
 use crate::validation::{Check, Finding, TextureValidationResult};
 
@@ -62,59 +64,6 @@ impl GenerationMode {
             Self::Variant { .. } => "variant",
             Self::Repair { .. } => "repair",
         }
-    }
-}
-
-/// How the pixels are produced.
-///
-/// The three from the brief §4. This is recorded rather than inferred: an
-/// asset's origin must be answerable without reading the generator's source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Backend {
-    /// An algorithm, from parameters. Reproducible from the trace alone.
-    Procedural,
-    /// A model. Reproducible only as far as the model is.
-    Ai,
-    /// A model's output shaped by an algorithm, or the reverse.
-    Hybrid,
-}
-
-impl Backend {
-    /// Every backend, in a stable order.
-    pub const ALL: [Self; 3] = [Self::Procedural, Self::Ai, Self::Hybrid];
-
-    /// Stable lowercase name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Procedural => "procedural",
-            Self::Ai => "ai",
-            Self::Hybrid => "hybrid",
-        }
-    }
-
-    /// Parse the stable name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the name is not a known backend.
-    pub fn parse(raw: &str) -> Result<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|backend| backend.as_str() == raw)
-            .ok_or_else(|| {
-                invalid("backend is not recognised").with_context("value", raw.to_owned())
-            })
-    }
-
-    /// Whether output from this backend is reproducible from its trace alone.
-    ///
-    /// Only the procedural one is. Recording that difference is what stops a
-    /// model's output being treated as though re-running the tool would bring
-    /// it back.
-    #[must_use]
-    pub const fn is_reproducible_from_trace(self) -> bool {
-        matches!(self, Self::Procedural)
     }
 }
 
@@ -282,6 +231,16 @@ impl GeneratedMaterial {
                     .with_context("actual", generator.version().to_string()),
             );
         }
+
+        if trace.backend != generator.backend() {
+            return Err(unattributable(
+                "the trace names a different backend than the one that ran",
+            )
+            .with_context("material", definition.id().to_string())
+            .with_context("recorded", trace.backend.as_str())
+            .with_context("actual", generator.backend().as_str()));
+        }
+        origin_matches_backend(&definition, generator.backend())?;
 
         let expected = definition.resolution();
         for map in maps.iter() {
@@ -462,7 +421,11 @@ impl GeneratedMaterial {
 /// The extension point. A procedural algorithm, a hosted image API, a local
 /// model and a hybrid of two of those all implement this and nothing else
 /// changes — which is the whole point of declaring it.
-pub trait TextureGenerator {
+///
+/// `Debug` is required so that anything holding a boxed backend stays
+/// inspectable; a pipeline whose composition cannot be printed is one nobody
+/// can debug.
+pub trait TextureGenerator: core::fmt::Debug {
     /// This generator's stable identifier, e.g. `nexora:generator/procedural`.
     fn id(&self) -> &Identifier;
 
@@ -497,7 +460,7 @@ pub trait TextureGenerator {
 /// Seamless correction, PBR derivation, terrain blending, decal cutting: each
 /// is a step that takes a material and returns a material, so they compose in
 /// any order the caller needs and none of them knows what produced its input.
-pub trait TexturePipeline {
+pub trait TexturePipeline: core::fmt::Debug {
     /// This pipeline's stable identifier, e.g. `nexora:pipeline/pbr`.
     fn id(&self) -> &Identifier;
 
@@ -511,6 +474,55 @@ pub trait TexturePipeline {
     /// Returns an error when the input is not something this pipeline can
     /// transform.
     fn apply(&self, material: GeneratedMaterial) -> Result<GeneratedMaterial>;
+}
+
+/// Refuse output whose origin record does not match the backend that produced it.
+///
+/// The brief §17: *"Não finja que conteúdo externo é original do NEXORA."* This
+/// is where that stops being a policy and becomes a compile-and-run rule.
+///
+/// Only [`Backend::Procedural`] output is rebuildable from its own record, and
+/// only procedural output is original by construction: it is computed from
+/// numbers this repository owns. A model's output is not. So a generator whose
+/// backend is not reproducible from its trace may not claim
+/// [`ProvenanceClass::ProceduralDerivative`], may not claim
+/// [`AssetStatus::NexoraOriginal`], and may not arrive already shippable — a
+/// person has to clear it, which is exactly what [`crate::provenance::Provenance::may_ship`]
+/// already encodes.
+///
+/// # Errors
+///
+/// Returns an error naming the claim that does not hold.
+fn origin_matches_backend(definition: &SurfaceMaterial, backend: Backend) -> Result<()> {
+    let provenance = definition.provenance();
+    if backend.is_reproducible_from_trace() {
+        return Ok(());
+    }
+    if provenance.class == ProvenanceClass::ProceduralDerivative {
+        return Err(unattributable(
+            "only a procedural backend produces procedurally derived content",
+        )
+        .with_context("material", definition.id().to_string())
+        .with_context("backend", backend.as_str()));
+    }
+    if provenance.status == AssetStatus::NexoraOriginal {
+        return Err(unattributable(
+            "content this repository did not compute is not NEXORA original",
+        )
+        .with_context("material", definition.id().to_string())
+        .with_context("backend", backend.as_str()));
+    }
+    if provenance.may_ship() {
+        // Not a judgement about the content. A backend cannot clear its own
+        // output for release, whatever it produced: clearance names a reviewer.
+        return Err(unattributable(
+            "output from a backend that is not reproducible must be reviewed before it may ship",
+        )
+        .with_context("material", definition.id().to_string())
+        .with_context("backend", backend.as_str())
+        .with_context("release", provenance.release.as_str()));
+    }
+    Ok(())
 }
 
 fn invalid(message: &'static str) -> Error {
@@ -528,7 +540,7 @@ fn unattributable(message: &'static str) -> Error {
 mod tests {
     use super::*;
     use crate::material::{MaterialCategory, SurfaceMaterial};
-    use crate::provenance::{GenerationTrace, Provenance};
+    use crate::provenance::{GenerationTrace, Provenance, ReleaseStatus};
     use crate::texture::{Resolution, TextureFormat, TextureMap};
 
     fn id(raw: &str) -> Identifier {
@@ -537,6 +549,7 @@ mod tests {
 
     /// A generator that produces flat colour. Enough to exercise the boundary
     /// without pretending to be an art tool.
+    #[derive(Debug)]
     struct FlatGenerator {
         id: Identifier,
         version: ContentGeneratorVersion,
@@ -749,5 +762,128 @@ mod tests {
             [MapRole::Normal, MapRole::Height]
         );
         assert_eq!(request.backend, Backend::Hybrid);
+    }
+
+    /// A generator that declares a backend nothing can rebuild from a trace,
+    /// and claims whatever origin the test hands it.
+    #[derive(Debug)]
+    struct Untrusted {
+        id: Identifier,
+        record: Provenance,
+    }
+
+    impl TextureGenerator for Untrusted {
+        fn id(&self) -> &Identifier {
+            &self.id
+        }
+        fn version(&self) -> ContentGeneratorVersion {
+            ContentGeneratorVersion(1)
+        }
+        fn backend(&self) -> Backend {
+            Backend::Ai
+        }
+        fn generate(&self, request: &GenerationRequest) -> Result<GeneratedMaterial> {
+            let resolution = request.definition.resolution();
+            let mut maps = MapSet::new();
+            maps.insert(flat_map(MapRole::Albedo, resolution))?;
+            let attributed = request.definition.clone().revised(self.record.clone())?;
+            GeneratedMaterial::assemble(self, attributed, maps)
+        }
+    }
+
+    fn untrusted(adjust: impl FnOnce(&mut Provenance)) -> Untrusted {
+        let mut trace = GenerationTrace::new(
+            id("nexora:generator/untrusted"),
+            ContentGeneratorVersion(1),
+            1,
+        );
+        trace.backend = Backend::Ai;
+        let mut record = Provenance::generated("a model", "untrusted", trace);
+        record.class = ProvenanceClass::Experimental;
+        record.status = AssetStatus::Experimental;
+        adjust(&mut record);
+        Untrusted {
+            id: id("nexora:generator/untrusted"),
+            record,
+        }
+    }
+
+    #[test]
+    fn a_non_procedural_backend_may_not_claim_a_procedural_origin() {
+        // §17. Only content computed here from numbers this repository owns is
+        // procedurally derived, and only that content is NEXORA original.
+        for (adjust, expected) in [
+            (
+                Box::new(|record: &mut Provenance| {
+                    record.class = ProvenanceClass::ProceduralDerivative;
+                }) as Box<dyn FnOnce(&mut Provenance)>,
+                "procedurally derived",
+            ),
+            (
+                Box::new(|record: &mut Provenance| {
+                    record.status = AssetStatus::NexoraOriginal;
+                }),
+                "NEXORA original",
+            ),
+        ] {
+            let generator = untrusted(adjust);
+            let error = generator
+                .generate(&GenerationRequest::generate(definition(), 1))
+                .expect_err("a false origin claim must be refused");
+            assert!(error.to_string().contains(expected), "{error}");
+            assert_eq!(error.recovery(), Recovery::Quarantine);
+        }
+    }
+
+    #[test]
+    fn a_backend_cannot_clear_its_own_output_for_release() {
+        // Clearance names a reviewer. Whatever the content, a generator saying
+        // its own output is cleared is a generator reviewing itself.
+        let generator = untrusted(|record| {
+            record.class = ProvenanceClass::OwnedSource;
+            record.status = AssetStatus::NexoraDerivedFromOwnSource;
+            record.release = ReleaseStatus::Cleared;
+            record.reviewer = Some("itself".to_owned());
+            record.reviewed_at = Some(crate::provenance::Timestamp(0));
+        });
+        let error = generator
+            .generate(&GenerationRequest::generate(definition(), 1))
+            .expect_err("self-clearance must be refused");
+        assert!(error.to_string().contains("must be reviewed"), "{error}");
+    }
+
+    #[test]
+    fn an_honest_non_procedural_backend_is_accepted_and_arrives_unshippable() {
+        let generator = untrusted(|_| {});
+        let produced = generator
+            .generate(&GenerationRequest::generate(definition(), 1))
+            .expect("an honest record is accepted");
+        assert!(
+            !produced.definition().provenance().may_ship(),
+            "it must need a person before it ships"
+        );
+        assert_eq!(
+            produced
+                .definition()
+                .provenance()
+                .generation
+                .as_ref()
+                .unwrap()
+                .backend,
+            Backend::Ai
+        );
+    }
+
+    #[test]
+    fn a_trace_naming_a_backend_the_generator_does_not_use_is_refused() {
+        // The record has to describe the run, not a run somebody imagined.
+        let mut generator = untrusted(|_| {});
+        if let Some(trace) = generator.record.generation.as_mut() {
+            trace.backend = Backend::Procedural;
+        }
+        let error = generator
+            .generate(&GenerationRequest::generate(definition(), 1))
+            .expect_err("the trace and the generator disagree");
+        assert!(error.to_string().contains("different backend"), "{error}");
     }
 }
