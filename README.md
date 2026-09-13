@@ -117,6 +117,10 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
 engine/command       intent: definitions, validation, dispatch, quotas
+engine/asset         surface materials, texture maps, provenance, validation,
+                     the generator and pipeline contracts
+tools/texture-forge  the material generator -- a content tool, not an engine
+                     crate, so it lives outside engine/
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
 benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)
@@ -133,6 +137,7 @@ docs/adr/            architecture decision records
 | [`NEXORA ARCHITECTURE FREEZE CHECKLIST.md`](NEXORA%20ARCHITECTURE%20FREEZE%20CHECKLIST.md) | what is defined vs. what is built |
 | [`NEXORA DEVELOPMENT ROADMAP.md`](NEXORA%20DEVELOPMENT%20ROADMAP.md) | phase order |
 | [`NEXORA TECHNICAL DEBT REGISTER.md`](NEXORA%20TECHNICAL%20DEBT%20REGISTER.md) | shortcuts taken, with owners |
+| [`TEXTURE FORGE.md`](TEXTURE%20FORGE.md) | how materials and textures are made |
 | [`NEXORA DOCUMENTATION INDEX.md`](NEXORA%20DOCUMENTATION%20INDEX.md) | everything else |
 
 Every source file names the document whose contract it implements. If code and

@@ -681,7 +681,8 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `CORE.md` §5 pede, e faz vidro e vidro-tingido compartilharem a decisão em
   vez de repeti-la.
   **Fecha só metade do que este item descrevia.** As quatro malhas por chunk do
-  RENDER-10 continuam não existindo — ver `DEBT-0035`.
+  RENDER-10 continuam não existindo — ver `DEBT-0035`, fechado em 2026-09-12
+  com três das quatro; a quarta virou o `DEBT-0036`.
 
 ### DEBT-0027 — Meshing roda na thread que pedir, não em worker
 
@@ -698,7 +699,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   não só mais rápido, porque o worker deixa de tocar o mundo.
 - **TRIGGER:** existir um loop de quadro.
 - **TARGET STAGE:** Phase 2/5
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN (medido) — **metade do obstáculo saiu em 2026-09-13.** O
+  `DenseSnapshot` do `DEBT-0029` existe, é `Send`, e há um teste que falha em
+  compilar se deixar de ser. O que falta é só o agendamento: submeter ao job
+  system. A parte difícil — dar ao worker uma entrada que não é o mundo — está
+  feita.
 
 ### DEBT-0028 — Não há malha de LOD
 
@@ -737,7 +742,39 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   que o worker passa a não tocar o mundo.
 - **TRIGGER:** o primeiro remesh no caminho de um quadro.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** CLOSED (2026-09-13)
+- **RESOLUÇÃO:** `nexora_mesh::DenseSnapshot`. A fixture do benchmark dizia de
+  si mesma que estava *"deliberadamente fora do `nexora-mesh` — a resposta
+  decide se vale a pena, e construir antes seria assumir"*. A resposta veio, e
+  agora é código de engine.
+  **Promover não foi copiar.** A fixture guardava só a superfície por célula e
+  *derivava* a oclusão como "qualquer coisa presente oclui" — verdade quando foi
+  escrita, mentira desde que materiais existem: um snapshot que re-deriva torna
+  o vidro sólido, e um que esquece a camada desenha tudo no passe opaco. Os
+  dois em silêncio. O tipo real **captura toda resposta que a view dá** —
+  superfície, oclusão e camada — em vez de recalcular qualquer uma. O teste que
+  o mantém honesto não é uma propriedade e sim uma igualdade: malhar por um
+  snapshot tem que produzir *exatamente* a malha que malhar pela fonte produziu.
+  **Duas medições, e trocar uma pela outra seria errado.** O número do achado 22
+  (11,2×) exclui o custo de *construir* o snapshot, que é ele próprio uma
+  passada de leituras do mundo. Medido agora, com a construção incluída:
+
+  | | mediana |
+  | --- | ---: |
+  | `mesh.region_16` (direto do mundo) | **3,32 ms** |
+  | `mesh.region_16_with_snapshot` (constrói **e** malha) | **1,22 ms** |
+  | `mesh.region_16_from_snapshot` (snapshot já em mãos) | **296 µs** |
+
+  Primeira malha de uma região: **2,7×**. Remalha com o snapshot em mãos:
+  **11,2×**. Construir custa 0,92 ms, 76% do tempo com snapshot. O snapshot se
+  paga já na primeira vez e se paga muito mais quando a região é malhada de
+  novo sem os voxels terem mudado.
+  Limite de **2 milhões de células** (~18 MiB): o `Extent` sozinho permitiria
+  512³, que como snapshot seria um gigabyte para um job de malha.
+  **Metade do `DEBT-0027` veio junto.** Um snapshot é `Send` e desligado do
+  mundo no instante em que é tirado — há um teste que falha em compilar se
+  deixar de ser. O obstáculo para malhar fora da thread do tick nunca foi
+  agendamento; era um worker segurando `&World`. Esse obstáculo saiu.
 
 ### DEBT-0030 — A inclinação do normal map não tem significado físico
 
@@ -794,6 +831,8 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   Sobre o conjunto PBR inteiro — vinte mapas, com normal, roughness e oclusão,
   que são contínuos — o alcançável é **6,79×** (zlib -9) e este codificador
   entrega **4,73×**. Ver o `DEBT-0034` para a diferença que sobra.
+  *(Aquela diferença fechou em 2026-09-13: medido de novo sobre um conjunto PBR
+  completo, o alcançável é 8,72× e este codificador entrega 8,52×.)*
 
 ### DEBT-0032 — Metallic é constante porque nenhuma receita tem metal por texel
 
@@ -847,15 +886,84 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   mil materiais isso é da ordem de 120 MB contra 85 MB.
 - **RISK:** baixo. É espaço, não correção, e o formato de saída continua sendo
   PNG válido para qualquer decodificador.
-- **PROPOSED REMEDIATION:** duas coisas independentes, nesta ordem de retorno:
-  **(1) correspondência preguiçosa** — adiar um byte quando a posição seguinte
-  oferece uma correspondência maior; é ~20 linhas e costuma valer a maior parte
-  da diferença. **(2) Huffman dinâmico** — contar frequências, construir o
-  código canônico e emitir a árvore; é a metade cara e rende menos.
+- **PROPOSED REMEDIATION:** duas coisas independentes: **(1) correspondência
+  preguiçosa** e **(2) Huffman dinâmico**. A ordem de retorno prevista aqui
+  estava **invertida** — ver abaixo.
 - **TRIGGER:** quando o repositório de assets passar de algumas centenas de
   megabytes, ou antes de empacotar uma release.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** CLOSED (2026-09-13)
+- **RESOLUÇÃO:** **1,3881× → 1,0233×.** Dos 44 316 bytes que separavam do
+  `zlib -9`, sobraram 2 655 — **94% da diferença fechou**. Medido sobre um
+  conjunto PBR completo: 48 imagens, 995 264 bytes de scanlines filtradas.
+
+  | | bytes | tabela | matcher |
+  | --- | ---: | --- | --- |
+  | antes | 158 503 | fixa | guloso, cadeia 32 |
+  | + correspondência preguiçosa | 155 779 | fixa | preguiçoso, cadeia 32 |
+  | + `MAX_CHAIN` 256 | 148 500 | fixa | preguiçoso, cadeia 256 |
+  | **+ Huffman dinâmico** | **116 842** | **dinâmica** | preguiçoso, cadeia 256 |
+  | `zlib -9 Z_FIXED` | 145 278 | fixa | do zlib |
+  | `zlib -9` | 114 187 | dinâmica | do zlib |
+
+  **A previsão desta entrada estava errada, e o jeito de descobrir foi medir.**
+  Ela dizia que a correspondência preguiçosa *"costuma valer a maior parte da
+  diferença"*. Valeu 9%. O que separou os dois lados foi o **controle**: o
+  `zlib` aceita `Z_FIXED`, que mantém o matcher dele e troca a tabela dinâmica
+  pela fixa. Com isso uma medição virou duas, cada variável isolada por vez, e
+  a resposta foi **91% tabela, 9% matching** — o inverso da ordem prevista.
+  A metade descrita aqui como *"a metade cara e rende menos"* rendeu 3,5× mais
+  que a outra.
+
+  Sinal de que o diagnóstico fechava, visível antes de escrever a segunda
+  metade: dos 48 arquivos, **8 não encolheram um byte** com cadeia mais funda —
+  e eram justamente os de pior razão (`forest_soil/height`, `roughness`). São
+  os mapas de maior entropia, onde não há correspondência para achar em cadeia
+  nenhuma, e o custo é inteiramente o de codificar literais. Isto é, a tabela.
+
+  **O que entrou:**
+  - Correspondência preguiçosa: o token não é emitido na posição em que foi
+    achado, e cede a um estritamente maior um byte adiante. O teste não afirma
+    um tamanho, afirma a *decisão*: um oráculo guloso que compartilha a mesma
+    `Chain` e os mesmos emissores, de modo que a diferença entre os dois é a
+    preguiça e nada mais.
+  - `MAX_CHAIN` 32 → 256, com a varredura que o comentário anterior deveria ter
+    tido. O 32 era verdade sob matching guloso e deixou de ser sob preguiçoso.
+  - Blocos de **Huffman dinâmico** (RFC 1951 §3.2.7): código canônico limitado a
+    15 bits, sequência de comprimentos em RLE com o alfabeto de 19 símbolos,
+    HLIT/HDIST/HCLEN. E o lado do `inflate`, que antes recusava bloco dinâmico
+    pelo nome — os dois tipos de bloco Huffman agora dividem um só laço de
+    símbolos e um só conjunto de verificações de limite.
+  - `deflate` passou a **pesar os três** tipos de bloco e emitir o menor. É por
+    isso que nada disto pode aumentar arquivo nenhum: o matching roda uma vez e
+    os dois codificadores recebem os mesmos tokens.
+
+  **Dois defeitos que o trabalho encontrou, e que não eram dele:**
+  1. A limitação de profundidade transcrita do `zlib` estava **errada**, e o
+     `assert` do somatório de Kraft pegou. Um laço guiado por uma contagem de
+     códigos longos demais roda vezes de menos: em 351 de 400 histogramas
+     sintéticos o resultado não era um código prefixo — códigos sobrepostos,
+     fluxo que decodificador nenhum lê. O laço passou a ser guiado pelo
+     **próprio somatório**, que é a condição que importa, e aí fecha em 400 de
+     400.
+  2. O teste `incompressible_data_falls_back_to_stored_rather_than_growing`
+     tinha **parado de testar o fallback**. Ele usava uma sequência de contador
+     descrita como *"sem repetições dentro da janela"*; ela é uma progressão
+     aritmética módulo 256, comprime **20×**, e a asserção passava sem
+     significar nada. Oito bits de entropia por byte não diz se um *localizador
+     de correspondências* acha alguma coisa — são propriedades diferentes. O
+     teste recebeu bytes de fato inaproveitáveis, e o contra-exemplo virou caso
+     próprio.
+
+  **Verificação.** Dois vetores de bloco dinâmico produzidos pelo `zlib`, que
+  não leu este código, mais a etapa de CI que decodifica **todo PNG gerado** com
+  o `zlib` do Python — conferindo CRC de cada chunk, o fluxo `IDAT` inteiro e o
+  byte de filtro de cada scanline. Essa etapa é nova: o `TEXTURE FORGE.md`
+  afirmava que a CI fazia isso e a CI não fazia. E ela foi conferida contra um
+  byte corrompido de propósito, porque conferência que não sabe falhar não
+  confere nada.
+
+  **Fica em aberto:** 2,3%, e agora eles estão no **matcher**, não na tabela.
 
 ### DEBT-0035 — A malha ainda sai numa camada só, não nas quatro do RENDER-10
 
@@ -879,4 +987,50 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro renderizador que faça blending, ou o primeiro bloco
   `Cutout` (folhagem) no conteúdo.
 - **TARGET STAGE:** Phase 2
+- **STATUS:** CLOSED (2026-09-12)
+- **RESOLUÇÃO:** o gatilho disparou por conta própria — o manifesto de exemplo
+  do Texture Forge trouxe `leaf_canopy` com `blend: cutout`, que é literalmente
+  *"o primeiro bloco `Cutout` no conteúdo"*.
+  `mesh_region` devolve `LayeredMesh` e o `VoxelView` ganhou `layer_of`, com
+  default `Opaque` — o mesmo padrão que fez o `occludes` do `DEBT-0026` ser uma
+  função e não uma reescrita.
+  **A varredura e a fusão não mudaram uma linha.** A separação acontece no
+  momento em que um retângulo é emitido, não varrendo a região três vezes: a
+  fusão gulosa só junta faces de superfícies **iguais**, e uma superfície tem
+  exatamente uma camada, então todo retângulo já pertence a um passe quando
+  passa a existir. `layer_of` é chaveado por `SurfaceId` por isso — não por
+  posição, como o `occludes`.
+  Medido: a geometria é a mesma de antes — **807 retângulos, 3 228 vértices**
+  na região de 16³, os números já registrados — e `mesh.region_16` menos
+  `mesh.cull_only_16` é **0,03 ms**, que é a fusão e o roteamento juntos.
+  **Três camadas, não as quatro do RENDER-10.** A `waterMesh` continua sem
+  existir e não por esquecimento: **nada no motor diz que um bloco é água.**
+  Não há conceito de fluido em `engine/world`, nem em `nexora_asset`, nem uma
+  `MaterialCategory` de líquido. Emitir a camada seria inventar o dado que
+  decide o que entra nela — a mesma recusa que o `DEBT-0026` fez. Ver
+  `DEBT-0036`.
+
+### DEBT-0036 — A camada de água do RENDER-10 não tem dado que a defina
+
+- **SYSTEM:** `engine/mesh`, `engine/simulation::surfaces`, sistema de fluidos
+  (inexistente)
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o resto do `DEBT-0035`. O `RENDER-10` pede quatro malhas por
+  chunk e três foram entregues. A quarta, `waterMesh`, não sai do `BlendMode`:
+  água é uma categoria de **conteúdo**, não um modo de composição. Um bloco de
+  água é `Transparent` como o vidro é, e ainda assim precisa de malha própria —
+  shader próprio, animação de superfície própria, ordem própria contra o resto
+  da transparência. Nada disso um `BlendMode` consegue dizer.
+- **IMPACT:** hoje um bloco de água cairia em `Transparent`, que é onde ele
+  pertence entre as três que existem. Isso está certo até haver um shader de
+  água; a partir daí a água precisa ser desenhada separada e ordenada contra a
+  outra transparência, e uma malha só não permite isso.
+- **RISK:** zero hoje (não há fluidos nem renderizador), médio no primeiro
+  shader de água.
+- **PROPOSED REMEDIATION:** quando o sistema de fluidos existir, é ele que diz
+  quais blocos são fluido. Aí `RenderLayer` ganha uma variante e o mapeamento
+  em `layer_of_blend` ganha um braço — e nada mais, porque o roteamento já
+  acontece por superfície.
+- **TRIGGER:** o sistema de fluidos, ou o primeiro shader de água.
+- **TARGET STAGE:** Phase 2/3
 - **STATUS:** OPEN

@@ -30,7 +30,7 @@ use crate::provenance::Provenance;
 use crate::texture::{MapRole, Resolution};
 
 /// Schema version this build writes and reads.
-pub const MATERIAL_SCHEMA_VERSION: MaterialSchemaVersion = MaterialSchemaVersion(1);
+pub const MATERIAL_SCHEMA_VERSION: MaterialSchemaVersion = MaterialSchemaVersion(2);
 
 /// Path prefix a material identifier conventionally uses.
 pub const MATERIAL_PATH_PREFIX: &str = "material/";

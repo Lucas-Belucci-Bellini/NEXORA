@@ -1276,78 +1276,6 @@ pub const PLAN_SLICE_STAGES: [&str; 13] = [
     "mod boundary",
 ];
 
-/// A region of voxels read once into a dense array.
-///
-/// A measurement fixture, not engine code: it exists to answer "how much of
-/// meshing is the mesher and how much is the world lookup" by removing the
-/// lookup. Deliberately not built into `nexora-mesh` — the answer decides
-/// whether that is worth doing, and building it first would be assuming it.
-struct DenseSnapshot {
-    origin: BlockPos,
-    size: [usize; 3],
-    cells: Vec<Option<nexora_mesh::mesh::SurfaceId>>,
-}
-
-impl DenseSnapshot {
-    /// Read `extent` plus a one-cell border, so border culling still works.
-    fn read<V: nexora_mesh::view::VoxelView>(view: &V, extent: nexora_mesh::view::Extent) -> Self {
-        let size = [
-            extent.size[0] as usize + 2,
-            extent.size[1] as usize + 2,
-            extent.size[2] as usize + 2,
-        ];
-        let origin = BlockPos::new(
-            extent.origin.x - 1,
-            extent.origin.y - 1,
-            extent.origin.z - 1,
-        );
-        let mut cells = Vec::with_capacity(size[0] * size[1] * size[2]);
-        for z in 0..size[2] {
-            for y in 0..size[1] {
-                for x in 0..size[0] {
-                    cells.push(view.surface_at(BlockPos::new(
-                        origin.x + x as i64,
-                        origin.y + y as i64,
-                        origin.z + z as i64,
-                    )));
-                }
-            }
-        }
-        Self {
-            origin,
-            size,
-            cells,
-        }
-    }
-
-    fn index(&self, position: BlockPos) -> Option<usize> {
-        let dx = position.x - self.origin.x;
-        let dy = position.y - self.origin.y;
-        let dz = position.z - self.origin.z;
-        if dx < 0 || dy < 0 || dz < 0 {
-            return None;
-        }
-        let (x, y, z) = (dx as usize, dy as usize, dz as usize);
-        if x >= self.size[0] || y >= self.size[1] || z >= self.size[2] {
-            return None;
-        }
-        Some((z * self.size[1] + y) * self.size[0] + x)
-    }
-}
-
-impl nexora_mesh::view::VoxelView for DenseSnapshot {
-    fn surface_at(&self, position: BlockPos) -> Option<nexora_mesh::mesh::SurfaceId> {
-        self.cells[self.index(position)?]
-    }
-
-    fn occludes(&self, position: BlockPos) -> bool {
-        // Outside the snapshot is unknown, and unknown occludes -- the same
-        // call `WorldSurfaces` makes for a non-resident chunk.
-        self.index(position)
-            .is_none_or(|index| self.cells[index].is_some())
-    }
-}
-
 /// Turning voxels into surfaces (RENDER-9).
 ///
 /// Measures the two reductions separately, because they answer different
@@ -1418,7 +1346,11 @@ pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
     // produced every useful answer in this harness: run the identical workload
     // twice, differing in exactly one thing. Here that thing is where the
     // voxels come from.
-    let snapshot = DenseSnapshot::read(&WorldSurfaces::untextured(&world), across);
+    // The fixture that produced finding 22 lived here and said it was
+    // "deliberately not built into `nexora-mesh` — the answer decides whether
+    // that is worth doing". The answer was 11.2x, so it is engine code now
+    // (DEBT-0029) and this measures the real type rather than a stand-in.
+    let snapshot = nexora_mesh::DenseSnapshot::read(&WorldSurfaces::untextured(&world), across)?;
     out.push(measure(
         "mesh.region_16_from_snapshot",
         "The same 16 cubed region, meshed from a pre-read dense array",
@@ -1428,6 +1360,29 @@ pub fn meshing(budget: Budget) -> Result<Vec<Measurement>> {
         },
         || {
             consume(mesh_region(&snapshot, across).len());
+        },
+    ));
+
+    // The measurement above is a diagnostic, not a decision: it excludes the
+    // cost of *building* the snapshot, which is itself a pass of world reads.
+    // The engineering question is whether the snapshot pays for itself, and
+    // only this measures that — build plus mesh, against meshing directly.
+    //
+    // The reason to expect it to: direct meshing reads each cell many times
+    // over, once per axis per neighbour check, while a snapshot reads it twice
+    // (surface and occlusion) and everything after that is an array index.
+    // Expecting is not measuring, which is what this line is for.
+    out.push(measure(
+        "mesh.region_16_with_snapshot",
+        "The same region, snapshot built and then meshed: what the snapshot costs in total",
+        Budget {
+            iterations_per_sample: 20,
+            ..budget
+        },
+        || {
+            let view = WorldSurfaces::untextured(&world);
+            let taken = nexora_mesh::DenseSnapshot::read(&view, across).expect("fits");
+            consume(mesh_region(&taken, across).len());
         },
     ));
 

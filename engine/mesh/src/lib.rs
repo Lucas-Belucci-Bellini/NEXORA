@@ -29,16 +29,21 @@
 //!
 //! # Scope
 //!
-//! Face culling and greedy merging over one opacity class. RENDER-10's four
-//! render layers (opaque, cutout, transparent, water) are **not** built,
-//! because `BlockDefinition` carries no render layer today and inventing one
-//! would be inventing block data. RENDER-12's async meshing is not built
-//! either. Both are recorded in the debt register with triggers.
+//! Face culling, greedy merging, and RENDER-10's split into render layers —
+//! three of its four. `opaqueMesh`, `cutoutMesh` and `transparentMesh` follow
+//! from the `BlendMode` a material declares; `waterMesh` does not, because
+//! **nothing in the engine says a block is water**. Emitting it would mean
+//! inventing the data that decides what goes in it. See [`RenderLayer`].
+//!
+//! RENDER-12's async meshing is not built either, and is recorded in the debt
+//! register with a trigger.
 
 pub mod greedy;
 pub mod mesh;
+pub mod snapshot;
 pub mod view;
 
 pub use greedy::mesh_region;
-pub use mesh::{ChunkMesh, Facing, MeshState, Quad, SurfaceId};
+pub use mesh::{ChunkMesh, Facing, LayeredMesh, MeshState, Quad, RenderLayer, SurfaceId};
+pub use snapshot::DenseSnapshot;
 pub use view::{Extent, VoxelView};

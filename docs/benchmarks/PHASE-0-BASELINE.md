@@ -907,6 +907,32 @@ touching the world at all*. So the fix for meshing speed and the mechanism that
 makes RENDER-12's async meshing **safe** are the same change. `DEBT-0029` and
 `DEBT-0027` are one piece of work wearing two labels.
 
+### 22b. What the snapshot actually costs, once it is real (2026-09-13)
+
+The measurement above is a **diagnostic**: it excludes the cost of *building*
+the snapshot, which is itself a pass of world reads. It answers "how much of
+meshing is lookup", not "is the snapshot worth it". Those are different
+questions and the second one decides the work, so `DEBT-0029` added the
+measurement that answers it:
+
+| measurement | median |
+| --- | ---: |
+| `mesh.region_16` (read from the world) | **3.32 ms** |
+| `mesh.region_16_with_snapshot` (snapshot **built**, then meshed) | **1.22 ms** |
+| `mesh.region_16_from_snapshot` (snapshot already held) | **296 µs** |
+
+Two different numbers, and quoting one for the other would be wrong:
+
+* **First mesh of a region: 2.7×.** Building the snapshot costs 0.92 ms — 76%
+  of the with-snapshot time — because it is the pass that pays the world reads.
+* **Re-mesh while the snapshot is held: 11.2×.** That is the headline figure
+  from finding 22, and it applies only when the voxels have not changed.
+
+So the snapshot pays for itself immediately, and pays far more when a region is
+meshed again — a moved camera, a changed LOD tier, a second pass — without the
+voxels having changed underneath. It is worth being precise about which is
+which: **11.2× is the re-mesh figure, not the speedup a single mesh gets.**
+
 `mesh.region_32` at **26.12 ms** is the other half of why: that is more than a
 60 Hz frame, for one section, on the tick thread.
 

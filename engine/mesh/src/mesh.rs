@@ -10,6 +10,67 @@ use nexora_foundation::spatial::Axis;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SurfaceId(pub u32);
 
+/// Which pass a surface is drawn in.
+///
+/// `RENDERER and GRAPHICS.md` RENDER-10 asks for one mesh per chunk per layer,
+/// because a transparent surface has to be drawn after the opaque ones and
+/// sorted back to front. Keeping them in one mesh makes that impossible: the
+/// renderer would have to re-sort geometry it was handed already merged.
+///
+/// # Why three and not RENDER-10's four
+///
+/// RENDER-10 names `opaqueMesh`, `cutoutMesh`, `transparentMesh` and
+/// `waterMesh`. The first three follow from `BlendMode`, which a material
+/// declares. The fourth does not: **nothing in the engine says a block is
+/// water.** There is no fluid concept in `engine/world`, none in
+/// `nexora_asset`, and no `MaterialCategory` for a liquid. Emitting a water
+/// layer would mean inventing the data that decides what goes in it, which is
+/// the same refusal `DEBT-0026` made and the reason it stayed open as
+/// `DEBT-0035`.
+///
+/// Water is a separate mesh for reasons a blend mode cannot express anyway —
+/// its own shader, its own surface animation, its own sort order against other
+/// transparency. When the fluid system exists it will say which blocks are
+/// fluid, and a fourth variant here is one line, plus one arm wherever blend
+/// modes are mapped onto layers — `nexora_simulation`'s `layer_of_blend`, which
+/// this crate deliberately cannot see. Until then a water block lands in
+/// `Transparent`, which is where it belongs among these three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub enum RenderLayer {
+    /// Hides what is behind it. Drawn first, in any order.
+    #[default]
+    Opaque,
+    /// Fully opaque or fully absent per texel. Drawn with alpha testing, no
+    /// sorting needed, but it cannot share a draw call with the opaque pass.
+    Cutout,
+    /// Blended against what is behind it. Drawn last, back to front.
+    Transparent,
+}
+
+impl RenderLayer {
+    /// Every layer, in draw order.
+    ///
+    /// The order is the contract, not an implementation detail: a renderer that
+    /// walks this array draws correctly, and one that does not, does not.
+    pub const ALL: [Self; 3] = [Self::Opaque, Self::Cutout, Self::Transparent];
+
+    /// Stable lowercase name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Opaque => "opaque",
+            Self::Cutout => "cutout",
+            Self::Transparent => "transparent",
+        }
+    }
+
+    /// Whether the pass needs its geometry sorted back to front.
+    #[must_use]
+    pub const fn needs_depth_sorting(self) -> bool {
+        matches!(self, Self::Transparent)
+    }
+}
+
 /// Which way a face points along its axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Facing {
@@ -103,6 +164,102 @@ impl ChunkMesh {
     #[must_use]
     pub fn vertex_count(&self) -> u64 {
         self.quads.len() as u64 * 4
+    }
+}
+
+/// One meshed region, split into the passes a renderer draws separately.
+///
+/// What RENDER-10 asks a mesher to hand over. The split happens at the moment a
+/// merged rectangle is emitted rather than by sweeping the region three times:
+/// merging only ever joins faces that show the *same* surface, and a surface
+/// has exactly one layer, so every rectangle already belongs to one pass by the
+/// time it exists. The sweep and the merge did not change by a line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LayeredMesh {
+    /// Surfaces that hide what is behind them.
+    pub opaque: ChunkMesh,
+    /// Alpha-tested surfaces.
+    pub cutout: ChunkMesh,
+    /// Blended surfaces, to be drawn last and sorted.
+    pub transparent: ChunkMesh,
+}
+
+impl LayeredMesh {
+    /// An empty mesh in every layer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            opaque: ChunkMesh::new(),
+            cutout: ChunkMesh::new(),
+            transparent: ChunkMesh::new(),
+        }
+    }
+
+    /// The mesh for one layer.
+    #[must_use]
+    pub const fn layer(&self, layer: RenderLayer) -> &ChunkMesh {
+        match layer {
+            RenderLayer::Opaque => &self.opaque,
+            RenderLayer::Cutout => &self.cutout,
+            RenderLayer::Transparent => &self.transparent,
+        }
+    }
+
+    /// The mesh for one layer, to add to.
+    pub const fn layer_mut(&mut self, layer: RenderLayer) -> &mut ChunkMesh {
+        match layer {
+            RenderLayer::Opaque => &mut self.opaque,
+            RenderLayer::Cutout => &mut self.cutout,
+            RenderLayer::Transparent => &mut self.transparent,
+        }
+    }
+
+    /// Every layer with its mesh, in draw order.
+    pub fn iter(&self) -> impl Iterator<Item = (RenderLayer, &ChunkMesh)> {
+        RenderLayer::ALL
+            .into_iter()
+            .map(|layer| (layer, self.layer(layer)))
+    }
+
+    /// Rectangles across every layer.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.iter().map(|(_, mesh)| mesh.len()).sum()
+    }
+
+    /// Whether no layer holds anything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.iter().all(|(_, mesh)| mesh.is_empty())
+    }
+
+    /// Total surface area across every layer, in unit faces.
+    ///
+    /// The quantity the split must preserve: routing a rectangle to a different
+    /// pass changes which mesh holds it, never how much surface exists.
+    #[must_use]
+    pub fn area(&self) -> u64 {
+        self.iter().map(|(_, mesh)| mesh.area()).sum()
+    }
+
+    /// Vertices across every layer, at four per rectangle.
+    #[must_use]
+    pub fn vertex_count(&self) -> u64 {
+        self.iter().map(|(_, mesh)| mesh.vertex_count()).sum()
+    }
+
+    /// Every layer's rectangles in one mesh, in draw order.
+    ///
+    /// For callers that genuinely want all the geometry — an area check, a
+    /// benchmark, a collision proxy. Not for a renderer: flattening throws away
+    /// the only thing the split exists to record.
+    #[must_use]
+    pub fn flattened(&self) -> ChunkMesh {
+        let mut all = ChunkMesh::new();
+        for (_, mesh) in self.iter() {
+            all.quads.extend_from_slice(&mesh.quads);
+        }
+        all
     }
 }
 
