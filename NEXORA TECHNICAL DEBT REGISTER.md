@@ -305,13 +305,46 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   **49% do passo é perguntar ao mundo o que existe ali**, não resolver colisão.
 - **RISK:** médio. Otimizar o solver hoje endereçaria a metade menor; o número
   existe justamente para impedir esse erro.
-- **PROPOSED REMEDIATION:** manter a coluna residente entre os sweeps de um
-  mesmo corpo (a caixa quase nunca cruza chunk), e medir de novo contra o par
-  terreno/plano antes de manter.
+- **PARCIALMENTE ENDEREÇADO** — a remediação proposta foi construída e medida
+  (`docs/benchmarks/PHASE-0-BASELINE.md`, achado 10b). Duas correções ao
+  diagnóstico acima:
+
+  1. **São dois mapas ordenados no caminho, não um.** `World::get_block` desce
+     `World::chunks` pela coluna, e depois `Chunk::get` desce `Chunk::sections`
+     pela seção. A entrada original contou o primeiro e leu o segundo como
+     parte da "leitura da seção paletizada".
+  2. **As descidas eram cerca de um terço do lookup, não o grosso dele.**
+
+  O que foi feito: `WorldVoxels` mantém a última **seção** resolvida — uma
+  entrada, não um mapa — o que remove as duas descidas de toda pergunta
+  repetida, e repetida é quase toda pergunta (um corpo tem ~0,6 × 1,8 × 0,6
+  contra seções de 32³). Junto veio `ChunkShape::split_of`, que devolve
+  endereço de seção e offset local de uma passagem só, porque `section_of`
+  pega o quociente e `local_of` o resto das mesmas três divisões.
+
+  | | antes | depois | |
+  | --- | ---: | ---: | ---: |
+  | `physics.raycast_40m` | 1,90 µs | **1,14 µs** | −40,0% |
+  | `physics.depenetration_check` | 123,6 ns | **78,5 ns** | −36,5% |
+  | `physics.character_step` | 743,2 ns | **545,4 ns** | −26,6% |
+  | `physics.box_sweep` | 289,1 ns | **219,0 ns** | −24,3% |
+  | `physics.thousand_bodies_step` | 209,8 µs | **174,3 µs** | −16,9% |
+  | — só o lookup | 102,7 µs | **67,2 µs** | **−34,6%** |
+  | `physics.thousand_bodies_step_flat` | 107,1 µs | 107,1 µs | — |
+
+  A última linha é o controle: o fixture plano não passa por `WorldVoxels` e
+  não se moveu. Sem ela, "a máquina ficou mais rápida" explicaria o resto.
+
+- **PROPOSED REMEDIATION (o que resta):** o cache não endereça o que sobrou. O
+  restante é a leitura paletizada e a aritmética de endereço —
+  `voxel.get_paletted` a 6,9 ns e `spatial.index_of` a 3,7 ns são o que uma
+  próxima tentativa teria de mover. Medir de novo contra o par terreno/plano
+  antes de manter qualquer coisa.
 - **TRIGGER:** física passar de ~10% do orçamento de simulação, ou população
   acordada estável acima de 1.000.
 - **TARGET STAGE:** Phase 4 (World Runtime) ou antes, se o gatilho ocorrer
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN (medido) — **49% → 38,6%** de um passo de física. Continua
+  sendo a maior metade do que falta, e continua não sendo o solver.
 
 ### DEBT-0012 — Depenetração custa 42% de um sweep no caso em que nada aconteceu
 
@@ -334,6 +367,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   para sempre.
 - **TRIGGER:** junto com DEBT-0011, ou quando física aparecer em perfil.
 - **TARGET STAGE:** Phase 4
+- **NOTA (medida):** o gatilho estava certo. O cache de seção do DEBT-0011
+  derrubou `physics.depenetration_check` de **123,6 ns para 78,5 ns (−36,5%)**
+  sem que esta dívida fosse tocada — a varredura lê o mundo pela mesma view.
+  A dívida é sobre a varredura *acontecer*, então continua aberta; ela apenas
+  custa um terço menos enquanto espera.
 - **STATUS:** OPEN (medido)
 
 ### DEBT-0013 — Física não publicou orçamento, embora agora tenha os números

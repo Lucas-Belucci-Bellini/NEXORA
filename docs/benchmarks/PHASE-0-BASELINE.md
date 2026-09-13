@@ -382,6 +382,64 @@ The pair of measurements is the point. A single "physics costs 294 ns per body"
 number would have been attributed to the solver by default, and the work would
 have gone to the wrong half.
 
+### 10b. The fix bought a third of it, and the diagnosis needed correcting
+
+Finding 10 named the cause: "walks a `BTreeMap` of chunk columns and then a
+palette-indexed section, once per cell per axis per body, with no caching". Two
+things about that turned out to be wrong, and the second is the useful one.
+
+**There are two ordered maps on the path, not one.** `World::get_block` descends
+`World::chunks` for the column, and then `Chunk::get` descends `Chunk::sections`
+for the section. Finding 10 counted the first and read the second as part of
+"the palette-indexed section". They are separate descents and both are per-cell.
+`WorldVoxels` now keeps the last resolved *section* — one entry, not a map —
+which removes both from every repeat question, and a repeat is what almost every
+question is: a body is roughly 0.6 × 1.8 × 0.6 against sections of 32³.
+
+**And the descents were about a third of the lookup, not the bulk of it.**
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `physics.raycast_40m` | 1.90 µs | **1.14 µs** | −40.0% |
+| `physics.depenetration_check` | 123.6 ns | **78.5 ns** | −36.5% |
+| `physics.character_step` | 743.2 ns | **545.4 ns** | −26.6% |
+| `physics.box_sweep` | 289.1 ns | **219.0 ns** | −24.3% |
+| `physics.thousand_bodies_step` | 209.8 µs | **174.3 µs** | −16.9% |
+| — the lookup half of it | 102.7 µs | **67.2 µs** | **−34.6%** |
+| `physics.thousand_bodies_step_flat` | 107.1 µs | 107.1 µs | — |
+
+The last row is the control and it is the reason the rest can be attributed at
+all: the flat fixture does not go through `WorldVoxels`, and it did not move. A
+machine that had simply got faster would have moved it too.
+
+The ordering across the other rows is the second check. `raycast_40m` is a walk
+of forty metres of cells and almost nothing else, and it gains the most.
+`thousand_bodies_step` is half solver, and it gains the least. Nothing else
+would produce that gradient in that order.
+
+Two changes, measured separately: keeping the section is most of it (the lookup
+falls to **77.1 µs** on its own), and `ChunkShape::split_of` — which returns the
+section address and the section-local offset from one pass, because
+`section_of` takes the quotient and `local_of` the remainder of the same three
+divisions — takes it the rest of the way to 67.2 µs.
+
+Medians over five to seven runs. `physics.thousand_bodies_step` carries the
+highest variance in the suite (up to 30% relative σ on a loaded run), which is
+why the argument rests on `raycast_40m`, `depenetration_check` and
+`box_sweep`, all of which sit under 3%.
+
+**`DEBT-0011` stays open at a smaller number.** The lookup was 49% of a physics
+step and is now **38.6%** — still the larger half of what is left to win, and
+still not the solver. What remains is the palette read and the address
+arithmetic, neither of which a cache addresses; `voxel.get_paletted` at 6.9 ns
+and `spatial.index_of` at 3.7 ns are what the next attempt would have to move.
+
+`DEBT-0012` moved without being worked on. Its trigger read "junto com
+DEBT-0011", and `physics.depenetration_check` fell 36.5% because the
+depenetration scan reads the world through the same view. The debt is about the
+scan happening at all, so it stays open — but it now costs a third less while
+it waits.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |
@@ -897,8 +955,8 @@ in exactly one thing — where the voxels come from:
 `mesh.cull_only_16` confirms it from the other direction: strip merging out
 entirely and you save about 3%.
 
-This is [finding 10](#) again — 49% of a physics step is the voxel lookup — and
-here it is far more extreme. Two independent measurements now point at the same
+This is [finding 10](#) again — 49% of a physics step was the voxel lookup, 38.6%
+of one after finding 10b — and here it is far more extreme. Two independent measurements now point at the same
 place, which is worth more than either alone.
 
 **The consequence is architectural, not merely an optimisation note.** A region

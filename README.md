@@ -95,7 +95,12 @@ behind `DEBT-0009` (scheduling one job per entity costs **~4,900× the simulatio
 it schedules**), and the one behind `DEBT-0011`: **49% of a physics step is the
 voxel lookup, not the solver** — measured by running the same 1,000 bodies
 against generated terrain and against a flat fixture, because a single combined
-number would have sent the optimisation work to the wrong half.
+number would have sent the optimisation work to the wrong half. That one has
+since been worked: keeping the last resolved section took the lookup down by a
+third (**49% → 38.6%** of a step; a 40-metre raycast, which is almost nothing
+but lookup, got **40% faster**), and in doing so corrected its own diagnosis —
+there were two ordered-map descents on that path rather than one, and together
+they were a third of the cost rather than the bulk of it.
 
 ## Layout
 

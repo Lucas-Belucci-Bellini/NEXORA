@@ -16,27 +16,79 @@
 //! Both are decisions the *world* owns, which is exactly why they live here and
 //! not in the solver.
 
+use std::cell::Cell;
+
 use nexora_foundation::diagnostics::{Category, Level};
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
-use nexora_foundation::spatial::BlockPos;
+use nexora_foundation::spatial::{BlockPos, ChunkShape, SectionCoord};
 use nexora_physics::material::MaterialId;
 use nexora_physics::voxel::{VoxelShape, VoxelSource};
 use nexora_runtime::module::{EngineModule, ModuleContext, ModuleDependency, ModuleId};
 use nexora_world::world::World;
+use nexora_world::Section;
+
+/// What the world has to say about one section, resolved once.
+///
+/// The three cases are not an implementation detail of the cache: they are
+/// exactly the three answers `shape_at` can give, decided one section at a time
+/// instead of one cell at a time.
+#[derive(Debug, Clone, Copy)]
+enum Resident<'a> {
+    /// The section holds storage, and the cell must be read from it.
+    Stored(&'a Section),
+    /// The column is resident and this section is absent, which *is* air —
+    /// `Chunk` stores absence to mean exactly that.
+    Air,
+    /// The column is not resident. Per the `VoxelSource` contract, solid.
+    Unloaded,
+}
 
 /// A read-only view of a world that physics can collide against.
 ///
 /// Solidity is resolved once, into a table indexed by block state id, because
 /// the collision inner loop asks about a cell far more often than the block
 /// registry changes — which after `bring_online` is never.
+///
+/// ## Why the last section is kept
+///
+/// Answering one cell from the world costs two ordered-map lookups, not one:
+/// the column in `World::chunks`, then the section in `Chunk::sections`. A
+/// sweep asks about the cells a body's box covers, and a body is roughly
+/// 0.6 × 1.8 × 0.6 against sections of 32³ — so consecutive questions land in
+/// the same section almost every time, and the pair of descents is repaid for
+/// nothing.
+///
+/// Keeping the last resolved section removes both lookups from the repeat case
+/// and leaves one integer comparison. It is one entry rather than a map because
+/// a second entry only helps a body straddling a boundary, and that body pays a
+/// miss on the boundary cells either way.
+///
+/// **This is not the mesher's answer to the same word.** `DenseSnapshot`
+/// (`DEBT-0029`) exists because meshing reads *every* cell of a region exactly
+/// once, where a snapshot is bought back immediately. Physics reads *few* cells
+/// *repeatedly*, and would pay to build a snapshot of a region it will barely
+/// touch. Same phrase, opposite access shape, opposite structure.
+///
+/// ## Why holding a borrow into the world is sound
+///
+/// The view holds `&'a World`, so for as long as it exists the world cannot be
+/// written to, chunks cannot be unloaded, and the section it points at cannot
+/// move. The cache cannot go stale because the compiler will not let the world
+/// change underneath it — the guarantee is the borrow checker's, not a rule
+/// someone has to remember. `Cell` is what makes that reachable from
+/// `shape_at(&self)`; it costs `Sync`, which nothing needs, and keeps `Send`,
+/// which `DEBT-0027` will.
 #[derive(Debug, Clone)]
 pub struct WorldVoxels<'a> {
     world: &'a World,
     /// Material per block state id; `None` means the block does not obstruct.
     surfaces: Vec<Option<MaterialId>>,
+    shape: ChunkShape,
     min_y: i64,
     max_y: i64,
+    /// The last section resolved, and what it resolved to.
+    resident: Cell<Option<(SectionCoord, Resident<'a>)>>,
 }
 
 impl<'a> WorldVoxels<'a> {
@@ -58,12 +110,15 @@ impl<'a> WorldVoxels<'a> {
                 surfaces[index] = Some(MaterialId::DEFAULT);
             }
         }
-        let bounds = world.descriptor().bounds;
+        let descriptor = world.descriptor();
+        let bounds = descriptor.bounds;
         Self {
             world,
             surfaces,
+            shape: descriptor.shape,
             min_y: bounds.min_y,
             max_y: bounds.max_y,
+            resident: Cell::new(None),
         }
     }
 
@@ -90,6 +145,24 @@ impl<'a> WorldVoxels<'a> {
     pub const fn world(&self) -> &World {
         self.world
     }
+
+    /// Resolve a section, through the kept entry when it is the same one.
+    fn resident(&self, section: SectionCoord) -> Resident<'a> {
+        if let Some((kept, resident)) = self.resident.get() {
+            if kept == section {
+                return resident;
+            }
+        }
+        let resident = match self.world.chunk(section.column()) {
+            // Not resident: refuse the movement rather than invent an answer.
+            None => Resident::Unloaded,
+            Some(chunk) => chunk
+                .section(section.y)
+                .map_or(Resident::Air, Resident::Stored),
+        };
+        self.resident.set(Some((section, resident)));
+        resident
+    }
 }
 
 impl VoxelSource for WorldVoxels<'_> {
@@ -101,14 +174,21 @@ impl VoxelSource for WorldVoxels<'_> {
         if position.y > self.max_y {
             return VoxelShape::Empty;
         }
-        match self.world.get_block(position) {
+        let (address, local) = self.shape.split_of(position);
+        let section = match self.resident(address) {
+            Resident::Unloaded => return VoxelShape::SOLID,
+            Resident::Air => return VoxelShape::Empty,
+            Resident::Stored(section) => section,
+        };
+        match section.get(local) {
             Ok(state) => self
                 .surfaces
                 .get(state.0 as usize)
                 .copied()
                 .flatten()
                 .map_or(VoxelShape::Empty, VoxelShape::Cube),
-            // Not resident: refuse the movement rather than invent an answer.
+            // A cell the section cannot address is not a cell physics may pass
+            // through, for the same reason an absent column is not.
             Err(_) => VoxelShape::SOLID,
         }
     }
@@ -271,6 +351,93 @@ mod tests {
         assert!(!voxels.assign_material(&air, ice));
         let nonsense = Identifier::parse("nexora:block/not_a_block").expect("valid identifier");
         assert!(!voxels.assign_material(&nonsense, ice));
+    }
+
+    /// The one property that matters about a cache: it must not change an
+    /// answer. A view walked across a range accumulates cached sections; a view
+    /// built fresh for each cell never has one. Every cell, both must agree.
+    ///
+    /// This is an equality rather than a property test on purpose — the same
+    /// choice `DEBT-0029` made for `DenseSnapshot`. "Both are plausible" is what
+    /// a wrong cache also satisfies.
+    #[test]
+    fn a_walked_view_answers_exactly_what_a_cold_view_answers() {
+        let world = populated_world();
+        let walked = WorldVoxels::new(&world);
+        let surface = world.surface_height(4, 4);
+        let mut checked = 0_u32;
+        // Deep below the floor to well above the surface, and out past the edge
+        // of the one generated column so the walk crosses into unloaded space.
+        for y in (world.descriptor().bounds.min_y - 2)..=(surface + 3) {
+            for x in [0_i64, 4, 31, 32, 33, 5_000] {
+                let position = BlockPos::new(x, y, 4);
+                let cold = WorldVoxels::new(&world);
+                assert_eq!(
+                    walked.shape_at(position),
+                    cold.shape_at(position),
+                    "cached and uncached disagree at {position:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "the walk must actually visit cells");
+    }
+
+    /// A one-entry cache is weakest where the walk alternates, because every
+    /// question evicts the previous answer. That is also where a cache that
+    /// forgets to compare its key would look correct on a straight run and be
+    /// wrong here.
+    #[test]
+    fn alternating_across_a_section_boundary_does_not_smear_one_answer_onto_the_other() {
+        let world = populated_world();
+        let voxels = WorldVoxels::new(&world);
+        let surface = world.surface_height(4, 4);
+        // Inside the generated column, and far outside it: different columns,
+        // so different sections. The height is the first air cell above the
+        // surface, because at the surface itself both cells answer solid — one
+        // from terrain and one from refusal — and a fixture whose two halves
+        // agree proves nothing. The `assert_ne!` below is what caught that.
+        let inside = BlockPos::new(4, surface + 1, 4);
+        let outside = BlockPos::new(5_000, surface + 1, 4);
+        let inside_answer = voxels.shape_at(inside);
+        let outside_answer = voxels.shape_at(outside);
+        assert_ne!(
+            inside_answer, outside_answer,
+            "the fixture is pointless unless the two cells differ"
+        );
+        for _ in 0..8 {
+            assert_eq!(voxels.shape_at(inside), inside_answer);
+            assert_eq!(voxels.shape_at(outside), outside_answer);
+        }
+    }
+
+    /// A resident column whose section is absent is air, and must not be
+    /// confused with a column that is not resident at all — one lets a body
+    /// through and the other stops it. The cache resolves both to one entry, so
+    /// the distinction has to survive that.
+    #[test]
+    fn an_absent_section_inside_a_resident_column_is_air_not_refusal() {
+        let world = populated_world();
+        let voxels = WorldVoxels::new(&world);
+        let high = BlockPos::new(4, world.descriptor().bounds.max_y, 4);
+        assert!(
+            !voxels.is_solid(high),
+            "empty sky inside a loaded column is passable"
+        );
+        assert!(
+            voxels.is_solid(BlockPos::new(5_000, world.descriptor().bounds.max_y, 4)),
+            "the same height outside any loaded column is not"
+        );
+    }
+
+    /// `Cell` costs `Sync` and keeps `Send`. `DEBT-0027` needs the second to
+    /// move a job to a worker; nothing needs the first. A test rather than a
+    /// comment, because the difference is invisible until something stops
+    /// compiling somewhere else.
+    #[test]
+    fn a_view_is_still_send_so_a_worker_can_own_one() {
+        const fn assert_send<T: Send>() {}
+        assert_send::<WorldVoxels<'_>>();
     }
 
     #[test]
