@@ -364,11 +364,48 @@ pub fn sweep_axis<S: VoxelSource + ?Sized>(
     AxisSweep::clear(delta)
 }
 
+/// What the caller already knows about where the box starts.
+///
+/// The check for having started inside terrain scans every cell the box
+/// covers, and it answers "no" almost every time — see `DEBT-0012`. This is how
+/// a caller that has *already established* the answer says so, rather than
+/// paying for it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartState {
+    /// Nothing is known. Check before moving.
+    ///
+    /// Always correct, and the default, because the cost of being wrong the
+    /// other way is a body that sinks through the world.
+    #[default]
+    Unknown,
+    /// The box is known not to overlap any solid cell.
+    ///
+    /// Skips the check. A caller that claims this wrongly gets exactly the
+    /// defect the check exists to prevent, so the claim needs a reason — the
+    /// same box, in the same cells, against a source that has not changed.
+    Clear,
+}
+
 /// Move a box through a full motion vector, resolving one axis at a time.
 ///
 /// A box that begins inside terrain is pushed out first; see [`depenetrate`].
+/// Use [`resolve_from`] to skip that check when it is already known to be
+/// unnecessary.
 pub fn resolve<S: VoxelSource + ?Sized>(source: &S, aabb: Aabb, motion: Vec3) -> Resolution {
-    let freeing = depenetrate(source, aabb);
+    resolve_from(source, aabb, motion, StartState::Unknown)
+}
+
+/// [`resolve`], with what the caller already knows about the starting box.
+pub fn resolve_from<S: VoxelSource + ?Sized>(
+    source: &S,
+    aabb: Aabb,
+    motion: Vec3,
+    start: StartState,
+) -> Resolution {
+    let freeing = match start {
+        StartState::Clear => Some(Vec3::ZERO),
+        StartState::Unknown => depenetrate(source, aabb),
+    };
     let depenetration = freeing.unwrap_or(Vec3::ZERO);
     let mut current = aabb.translated(depenetration);
     let mut applied = Vec3::ZERO;
@@ -388,6 +425,25 @@ pub fn resolve<S: VoxelSource + ?Sized>(source: &S, aabb: Aabb, motion: Vec3) ->
         depenetration,
         stuck: freeing.is_none(),
     }
+}
+
+/// The inclusive span of cells a box covers, per axis.
+///
+/// This is the unit a caller caches when it remembers that a box was clear:
+/// while the span is unchanged, the box is still inside cells that were
+/// already proven free of solids, however it came to be there. That is what
+/// makes the cache safe against a position written from outside the solver —
+/// it is keyed on the cells, not on the route taken to them.
+#[must_use]
+pub fn cell_span(aabb: Aabb) -> ([i64; 3], [i64; 3]) {
+    let mut low = [0i64; 3];
+    let mut high = [0i64; 3];
+    for axis in Axis::ALL {
+        let (lo, hi) = aabb.voxel_span(axis);
+        low[axis.index()] = lo;
+        high[axis.index()] = hi;
+    }
+    (low, high)
 }
 
 fn cell_at(

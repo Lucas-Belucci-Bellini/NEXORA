@@ -311,9 +311,33 @@ pub struct RigidBody {
     pending_force: Vec3,
     /// Consecutive slow steps.
     still_steps: u32,
+    /// The source revision and cell span last *proven* free of solid cells.
+    ///
+    /// `DEBT-0012`: the check for having started inside terrain costs a scan of
+    /// every cell the box covers, runs for every body every step, and answers
+    /// "no" almost every time. While a body sits in the same cells against an
+    /// unchanged world, the answer cannot have changed, and this is the proof
+    /// that lets the scan be skipped.
+    ///
+    /// Keyed on the *cells*, not on the position: a body whose centre is
+    /// written directly from outside the solver is still inside cells that were
+    /// proven clear, so long as it is still inside the same ones. The moment it
+    /// is not, the span stops matching and the scan runs again. That is why
+    /// this stays sound without making `center` private.
+    clear_span: Option<(u64, [i64; 3], [i64; 3])>,
 }
 
 impl RigidBody {
+    /// The span this body was last proven clear of solids in, if any.
+    pub(crate) const fn clear_span(&self) -> Option<(u64, [i64; 3], [i64; 3])> {
+        self.clear_span
+    }
+
+    /// Record — or forget — the span proven clear at a source revision.
+    pub(crate) const fn set_clear_span(&mut self, span: Option<(u64, [i64; 3], [i64; 3])>) {
+        self.clear_span = span;
+    }
+
     /// Build a body from a validated descriptor.
     ///
     /// # Errors
@@ -337,6 +361,9 @@ impl RigidBody {
             ground_material: None,
             pending_force: Vec3::ZERO,
             still_steps: 0,
+            // Nothing is proven yet, and a body can be spawned inside terrain —
+            // which is one of the cases the check exists for.
+            clear_span: None,
         })
     }
 

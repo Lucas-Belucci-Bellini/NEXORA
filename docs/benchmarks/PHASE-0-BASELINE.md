@@ -440,6 +440,63 @@ depenetration scan reads the world through the same view. The debt is about the
 scan happening at all, so it stays open — but it now costs a third less while
 it waits.
 
+### 10c. The depenetration scan stops running, and the pair that measured 10b stops working
+
+`DEBT-0012` said the check for having started inside terrain costs ~42% of a
+sweep and runs for every body every step, down a path that almost never fires.
+It now runs only when it can tell the reader something new: when the body has
+moved into different cells, or the source says it changed.
+
+**The figure that does not depend on this machine.** A settled body makes two
+world reads per step; one of them is that check. Over ten steps, against a
+source that names a revision and one that does not:
+
+| ten settled steps | cells asked |
+| --- | ---: |
+| source names a revision | **10** |
+| source will not say | **20** |
+
+Exactly half, asserted as an equality in `a_resting_body_stops_being_asked_
+whether_it_started_inside_terrain`. Counting is the only honest way to state
+this: a timing test proves it on one machine and nothing on another.
+
+**And the timing, measured in interleaved pairs on one sitting:**
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `physics.thousand_bodies_step` | 137.3 µs | **84.6 µs** | −38.4% |
+| `physics.character_step` | 386.7 ns | **343.6 ns** | −11.1% |
+| `physics.thousand_bodies_step_flat` | 82.8 µs | 82.2 µs | −0.7% |
+| `physics.depenetration_check` | 56.1 ns | 55.2 ns | −1.6% |
+
+Two controls this time, and both had to hold still. The flat fixture names no
+revision, so it never skips — it did not move. `physics.depenetration_check`
+calls `depenetrate` directly and never sees the skip at all — it did not move
+either, which says the primitive is not faster; the calls to it stopped
+happening.
+
+**These are not on 10b's scale.** The same code that measured 174.3 µs there
+measures 137.3 µs as the "before" here, on a machine in a different state hours
+later. That is why the before column was re-measured by stashing rather than
+quoted: a 21% drift would have been reported as a 21% improvement.
+
+**A control caught a regression in the first attempt.** The cell span was
+computed before checking whether the source names a revision, so a source that
+had opted out paid for machinery it could not use — `thousand_bodies_step_flat`
+went *up* 17%. The span is now computed only once both halves of the proof
+exist.
+
+**The cost of the fix is that 10b's measurement no longer works.** The
+terrain/flat pair isolated the voxel lookup because the two rows differed in
+exactly one thing: where terrain came from. They now differ in two — the
+terrain row skips the depenetration scan and the flat row does not, because
+`FlatGround` names no revision. So "38.6% of a physics step is the lookup"
+cannot be re-derived from this pair, and any number taken from it now would be
+measuring both changes at once. Restoring it needs a flat fixture that names a
+constant revision, which is deliberately **not** done here: `FlatGround` is
+constructed inline and two of them with different floors would report the same
+constant, which is the one way a revision can lie. Recorded as **DEBT-0037**.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |

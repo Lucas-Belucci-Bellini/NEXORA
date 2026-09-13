@@ -367,12 +367,76 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   para sempre.
 - **TRIGGER:** junto com DEBT-0011, ou quando física aparecer em perfil.
 - **TARGET STAGE:** Phase 4
-- **NOTA (medida):** o gatilho estava certo. O cache de seção do DEBT-0011
-  derrubou `physics.depenetration_check` de **123,6 ns para 78,5 ns (−36,5%)**
-  sem que esta dívida fosse tocada — a varredura lê o mundo pela mesma view.
-  A dívida é sobre a varredura *acontecer*, então continua aberta; ela apenas
-  custa um terço menos enquanto espera.
-- **STATUS:** OPEN (medido)
+- **RESOLUÇÃO:** a segunda remediação proposta, numa forma mais forte. Um corpo
+  guarda o *par* (revisão da fonte, span de células) que foi **provado** livre
+  de sólidos. A varredura é pulada só quando os dois batem. Detalhes em
+  `docs/benchmarks/PHASE-0-BASELINE.md`, achado 10c.
+
+  Três decisões que fazem isso ser seguro em vez de rápido-e-quebrado:
+
+  1. **`VoxelSource::revision()` tem default `None`**, que significa "assuma que
+     mudou". Uma fonte que não opta por participar se comporta exatamente como
+     antes — verifica tudo, todo passo. Errar aqui exige implementar o método
+     deliberadamente e implementá-lo errado.
+  2. **A chave é o span de células, não a posição.** Um corpo cujo `center` é
+     escrito de fora do solver continua dentro de células já provadas livres,
+     desde que sejam as mesmas células. No instante em que não são, o span
+     deixa de bater e a varredura roda. É por isso que isso é sólido sem
+     precisar tornar `center` privado.
+  3. **O mundo conta com folga.** `chunk_mut` incrementa a revisão ao entregar
+     o empréstimo, não numa escrita que ele não consegue observar. Contar demais
+     custa uma otimização perdida; contar de menos custa um corpo dentro de um
+     bloco.
+
+  | | antes | depois | |
+  | --- | ---: | ---: | ---: |
+  | `physics.thousand_bodies_step` | 137,3 µs | **84,6 µs** | −38,4% |
+  | `physics.character_step` | 386,7 ns | **343,6 ns** | −11,1% |
+  | `physics.thousand_bodies_step_flat` (controle) | 82,8 µs | 82,2 µs | −0,7% |
+  | `physics.depenetration_check` (controle) | 56,1 ns | 55,2 ns | −1,6% |
+
+  E o número que não depende da máquina: um corpo assentado faz **duas** leituras
+  de mundo por passo, uma delas sendo essa verificação. Passa a fazer **uma**.
+  Medido por contagem e assertado como igualdade exata (10 contra 20 células em
+  dez passos), porque teste de tempo prova numa máquina e nada em outra.
+
+- **NOTA (medida):** a `NOTA` acima continua valendo e agora tem teste próprio.
+  `a_block_placed_inside_a_resting_body_still_ejects_it` põe um bloco onde um
+  corpo já está e exige que ele saia — é o defeito original, e o skip não pode
+  sobreviver ao mundo mudar. Um segundo achado saiu daí: **um corpo dormindo
+  nunca roda a verificação de todo modo**, porque `step_once` pula corpos
+  inativos. O custo desta dívida sempre foi só dos corpos acordados.
+- **CUSTO:** fechar esta quebrou a medição do DEBT-0011. O par terreno/plano
+  isolava o lookup porque as duas linhas diferiam em uma coisa; agora diferem em
+  duas, já que só a de terreno pula a varredura. Registrado como **DEBT-0037**.
+- **STATUS:** **CLOSED** — a varredura deixou de ser paga por todo corpo, todo
+  passo. Um corpo que troca de células ainda paga, e isso não é dívida: são
+  células novas e alguém tem de olhar para elas.
+
+### DEBT-0037 — O par terreno/plano parou de isolar o lookup de voxel
+
+- **SYSTEM:** `engine/benchmark::suites::physics`
+- **CLASS:** MEASUREMENT
+- **WHY CREATED:** `physics.thousand_bodies_step` e
+  `physics.thousand_bodies_step_flat` mediam o custo do lookup de voxel porque
+  diferiam em exatamente uma coisa: de onde vinha o terreno. O DEBT-0012 fez a
+  linha de terreno pular a varredura de depenetração e a plana não, porque
+  `FlatGround` não declara revisão. As duas linhas agora diferem em duas coisas,
+  e a subtração entre elas não mede mais nada em particular.
+- **IMPACT:** o número do achado 10b — **38,6% de um passo de física é o
+  lookup** — não pode ser re-derivado. Não é que esteja errado; é que a régua
+  que o produziu deixou de existir.
+- **RISK:** baixo, e inteiramente sobre saber onde está o tempo. Nenhum
+  comportamento depende disso.
+- **PROPOSED REMEDIATION:** um fixture plano que declare uma revisão constante,
+  para que as duas linhas voltem a diferir só na fonte do terreno. **Não** dar
+  isso ao `FlatGround` da biblioteca: ele é construído em linha, e dois com
+  pisos diferentes reportariam a mesma constante — que é exatamente o único
+  jeito de uma revisão mentir. O fixture pertence ao benchmark.
+- **TRIGGER:** a próxima vez que alguém precisar da parcela do lookup, ou antes
+  de tentar mexer na leitura paletizada (que é o que sobrou do DEBT-0011).
+- **TARGET STAGE:** Phase 4
+- **STATUS:** OPEN
 
 ### DEBT-0013 — Física não publicou orçamento, embora agora tenha os números
 

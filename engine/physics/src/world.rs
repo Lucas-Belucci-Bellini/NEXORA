@@ -29,7 +29,7 @@ use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::time::WorldDuration;
 
 use crate::body::{BodyDescriptor, BodyId, BodyType, RigidBody, SleepState};
-use crate::collision::{resolve, sweep_axis, Contact, Resolution};
+use crate::collision::{cell_span, resolve_from, sweep_axis, Contact, Resolution, StartState};
 use crate::gravity::GravityField;
 use crate::material::{MaterialId, MaterialTable, PhysicsMaterial};
 use crate::math::{Aabb, Axis, Vec3};
@@ -455,8 +455,37 @@ fn integrate_dynamic<S: VoxelSource + ?Sized>(
     body.clamp_speed();
 
     let motion = body.velocity.scaled(seconds);
-    let resolution = resolve_with_step_up(source, body.aabb(), motion, body.step_height);
+    // DEBT-0012. The check for having started inside terrain is skipped only
+    // when the same body sits in the same cells against a source that says it
+    // has not changed. Any of those three failing runs the check, and a source
+    // that will not name a revision fails the first one always.
+    let revision = source.revision();
+    let start = match (revision, body.clear_span()) {
+        // `cell_span` is only computed once both halves of the proof exist. A
+        // source that names no revision must not pay for machinery it has
+        // opted out of — the flat-ground control caught exactly that when the
+        // span was computed unconditionally.
+        (Some(now), Some((proven_at, low, high)))
+            if now == proven_at && (low, high) == cell_span(body.aabb()) =>
+        {
+            StartState::Clear
+        }
+        _ => StartState::Unknown,
+    };
+    let resolution = resolve_with_step_up(source, body.aabb(), motion, body.step_height, start);
     body.center = resolution.aabb.center();
+    // Re-arm only from a check that actually ran and found nothing. A skipped
+    // check proves nothing new, and a body that could not be freed is not
+    // clear by any reading.
+    if start == StartState::Unknown {
+        body.set_clear_span(match revision {
+            Some(now) if !resolution.stuck && resolution.depenetration == Vec3::ZERO => {
+                let (low, high) = cell_span(resolution.aabb);
+                Some((now, low, high))
+            }
+            _ => None,
+        });
+    }
 
     let own = materials.get(body.material);
     let mut contacts = 0;
@@ -581,8 +610,9 @@ fn resolve_with_step_up<S: VoxelSource + ?Sized>(
     aabb: Aabb,
     motion: Vec3,
     step_height: f64,
+    start: StartState,
 ) -> Resolution {
-    let plain = resolve(source, aabb, motion);
+    let plain = resolve_from(source, aabb, motion, start);
     if step_height <= 0.0 || !(plain.is_blocked(Axis::X) || plain.is_blocked(Axis::Z)) {
         return plain;
     }
@@ -640,7 +670,199 @@ fn resolve_with_step_up<S: VoxelSource + ?Sized>(
 mod tests {
     use super::*;
     use crate::body::{SLEEP_SPEED_THRESHOLD, SLEEP_STEPS};
-    use crate::voxel::{EmptySpace, FlatGround};
+    use crate::voxel::{EmptySpace, FlatGround, VoxelShape};
+    use nexora_foundation::spatial::BlockPos;
+
+    /// A floor that can gain a block, counts what is asked of it, and names a
+    /// revision — the three things `DEBT-0012`'s skip depends on.
+    struct MutableGround {
+        surface_y: i64,
+        /// An extra solid cell, placed after the fact.
+        placed: std::cell::Cell<Option<(i64, i64, i64)>>,
+        revision: std::cell::Cell<u64>,
+        /// How many cells have been asked about, ever.
+        asked: std::cell::Cell<u64>,
+        /// Whether to answer `revision`, or refuse to say.
+        names_a_revision: bool,
+    }
+
+    impl MutableGround {
+        fn at(surface_y: i64) -> Self {
+            Self {
+                surface_y,
+                placed: std::cell::Cell::new(None),
+                revision: std::cell::Cell::new(1),
+                asked: std::cell::Cell::new(0),
+                names_a_revision: true,
+            }
+        }
+
+        /// The same ground, from a source that will not name a revision.
+        const fn silent(mut self) -> Self {
+            self.names_a_revision = false;
+            self
+        }
+
+        /// Put a solid block at a cell, and say so.
+        fn place(&self, cell: (i64, i64, i64)) {
+            self.placed.set(Some(cell));
+            self.revision.set(self.revision.get() + 1);
+        }
+
+        fn asked_since(&self, mark: u64) -> u64 {
+            self.asked.get() - mark
+        }
+    }
+
+    impl VoxelSource for MutableGround {
+        fn shape_at(&self, position: BlockPos) -> VoxelShape {
+            self.asked.set(self.asked.get() + 1);
+            if position.y < self.surface_y {
+                return VoxelShape::SOLID;
+            }
+            match self.placed.get() {
+                Some(cell) if cell == (position.x, position.y, position.z) => VoxelShape::SOLID,
+                _ => VoxelShape::Empty,
+            }
+        }
+
+        fn revision(&self) -> Option<u64> {
+            self.names_a_revision.then(|| self.revision.get())
+        }
+    }
+
+    /// Everywhere, for waking.
+    fn everywhere() -> Aabb {
+        Aabb::new(
+            Vec3::new(-1.0e6, -1.0e6, -1.0e6),
+            Vec3::new(1.0e6, 1.0e6, 1.0e6),
+        )
+        .expect("valid")
+    }
+
+    /// Settle a body onto the ground and return its handle.
+    ///
+    /// It is re-woken every step, and stays that way for the rest of the test.
+    /// A **sleeping** body is skipped by `step_once` entirely, so it never runs
+    /// the check and there is nothing here to measure or to break — which is
+    /// itself worth stating: `DEBT-0012` is a cost only awake bodies pay, and
+    /// the benchmark defeats sleeping for the same reason.
+    fn settled_on(world: &mut PhysicsWorld, ground: &MutableGround, y: f64) -> BodyId {
+        let id = world
+            .spawn(BodyDescriptor::dynamic().at(Vec3::new(0.5, y, 0.5)))
+            .expect("spawns");
+        for _ in 0..240 {
+            world.wake_in(everywhere());
+            world.step_once(ground, 1.0 / 60.0);
+        }
+        id
+    }
+
+    /// One awake step.
+    fn awake_step(world: &mut PhysicsWorld, ground: &MutableGround) {
+        world.wake_in(everywhere());
+        world.step_once(ground, 1.0 / 60.0);
+    }
+
+    /// The whole point of `DEBT-0012`: a body that is not going anywhere, in a
+    /// world that is not changing, should stop being asked whether it is inside
+    /// terrain. Counting the questions is the only way to see that happen —
+    /// a timing test would prove it on one machine and nothing on another.
+    #[test]
+    fn a_resting_body_stops_being_asked_whether_it_started_inside_terrain() {
+        let ground = MutableGround::at(0);
+        let mut watched = world();
+        settled_on(&mut watched, &ground, 4.0);
+
+        let mark = ground.asked.get();
+        for _ in 0..10 {
+            awake_step(&mut watched, &ground);
+        }
+        let with_revision = ground.asked_since(mark);
+
+        // The control: the same ground, the same fall, the same ten steps, from
+        // a source that will not say whether it changed. Everything differs by
+        // one method, so the difference is that method.
+        let silent = MutableGround::at(0).silent();
+        let mut same = world();
+        settled_on(&mut same, &silent, 4.0);
+        let mark = silent.asked.get();
+        for _ in 0..10 {
+            awake_step(&mut same, &silent);
+        }
+        let without = silent.asked_since(mark);
+
+        // An exact figure rather than "fewer", because it is exact: a settled
+        // body asks about two cells a step, one of them being the check for
+        // having started inside terrain, and that one is gone. Half the world
+        // reads a resting body makes, for the whole of its rest.
+        assert_eq!(
+            (with_revision, without),
+            (10, 20),
+            "ten settled steps asked {with_revision} cells with a revision and \
+             {without} without"
+        );
+    }
+
+    /// The defect the check exists for, and the reason its `NOTA` says removing
+    /// it is not an option: a block placed where a body already stands must
+    /// still push the body out. The skip must not survive the world changing.
+    #[test]
+    fn a_block_placed_inside_a_resting_body_still_ejects_it() {
+        let ground = MutableGround::at(0);
+        let mut world = world();
+        let id = settled_on(&mut world, &ground, 4.0);
+        let resting = world.body(id).expect("live").center;
+        assert!(
+            resting.y < 4.0,
+            "the body should have fallen to the floor first, not stayed at {}",
+            resting.y
+        );
+
+        // Straight through where it is standing.
+        ground.place((0, resting.y.floor() as i64, 0));
+        world.wake_in(everywhere());
+        let report = world.step_once(&ground, 1.0 / 60.0);
+
+        assert_eq!(
+            report.depenetrated, 1,
+            "the body is inside a block and must be pushed out of it"
+        );
+        // Which way it leaves is `depenetrate`'s business — the smallest push,
+        // and on a tie the lowest axis, which for a body sitting square in a
+        // cell is sideways rather than up. What this test is about is that it
+        // leaves.
+        let after = world.body(id).expect("live").aabb();
+        assert!(
+            !crate::collision::overlaps_solid(&ground, after),
+            "the body is still inside solid terrain at {:?}",
+            after.center()
+        );
+    }
+
+    /// A source that will not name a revision must be treated as though it
+    /// changes constantly. This is the default every source gets, and getting
+    /// it wrong is the difference between slow and broken.
+    #[test]
+    fn a_source_that_names_no_revision_is_never_trusted_to_have_stayed_still() {
+        let ground = MutableGround::at(0).silent();
+        let mut world = world();
+        settled_on(&mut world, &ground, 4.0);
+
+        let mark = ground.asked.get();
+        awake_step(&mut world, &ground);
+        let first = ground.asked_since(mark);
+
+        let mark = ground.asked.get();
+        for _ in 0..10 {
+            awake_step(&mut world, &ground);
+        }
+        assert_eq!(
+            ground.asked_since(mark),
+            first * 10,
+            "without a revision every step must cost exactly what the first one did"
+        );
+    }
 
     fn world() -> PhysicsWorld {
         PhysicsWorld::new(

@@ -192,6 +192,17 @@ impl VoxelSource for WorldVoxels<'_> {
             Err(_) => VoxelShape::SOLID,
         }
     }
+
+    /// The world's own counter, which moves on every block write and on every
+    /// chunk arriving or leaving.
+    ///
+    /// Naming it here is what lets physics stop re-proving that a resting body
+    /// is not inside terrain (`DEBT-0012`). The world bumps eagerly — a
+    /// `chunk_mut` borrow counts whether or not it is written through — because
+    /// the failure that matters is a change that goes uncounted.
+    fn revision(&self) -> Option<u64> {
+        Some(self.world.revision())
+    }
 }
 
 /// An engine module that declares physics in the module graph.
