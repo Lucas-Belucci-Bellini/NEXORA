@@ -884,15 +884,48 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   mil materiais isso é da ordem de 120 MB contra 85 MB.
 - **RISK:** baixo. É espaço, não correção, e o formato de saída continua sendo
   PNG válido para qualquer decodificador.
-- **PROPOSED REMEDIATION:** duas coisas independentes, nesta ordem de retorno:
-  **(1) correspondência preguiçosa** — adiar um byte quando a posição seguinte
-  oferece uma correspondência maior; é ~20 linhas e costuma valer a maior parte
-  da diferença. **(2) Huffman dinâmico** — contar frequências, construir o
-  código canônico e emitir a árvore; é a metade cara e rende menos.
+- **PROPOSED REMEDIATION:** duas coisas independentes: **(1) correspondência
+  preguiçosa** e **(2) Huffman dinâmico**. A ordem de retorno prevista aqui
+  estava **invertida** — ver abaixo.
 - **TRIGGER:** quando o repositório de assets passar de algumas centenas de
   megabytes, ou antes de empacotar uma release.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN — **metade feita em 2026-09-13.**
+
+  **A previsão desta entrada estava errada, e o jeito de descobrir foi medir.**
+  Ela dizia que a correspondência preguiçosa *"costuma valer a maior parte da
+  diferença"*. Vale 9%. O que separa os dois lados é o **controle**: o `zlib`
+  aceita `Z_FIXED`, que mantém o matcher dele e troca a tabela dinâmica pela
+  fixa. Com isso uma medição vira duas, cada variável isolada por vez.
+
+  Medido sobre um conjunto PBR completo — 48 imagens, 995 264 bytes de
+  scanlines filtradas:
+
+  | | bytes | tabela | matcher |
+  | --- | ---: | --- | --- |
+  | antes | 158 503 | fixa | guloso, cadeia 32 |
+  | **agora** | **148 500** | fixa | **preguiçoso, cadeia 256** |
+  | `zlib -9 Z_FIXED` | 145 278 | fixa | do zlib |
+  | `zlib -9` | 114 187 | **dinâmica** | do zlib |
+
+  O matcher daqui está a **2,2%** do matcher do zlib. Do que sobra, **91% é a
+  tabela** e 9% é matching. A metade cara é a que rende — o inverso do que esta
+  entrada previu.
+
+  Duas mudanças, e a segunda só apareceu porque a primeira aconteceu:
+  **correspondência preguiçosa** (−2 724 bytes) e **`MAX_CHAIN` de 32 para 256**
+  (−7 279). O 32 tinha um comentário dizendo que a razão *"parava de melhorar"*
+  ali; era verdade sob matching guloso e deixou de ser sob preguiçoso, porque a
+  cadeia mais funda passa a achar a correspondência maior um byte adiante que o
+  guloso não teria como usar. Comentário corrigido com a tabela da medição.
+
+  Sinal de que o diagnóstico fecha: dos 48 arquivos, **8 não encolheram nada** —
+  e são justamente os de pior razão (`forest_soil/height`, `roughness`). São os
+  mapas de maior entropia, onde não há correspondência para achar em cadeia
+  nenhuma, e o custo é inteiramente o de codificar literais. Isto é, a tabela.
+
+  **Falta:** Huffman dinâmico (RFC 1951 §3.2.7), que é também o lado do
+  `inflate` — hoje ele recusa bloco dinâmico pelo nome.
 
 ### DEBT-0035 — A malha ainda sai numa camada só, não nas quatro do RENDER-10
 
