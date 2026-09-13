@@ -40,8 +40,10 @@
 
 pub mod greedy;
 pub mod mesh;
+pub mod snapshot;
 pub mod view;
 
 pub use greedy::mesh_region;
 pub use mesh::{ChunkMesh, Facing, LayeredMesh, MeshState, Quad, RenderLayer, SurfaceId};
+pub use snapshot::DenseSnapshot;
 pub use view::{Extent, VoxelView};

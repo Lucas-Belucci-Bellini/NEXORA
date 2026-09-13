@@ -699,7 +699,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   não só mais rápido, porque o worker deixa de tocar o mundo.
 - **TRIGGER:** existir um loop de quadro.
 - **TARGET STAGE:** Phase 2/5
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN (medido) — **metade do obstáculo saiu em 2026-09-13.** O
+  `DenseSnapshot` do `DEBT-0029` existe, é `Send`, e há um teste que falha em
+  compilar se deixar de ser. O que falta é só o agendamento: submeter ao job
+  system. A parte difícil — dar ao worker uma entrada que não é o mundo — está
+  feita.
 
 ### DEBT-0028 — Não há malha de LOD
 
@@ -738,7 +742,39 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   que o worker passa a não tocar o mundo.
 - **TRIGGER:** o primeiro remesh no caminho de um quadro.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** CLOSED (2026-09-13)
+- **RESOLUÇÃO:** `nexora_mesh::DenseSnapshot`. A fixture do benchmark dizia de
+  si mesma que estava *"deliberadamente fora do `nexora-mesh` — a resposta
+  decide se vale a pena, e construir antes seria assumir"*. A resposta veio, e
+  agora é código de engine.
+  **Promover não foi copiar.** A fixture guardava só a superfície por célula e
+  *derivava* a oclusão como "qualquer coisa presente oclui" — verdade quando foi
+  escrita, mentira desde que materiais existem: um snapshot que re-deriva torna
+  o vidro sólido, e um que esquece a camada desenha tudo no passe opaco. Os
+  dois em silêncio. O tipo real **captura toda resposta que a view dá** —
+  superfície, oclusão e camada — em vez de recalcular qualquer uma. O teste que
+  o mantém honesto não é uma propriedade e sim uma igualdade: malhar por um
+  snapshot tem que produzir *exatamente* a malha que malhar pela fonte produziu.
+  **Duas medições, e trocar uma pela outra seria errado.** O número do achado 22
+  (11,2×) exclui o custo de *construir* o snapshot, que é ele próprio uma
+  passada de leituras do mundo. Medido agora, com a construção incluída:
+
+  | | mediana |
+  | --- | ---: |
+  | `mesh.region_16` (direto do mundo) | **3,32 ms** |
+  | `mesh.region_16_with_snapshot` (constrói **e** malha) | **1,22 ms** |
+  | `mesh.region_16_from_snapshot` (snapshot já em mãos) | **296 µs** |
+
+  Primeira malha de uma região: **2,7×**. Remalha com o snapshot em mãos:
+  **11,2×**. Construir custa 0,92 ms, 76% do tempo com snapshot. O snapshot se
+  paga já na primeira vez e se paga muito mais quando a região é malhada de
+  novo sem os voxels terem mudado.
+  Limite de **2 milhões de células** (~18 MiB): o `Extent` sozinho permitiria
+  512³, que como snapshot seria um gigabyte para um job de malha.
+  **Metade do `DEBT-0027` veio junto.** Um snapshot é `Send` e desligado do
+  mundo no instante em que é tirado — há um teste que falha em compilar se
+  deixar de ser. O obstáculo para malhar fora da thread do tick nunca foi
+  agendamento; era um worker segurando `&World`. Esse obstáculo saiu.
 
 ### DEBT-0030 — A inclinação do normal map não tem significado físico
 
