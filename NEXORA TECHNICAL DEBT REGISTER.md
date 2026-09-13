@@ -831,6 +831,8 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   Sobre o conjunto PBR inteiro — vinte mapas, com normal, roughness e oclusão,
   que são contínuos — o alcançável é **6,79×** (zlib -9) e este codificador
   entrega **4,73×**. Ver o `DEBT-0034` para a diferença que sobra.
+  *(Aquela diferença fechou em 2026-09-13: medido de novo sobre um conjunto PBR
+  completo, o alcançável é 8,72× e este codificador entrega 8,52×.)*
 
 ### DEBT-0032 — Metallic é constante porque nenhuma receita tem metal por texel
 
@@ -890,42 +892,78 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** quando o repositório de assets passar de algumas centenas de
   megabytes, ou antes de empacotar uma release.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN — **metade feita em 2026-09-13.**
-
-  **A previsão desta entrada estava errada, e o jeito de descobrir foi medir.**
-  Ela dizia que a correspondência preguiçosa *"costuma valer a maior parte da
-  diferença"*. Vale 9%. O que separa os dois lados é o **controle**: o `zlib`
-  aceita `Z_FIXED`, que mantém o matcher dele e troca a tabela dinâmica pela
-  fixa. Com isso uma medição vira duas, cada variável isolada por vez.
-
-  Medido sobre um conjunto PBR completo — 48 imagens, 995 264 bytes de
-  scanlines filtradas:
+- **STATUS:** CLOSED (2026-09-13)
+- **RESOLUÇÃO:** **1,3881× → 1,0233×.** Dos 44 316 bytes que separavam do
+  `zlib -9`, sobraram 2 655 — **94% da diferença fechou**. Medido sobre um
+  conjunto PBR completo: 48 imagens, 995 264 bytes de scanlines filtradas.
 
   | | bytes | tabela | matcher |
   | --- | ---: | --- | --- |
   | antes | 158 503 | fixa | guloso, cadeia 32 |
-  | **agora** | **148 500** | fixa | **preguiçoso, cadeia 256** |
+  | + correspondência preguiçosa | 155 779 | fixa | preguiçoso, cadeia 32 |
+  | + `MAX_CHAIN` 256 | 148 500 | fixa | preguiçoso, cadeia 256 |
+  | **+ Huffman dinâmico** | **116 842** | **dinâmica** | preguiçoso, cadeia 256 |
   | `zlib -9 Z_FIXED` | 145 278 | fixa | do zlib |
-  | `zlib -9` | 114 187 | **dinâmica** | do zlib |
+  | `zlib -9` | 114 187 | dinâmica | do zlib |
 
-  O matcher daqui está a **2,2%** do matcher do zlib. Do que sobra, **91% é a
-  tabela** e 9% é matching. A metade cara é a que rende — o inverso do que esta
-  entrada previu.
+  **A previsão desta entrada estava errada, e o jeito de descobrir foi medir.**
+  Ela dizia que a correspondência preguiçosa *"costuma valer a maior parte da
+  diferença"*. Valeu 9%. O que separou os dois lados foi o **controle**: o
+  `zlib` aceita `Z_FIXED`, que mantém o matcher dele e troca a tabela dinâmica
+  pela fixa. Com isso uma medição virou duas, cada variável isolada por vez, e
+  a resposta foi **91% tabela, 9% matching** — o inverso da ordem prevista.
+  A metade descrita aqui como *"a metade cara e rende menos"* rendeu 3,5× mais
+  que a outra.
 
-  Duas mudanças, e a segunda só apareceu porque a primeira aconteceu:
-  **correspondência preguiçosa** (−2 724 bytes) e **`MAX_CHAIN` de 32 para 256**
-  (−7 279). O 32 tinha um comentário dizendo que a razão *"parava de melhorar"*
-  ali; era verdade sob matching guloso e deixou de ser sob preguiçoso, porque a
-  cadeia mais funda passa a achar a correspondência maior um byte adiante que o
-  guloso não teria como usar. Comentário corrigido com a tabela da medição.
-
-  Sinal de que o diagnóstico fecha: dos 48 arquivos, **8 não encolheram nada** —
-  e são justamente os de pior razão (`forest_soil/height`, `roughness`). São os
-  mapas de maior entropia, onde não há correspondência para achar em cadeia
+  Sinal de que o diagnóstico fechava, visível antes de escrever a segunda
+  metade: dos 48 arquivos, **8 não encolheram um byte** com cadeia mais funda —
+  e eram justamente os de pior razão (`forest_soil/height`, `roughness`). São
+  os mapas de maior entropia, onde não há correspondência para achar em cadeia
   nenhuma, e o custo é inteiramente o de codificar literais. Isto é, a tabela.
 
-  **Falta:** Huffman dinâmico (RFC 1951 §3.2.7), que é também o lado do
-  `inflate` — hoje ele recusa bloco dinâmico pelo nome.
+  **O que entrou:**
+  - Correspondência preguiçosa: o token não é emitido na posição em que foi
+    achado, e cede a um estritamente maior um byte adiante. O teste não afirma
+    um tamanho, afirma a *decisão*: um oráculo guloso que compartilha a mesma
+    `Chain` e os mesmos emissores, de modo que a diferença entre os dois é a
+    preguiça e nada mais.
+  - `MAX_CHAIN` 32 → 256, com a varredura que o comentário anterior deveria ter
+    tido. O 32 era verdade sob matching guloso e deixou de ser sob preguiçoso.
+  - Blocos de **Huffman dinâmico** (RFC 1951 §3.2.7): código canônico limitado a
+    15 bits, sequência de comprimentos em RLE com o alfabeto de 19 símbolos,
+    HLIT/HDIST/HCLEN. E o lado do `inflate`, que antes recusava bloco dinâmico
+    pelo nome — os dois tipos de bloco Huffman agora dividem um só laço de
+    símbolos e um só conjunto de verificações de limite.
+  - `deflate` passou a **pesar os três** tipos de bloco e emitir o menor. É por
+    isso que nada disto pode aumentar arquivo nenhum: o matching roda uma vez e
+    os dois codificadores recebem os mesmos tokens.
+
+  **Dois defeitos que o trabalho encontrou, e que não eram dele:**
+  1. A limitação de profundidade transcrita do `zlib` estava **errada**, e o
+     `assert` do somatório de Kraft pegou. Um laço guiado por uma contagem de
+     códigos longos demais roda vezes de menos: em 351 de 400 histogramas
+     sintéticos o resultado não era um código prefixo — códigos sobrepostos,
+     fluxo que decodificador nenhum lê. O laço passou a ser guiado pelo
+     **próprio somatório**, que é a condição que importa, e aí fecha em 400 de
+     400.
+  2. O teste `incompressible_data_falls_back_to_stored_rather_than_growing`
+     tinha **parado de testar o fallback**. Ele usava uma sequência de contador
+     descrita como *"sem repetições dentro da janela"*; ela é uma progressão
+     aritmética módulo 256, comprime **20×**, e a asserção passava sem
+     significar nada. Oito bits de entropia por byte não diz se um *localizador
+     de correspondências* acha alguma coisa — são propriedades diferentes. O
+     teste recebeu bytes de fato inaproveitáveis, e o contra-exemplo virou caso
+     próprio.
+
+  **Verificação.** Dois vetores de bloco dinâmico produzidos pelo `zlib`, que
+  não leu este código, mais a etapa de CI que decodifica **todo PNG gerado** com
+  o `zlib` do Python — conferindo CRC de cada chunk, o fluxo `IDAT` inteiro e o
+  byte de filtro de cada scanline. Essa etapa é nova: o `TEXTURE FORGE.md`
+  afirmava que a CI fazia isso e a CI não fazia. E ela foi conferida contra um
+  byte corrompido de propósito, porque conferência que não sabe falhar não
+  confere nada.
+
+  **Fica em aberto:** 2,3%, e agora eles estão no **matcher**, não na tabela.
 
 ### DEBT-0035 — A malha ainda sai numa camada só, não nas quatro do RENDER-10
 

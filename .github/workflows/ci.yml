@@ -90,6 +90,46 @@ jobs:
               --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE
           done
           ./target/release/nexora-texture-forge list --out "${RUNNER_TEMP}/materials"
+          # Every PNG the tool writes, read back by a decoder that is not ours.
+          # This matters more since the compressor started emitting dynamic
+          # Huffman blocks: the encoder and the inflater in the same module
+          # could agree on a misreading of RFC 1951 and every round-trip test
+          # in the crate would still pass. `zlib` has not read this code.
+          python3 - "${RUNNER_TEMP}/materials" <<'CHECK'
+          import struct, sys, zlib
+          from pathlib import Path
+
+          checked = 0
+          for path in sorted(Path(sys.argv[1]).rglob("*.png")):
+              raw = path.read_bytes()
+              assert raw[:8] == b"\x89PNG\r\n\x1a\n", f"{path}: not a PNG"
+              at, idat, seen = 8, bytearray(), []
+              while at < len(raw):
+                  (length,) = struct.unpack(">I", raw[at : at + 4])
+                  kind = raw[at + 4 : at + 8]
+                  body = raw[at + 8 : at + 8 + length]
+                  (stored,) = struct.unpack(">I", raw[at + 8 + length : at + 12 + length])
+                  actual = zlib.crc32(kind + body) & 0xFFFFFFFF
+                  assert stored == actual, f"{path}: {kind!r} chunk CRC {actual:08x} != {stored:08x}"
+                  if kind == b"IDAT":
+                      idat += body
+                  seen.append(kind)
+                  at += 12 + length
+              assert seen[0] == b"IHDR" and seen[-1] == b"IEND", f"{path}: chunk order"
+              width, height, depth, colour = struct.unpack(">IIBB", raw[16:26])
+              channels = {0: 1, 2: 3, 4: 2, 6: 4}[colour]
+              stride = width * channels * (depth // 8)
+              filtered = zlib.decompress(bytes(idat))
+              assert len(filtered) == height * (stride + 1), (
+                  f"{path}: {len(filtered)} bytes is not {height} scanlines of {stride}"
+              )
+              for row in range(height):
+                  kind = filtered[row * (stride + 1)]
+                  assert 0 <= kind <= 4, f"{path}: row {row} has filter type {kind}"
+              checked += 1
+          print(f"{checked} PNGs decoded by zlib: chunk CRCs, IDAT stream and every filter byte")
+          assert checked > 0, "no PNGs were checked"
+          CHECK
           ./target/release/nexora-texture-forge validate nexora:material/stone_rough \
             --out "${RUNNER_TEMP}/materials"
           ./target/release/nexora-texture-forge validate nexora:material/dark_oak_plank \

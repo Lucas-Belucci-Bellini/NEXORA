@@ -210,23 +210,30 @@ Medidos, não estimados. Cada um tem o teste ou o script que o produziu.
 
 | o quê | quanto |
 | --- | --- |
-| material 64² com 5 mapas + definição | **17,8 KiB** |
-| o mesmo, com preview | **23,2 KiB** |
-| conjunto de exemplo: 8 materiais, 40 mapas | **121,7 KiB** |
-| o mesmo, com os 8 previews | **170,1 KiB** |
-| dez mil materiais, só mapas | ~**156 MB** |
-| previews, em cima disso | +**40%** (~62 MB) |
-| compressão alcançável (zlib -9) no conjunto PBR | **6,79×** |
-| compressão do compressor daqui | **4,73×** (1,40× maior que zlib -9) |
+| material 64², média de 5 mapas + definição | **11,5 KiB** |
+| o mesmo, com preview | **16,2 KiB** |
+| conjunto de exemplo: 8 materiais, 40 mapas | **92,0 KiB** |
+| o mesmo, com os 8 previews | **129,4 KiB** |
+| dez mil materiais, só mapas | ~**118 MB** |
+| previews, em cima disso | +**41%** (~48 MB) |
+| compressão alcançável (zlib -9) no conjunto PBR | **8,72×** |
+| compressão do compressor daqui | **8,52×** (1,023× maior que zlib -9) |
+
+> Esta tabela **encolheu 24%** quando o `DEBT-0034` fechou: o conjunto de
+> exemplo era 170,1 KiB e os dez mil materiais eram ~156 MB. O que mudou foi o
+> compressor ganhar blocos de Huffman dinâmico; nenhum pixel mudou.
 
 > O commit da FASE 9 diz **69%** e ~107 MB para os previews. Aquele número foi
 > medido *antes* das duas correções de sombreamento e ficou obsoleto no mesmo
 > dia: o render corrigido está muito mais perto do albedo, e o albedo comprime
-> bem. O valor certo é o desta tabela, **40%**.
+> bem.
 
-O compressor próprio existe porque blocos armazenados davam 1,00–1,03× e os
-mapas comprimem 12× com zlib. A diferença que sobra está registrada como
-DEBT-0034 (lazy matching primeiro, Huffman dinâmico depois).
+O compressor próprio existe porque blocos armazenados davam 1,00–1,03×. Ele
+escreve os **três** tipos de bloco do RFC 1951 — armazenado, Huffman fixo e
+Huffman dinâmico — e emite o menor dos três para cada arquivo, que é também o
+motivo de nenhuma dessas adições poder aumentar arquivo nenhum. Os 2,3% que
+ainda separam do `zlib -9` estão no localizador de correspondências, não na
+tabela.
 
 ## 12. Zero dependências
 
@@ -237,7 +244,16 @@ contra `0xCBF43926`; só faltava o Adler-32.
 
 A verificação que importa: os PNGs escritos são decodificados pelo **`zlib` do
 Python** — um decodificador que não é meu — com todo CRC de chunk correto e toda
-scanline desfiltrando limpa. A CI roda isso.
+scanline desfiltrando limpa.
+
+> Esta frase dizia *"a CI roda isso"* antes de ser verdade: a etapa de smoke
+> conferia SHA-256 de reparo e mais nada, e o decode ficava no terminal de quem
+> estivesse trabalhando. Passou a ser verdade quando o compressor ganhou
+> Huffman dinâmico, porque aí o risco deixou de ser hipotético: encoder e
+> inflater moram no mesmo arquivo e poderiam concordar num erro de leitura do
+> RFC 1951 sem que nenhum teste do crate percebesse. A etapa agora refaz o
+> decode em todo PNG gerado — e foi conferida contra um byte corrompido de
+> propósito, porque conferência que não sabe falhar não confere nada.
 
 ## 13. Documentos
 
