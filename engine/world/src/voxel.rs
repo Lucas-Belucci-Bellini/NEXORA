@@ -448,25 +448,105 @@ pub fn bits_for(len: usize) -> u8 {
 /// widths that do not divide 64, and buys branch-free reads and writes.
 #[must_use]
 pub fn word_count(volume: usize, bits: u8) -> usize {
-    let per_word = 64 / bits as usize;
-    volume.div_ceil(per_word)
+    volume.div_ceil(packing(bits).per_word)
+}
+
+/// How one palette width lays indices out inside a word, worked out once.
+///
+/// Reading a cell needs `index / per_word` and `index % per_word`, where
+/// `per_word` is `64 / bits`. For most widths that is not a power of two —
+/// twelve-bit indices pack five to a word — so both were genuine integer
+/// divisions by a divisor the compiler could not see, on the hottest read in
+/// the engine. It can be made to see it: `bits` only ever takes twelve values,
+/// so each one's layout is decided at compile time and looked up.
+#[derive(Debug, Clone, Copy)]
+struct Packing {
+    /// Indices that fit in one 64-bit word.
+    per_word: usize,
+    /// `ceil(2^32 / per_word)` — see [`Packing::split`].
+    reciprocal: u64,
+    /// Width of one index, in bits.
+    bits: usize,
+    /// The low `bits` bits set.
+    mask: u64,
+}
+
+impl Packing {
+    /// The word holding `index`, and where inside it the index sits.
+    ///
+    /// `n / d == (n * ceil(2^32 / d)) >> 32` holds for every `n <= N` when
+    /// `(N + d - 1) * e < 2^32`, where `e = ceil(2^32 / d) * d - 2^32` and is
+    /// therefore smaller than `d`. Here `d` is at most 64 and `n` is below
+    /// `MAX_SECTION_EXTENT` cubed, which is 2^24 — leaving that product under
+    /// 2^30, comfortably inside the bound. The identity is exact rather than
+    /// approximate, and the remainder then costs a multiply and a subtract
+    /// instead of a second division.
+    ///
+    /// `packing_agrees_with_division_everywhere_a_section_can_reach` walks the
+    /// last index of every word near the top of the range, which is where an
+    /// approximate reciprocal breaks first.
+    const fn split(self, index: usize) -> (usize, usize) {
+        let word = ((index as u64).wrapping_mul(self.reciprocal) >> 32) as usize;
+        (word, index - word * self.per_word)
+    }
+}
+
+const fn packing_for(bits: u8) -> Packing {
+    let per_word = (64 / bits) as usize;
+    Packing {
+        per_word,
+        reciprocal: (1u64 << 32).div_ceil(per_word as u64),
+        bits: bits as usize,
+        mask: (1u64 << bits) - 1,
+    }
+}
+
+const PACKINGS: [Packing; MAX_PALETTE_BITS as usize + 1] = {
+    let mut table = [packing_for(1); MAX_PALETTE_BITS as usize + 1];
+    let mut bits = 1u8;
+    while bits <= MAX_PALETTE_BITS {
+        table[bits as usize] = packing_for(bits);
+        bits += 1;
+    }
+    table
+};
+
+/// The layout for a palette width.
+///
+/// Every path that builds a paletted section keeps `bits` inside
+/// `1..=MAX_PALETTE_BITS`: [`bits_for`] caps it, and [`Section::from_parts`]
+/// rejects anything else before a read can reach here. The clamp is what a
+/// damaged section gets instead of a crash — the same choice
+/// `Section::get_by_index` already makes for a palette index pointing past its
+/// palette. It is also strictly kinder than the arithmetic it replaces, which
+/// divided by `64 / bits` and so divided by zero for `bits == 0`.
+#[inline]
+const fn packing(bits: u8) -> Packing {
+    let bits = if bits == 0 {
+        1
+    } else if bits > MAX_PALETTE_BITS {
+        MAX_PALETTE_BITS
+    } else {
+        bits
+    };
+    PACKINGS[bits as usize]
 }
 
 fn read_packed(words: &[u64], bits: u8, index: usize) -> u64 {
-    let per_word = 64 / bits as usize;
-    let word = index / per_word;
-    let offset = (index % per_word) * bits as usize;
-    let mask = (1u64 << bits) - 1;
-    words.get(word).map_or(0, |value| (value >> offset) & mask)
+    let packing = packing(bits);
+    let (word, slot) = packing.split(index);
+    let offset = slot * packing.bits;
+    words
+        .get(word)
+        .map_or(0, |value| (value >> offset) & packing.mask)
 }
 
 fn write_packed(words: &mut [u64], bits: u8, index: usize, value: u64) {
-    let per_word = 64 / bits as usize;
-    let word = index / per_word;
-    let offset = (index % per_word) * bits as usize;
-    let mask = (1u64 << bits) - 1;
-    if let Some(slot) = words.get_mut(word) {
-        *slot = (*slot & !(mask << offset)) | ((value & mask) << offset);
+    let packing = packing(bits);
+    let (word, slot) = packing.split(index);
+    let offset = slot * packing.bits;
+    if let Some(cell) = words.get_mut(word) {
+        *cell = (*cell & !(packing.mask << offset)) | ((value & packing.mask) << offset);
     }
 }
 
@@ -486,6 +566,97 @@ fn repack(words: &[u64], from_bits: u8, to_bits: u8, volume: usize) -> Vec<u64> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The multiply-shift stands in for a division, so it has to *be* the
+    /// division — not close to it. A wrong reciprocal does not fail loudly:
+    /// it reads a neighbouring cell, and the section stays perfectly
+    /// well-formed while answering the wrong block.
+    #[test]
+    fn packing_agrees_with_division_everywhere_a_section_can_reach() {
+        // The largest index any section may hold: MAX_SECTION_EXTENT cubed.
+        let ceiling = (nexora_foundation::spatial::MAX_SECTION_EXTENT as usize).pow(3) - 1;
+
+        for bits in 1..=MAX_PALETTE_BITS {
+            let packing = packing(bits);
+            let per_word = 64 / bits as usize;
+            assert_eq!(packing.per_word, per_word, "per_word for {bits} bits");
+            assert_eq!(packing.mask, (1u64 << bits) - 1, "mask for {bits} bits");
+
+            // Exhaustive over a 32-cubed section: the size the engine runs.
+            for index in 0..32usize.pow(3) {
+                assert_eq!(
+                    packing.split(index),
+                    (index / per_word, index % per_word),
+                    "{bits} bits, index {index}"
+                );
+            }
+
+            // And the last index of every word near the top of the range,
+            // which is where the identity gives out first if it is going to.
+            let last_word = ceiling / per_word;
+            for word in last_word.saturating_sub(4_096)..=last_word {
+                for index in [
+                    word * per_word,
+                    word * per_word + per_word - 1,
+                    (word * per_word + per_word).min(ceiling),
+                ] {
+                    if index > ceiling {
+                        continue;
+                    }
+                    assert_eq!(
+                        packing.split(index),
+                        (index / per_word, index % per_word),
+                        "{bits} bits, index {index} near the ceiling"
+                    );
+                }
+            }
+            assert_eq!(
+                packing.split(ceiling),
+                (ceiling / per_word, ceiling % per_word),
+                "{bits} bits at the ceiling"
+            );
+        }
+    }
+
+    /// Reads and writes have to agree on the layout, at every width the
+    /// palette can grow through — not just the one a small test happens to
+    /// produce.
+    #[test]
+    fn every_palette_width_round_trips_every_cell() {
+        for bits in 1..=MAX_PALETTE_BITS {
+            let volume = 512usize;
+            let mut words = vec![0u64; word_count(volume, bits)];
+            let mask = (1u64 << bits) - 1;
+            for index in 0..volume {
+                write_packed(
+                    &mut words,
+                    bits,
+                    index,
+                    (index as u64 * 2_654_435_761) & mask,
+                );
+            }
+            for index in 0..volume {
+                assert_eq!(
+                    read_packed(&words, bits, index),
+                    (index as u64 * 2_654_435_761) & mask,
+                    "{bits} bits, cell {index}"
+                );
+            }
+        }
+    }
+
+    /// A width outside the supported range cannot arrive from this module, and
+    /// the answer for one that does is a reading rather than a crash. The
+    /// arithmetic this replaced divided by zero.
+    #[test]
+    fn an_impossible_width_is_clamped_rather_than_dividing_by_zero() {
+        assert_eq!(packing(0).per_word, 64);
+        assert_eq!(
+            packing(MAX_PALETTE_BITS + 1).per_word,
+            packing(MAX_PALETTE_BITS).per_word
+        );
+        assert_eq!(read_packed(&[u64::MAX], 0, 0), 1);
+    }
 
     const STONE: BlockStateId = BlockStateId(1);
     const DIRT: BlockStateId = BlockStateId(2);

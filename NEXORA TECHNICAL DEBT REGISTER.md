@@ -335,16 +335,47 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   A última linha é o controle: o fixture plano não passa por `WorldVoxels` e
   não se moveu. Sem ela, "a máquina ficou mais rápida" explicaria o resto.
 
-- **PROPOSED REMEDIATION (o que resta):** o cache não endereça o que sobrou. O
-  restante é a leitura paletizada e a aritmética de endereço —
-  `voxel.get_paletted` a 6,9 ns e `spatial.index_of` a 3,7 ns são o que uma
-  próxima tentativa teria de mover. Medir de novo contra o par terreno/plano
-  antes de manter qualquer coisa.
+- **SEGUNDA PARCELA ENDEREÇADA (2026-09-14)** — a leitura paletizada, medida em
+  máquina diferente e mais barulhenta (achado 10e; nada abaixo é comparável com
+  a tabela acima). As células empacotam `64 / bits` por palavra, e `64 / 12` é
+  cinco: tanto a palavra quanto o offset dentro dela saíam de dividir por um
+  divisor que nenhum compilador enxergava. As doze larguras possíveis são
+  conhecidas em tempo de compilação, então cada uma virou entrada de tabela — o
+  quociente é multiplicação e shift contra `ceil(2^32 / per_word)`, e o resto cai
+  do quociente. A identidade é exata para todo índice que uma seção pode ter
+  (`MAX_SECTION_EXTENT³ = 2^24`, e o limite de erro `(N + d - 1) · e < 2^32` sobra
+  duas ordens de grandeza), e um teste percorre o último índice de cada palavra
+  no topo da faixa — que é onde um recíproco aproximado quebra primeiro.
+
+  | | antes | depois | |
+  | --- | ---: | ---: | ---: |
+  | `voxel.get_paletted` | 13,1 ns | **11,4 ns** | −13% |
+  | `physics.voxel_lookup` | 28,3 ns | **25,9 ns** | −8,5% |
+  | `voxel.get_uniform` | 5,2 ns | 5,3 ns | — |
+  | `spatial.index_of` | 6,3 ns | 6,3 ns | — |
+
+  As duas últimas são os controles e não se moveram: armazenamento uniforme
+  nunca chama a leitura empacotada, e `index_of` não foi tocado.
+
+  **13% é menos do que uma divisão custa, e é esse o achado.** O palpite era que
+  duas divisões inteiras fossem o grosso de uma leitura de 13 ns. Valem 1,7 ns.
+  A razão provável é que nunca foram duas: o `div` do x86-64 devolve quociente e
+  resto da mesma instrução, então o compilador já tinha fundido o par. Isso é
+  raciocínio, não medida — medido foram os 1,7 ns.
+- **PROPOSED REMEDIATION (o que resta):** a aritmética de endereço. `split_of`
+  abre todo lookup com três divisões pelas extensões da seção, que são valores
+  de execução, e tem a mesma forma do que acabou de ser resolvido: um divisor
+  fixo pela vida de um mundo que o compilador não vê. Ao contrário da largura de
+  palete, não sai de doze valores, então tabela não fecha — o caminho é o mundo
+  carregar o recíproco junto com o `ChunkShape`.
 - **TRIGGER:** física passar de ~10% do orçamento de simulação, ou população
   acordada estável acima de 1.000.
 - **TARGET STAGE:** Phase 4 (World Runtime) ou antes, se o gatilho ocorrer
-- **STATUS:** OPEN (medido) — **49% → 38,6%** de um passo de física. Continua
-  sendo a maior metade do que falta, e continua não sendo o solver.
+- **STATUS:** OPEN (medido) — a parcela do lookup num passo de física está em
+  **18–27%** pela régua refeita do DEBT-0037 (`1 000 leituras × 25,9 ns`), contra
+  os 49% de origem. O 38,6% do achado 10b foi medido enquanto a varredura de
+  depenetração ainda rodava e um corpo assentado fazia duas leituras por passo em
+  vez de uma; não é contradição, é a metade que o DEBT-0012 levou.
 
 ### DEBT-0012 — Depenetração custa 42% de um sweep no caso em que nada aconteceu
 
@@ -436,6 +467,64 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** a próxima vez que alguém precisar da parcela do lookup, ou antes
   de tentar mexer na leitura paletizada (que é o que sobrou do DEBT-0011).
 - **TARGET STAGE:** Phase 4
+- **RESOLUÇÃO (2026-09-14):** o fixture existe — `StillFloor`, no benchmark, com
+  revisão derivada do plano que descreve, não constante da biblioteca. **E não
+  bastou.** Medido em A/B: a linha plana lê 145,34 µs sem revisão e 142,79 µs
+  com ela, 1,8% contra um espalhamento de 10–23%. A subtração não tinha
+  resolução para o que restou — depois do DEBT-0012 o lookup é um quinto de um
+  passo, escondido dentro de dois números de 140 µs.
+
+  A régua foi refeita como **produto, não diferença**, com as duas metades
+  medíveis em separado:
+
+  | | valor | espalhamento |
+  | --- | ---: | ---: |
+  | `physics.world_reads_per_step` | **1 000** | — |
+  | `physics.voxel_lookup` | **25,9 ns** | 5,8% |
+
+  `1 000 × 25,9 ns` de um passo de `141,16 µs` = **18%**. A primeira linha é uma
+  **contagem** — uma pergunta por corpo assentado por passo, o mesmo inteiro em
+  qualquer máquina, e confirmação independente de que o atalho do DEBT-0012 está
+  vivo. A segunda é um microbenchmark de 26 ns em vez de um de 140 µs, que é o
+  ponto: é a única metade que precisa de máquina quieta, e re-medi-la é barato.
+
+  **Quanto de quieta importa.** Uma segunda execução do mesmo binário leu
+  `physics.voxel_lookup` em 38,2 ns com 26% de espalhamento, o que põe a parcela
+  em 27% em vez de 18%. A contagem não mexeu um dígito. Fica registrado como
+  faixa, **18–27%**, porque escolher a execução que lê melhor é como uma medida
+  vira propaganda.
+- **STATUS:** **CLOSED** — a parcela do lookup voltou a ser derivável, e por um
+  caminho que não depende de duas medidas grandes se cancelarem. O que sobrou de
+  imprecisão está na metade que é um relógio, e essa está isolada e é barata de
+  repetir.
+
+### DEBT-0038 — A prova de que um corpo está livre não diz qual fonte a produziu
+
+- **SYSTEM:** `engine/physics::world`, `engine/physics::body`
+- **CLASS:** CORRECTNESS
+- **WHY CREATED:** o DEBT-0012 guarda em cada corpo `(revisão, span de células)`
+  e pula a varredura quando a revisão da fonte bate com a guardada. A revisão é
+  um `u64` sem dono: nada liga a prova à fonte que a fez. Duas fontes diferentes
+  numerando a partir do zero — `World` conta suas edições a partir de 0 — podem
+  emitir o mesmo valor para mundos diferentes.
+- **IMPACT:** um `PhysicsWorld` alternado entre duas fontes que declarem revisão
+  pode aceitar uma prova feita contra a outra e deixar de ejetar um corpo que
+  está dentro de um bloco. Nada no motor faz isso hoje: o slice e a simulação
+  seguram uma fonte só. É uma brecha estrutural, não um defeito observado.
+- **RISK:** baixo hoje, e cresce sozinho — a segunda fonte com revisão foi
+  criada nesta mesma sessão (`StillFloor`, no benchmark), e o único motivo de
+  não ser um problema é que o seu valor tem o bit alto ligado, deliberadamente,
+  para não encostar no contador do `World`. Manter dois espaços de numeração
+  separados por convenção é exatamente o tipo de correção que depende de alguém
+  lembrar, e que este repositório recusa em outros lugares.
+- **PROPOSED REMEDIATION:** a prova carregar identidade além de contador. O
+  caminho barato é o `PhysicsWorld` guardar de qual fonte veio o último passo e
+  descartar toda prova quando ela muda; o caminho caro é a fonte devolver um par
+  (identidade, revisão). O barato resolve o caso real e não pede nada de quem
+  implementa `VoxelSource`.
+- **TRIGGER:** a segunda fonte com revisão a ser usada em produção, ou qualquer
+  código que passe fontes diferentes ao mesmo `PhysicsWorld`.
+- **TARGET STAGE:** Phase 1
 - **STATUS:** OPEN
 
 ### DEBT-0013 — Física não publicou orçamento, embora agora tenha os números

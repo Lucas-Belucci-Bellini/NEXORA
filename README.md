@@ -96,11 +96,19 @@ it schedules**), and the one behind `DEBT-0011`: **49% of a physics step is the
 voxel lookup, not the solver** — measured by running the same 1,000 bodies
 against generated terrain and against a flat fixture, because a single combined
 number would have sent the optimisation work to the wrong half. That one has
-since been worked: keeping the last resolved section took the lookup down by a
-third (**49% → 38.6%** of a step; a 40-metre raycast, which is almost nothing
-but lookup, got **40% faster**), and in doing so corrected its own diagnosis —
-there were two ordered-map descents on that path rather than one, and together
-they were a third of the cost rather than the bulk of it.
+since been worked twice, and each pass corrected its own diagnosis. Keeping the
+last resolved section took the lookup from **49% to 38.6%** of a step (a
+40-metre raycast, almost nothing but lookup, got **40% faster**) and found two
+ordered-map descents on that path rather than one, together a third of the cost
+rather than the bulk of it. Removing the runtime division from the palette read
+took `voxel.get_paletted` **13.1 ns → 11.4 ns**, and found that two integer
+divisions were worth 1.7 ns rather than most of the read.
+
+The ruler itself had to be rebuilt in between. The terrain-against-flat pair
+stopped resolving anything once the depenetration scan was gone, so the lookup's
+share is now a **product of a count and a microbenchmark** — 1,000 cell
+questions per step, which is the same integer on every machine, times the cost
+of one — rather than the difference between two 140 µs numbers.
 
 ## Layout
 

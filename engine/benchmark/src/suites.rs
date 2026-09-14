@@ -4,6 +4,7 @@
 //! `NEXORA TECHNOLOGY BENCHMARK PLAN.md`. Stages Phase 0 has no implementation
 //! for are returned by [`unmeasured_stages`] instead of being skipped.
 
+use std::cell::Cell;
 use std::path::Path;
 
 use nexora_entity::components::{Bounds, TagSet, Velocity};
@@ -29,7 +30,7 @@ use nexora_physics::gravity::GravityField;
 use nexora_physics::math::{Aabb, Axis, Vec3};
 use nexora_physics::query::raycast;
 use nexora_physics::step::FixedStep;
-use nexora_physics::voxel::FlatGround;
+use nexora_physics::voxel::{FlatGround, VoxelShape, VoxelSource};
 use nexora_physics::world::PhysicsWorld;
 use nexora_runtime::jobs::{JobSystem, Priority};
 use nexora_simulation::{RetainedChunks, WorldResidency, WorldVoxels};
@@ -48,6 +49,108 @@ use crate::{
     consume, measure, measure_throughput, record_bytes, record_quantity, Budget, Measurement,
     Unmeasured,
 };
+
+/// Counts the questions a source is asked, so the lookup can be priced by
+/// composition instead of by subtracting two large numbers.
+///
+/// Subtracting `physics.thousand_bodies_step_flat` from
+/// `physics.thousand_bodies_step` was the old way to price the voxel lookup,
+/// and it stopped working for two reasons at once. DEBT-0012 removed most of
+/// the reads a settled body makes, so what is left to subtract is a few
+/// percent; and a few percent is well inside the spread of a 145 µs
+/// measurement. Two numbers that large cannot resolve a difference that small.
+///
+/// The two halves can each be measured on their own, and multiplied:
+/// `physics.world_reads_per_step` is a **count**, identical on every machine,
+/// and `physics.voxel_lookup` is a microbenchmark small enough to have a real
+/// signal. Their product is what the lookup costs in a step, and it can be
+/// re-derived from any run rather than quoted from this one.
+struct Counted<S> {
+    inner: S,
+    reads: Cell<u64>,
+}
+
+impl<S: VoxelSource> Counted<S> {
+    const fn new(inner: S) -> Self {
+        Self {
+            inner,
+            reads: Cell::new(0),
+        }
+    }
+
+    fn take(&self) -> u64 {
+        self.reads.replace(0)
+    }
+}
+
+impl<S: VoxelSource> VoxelSource for Counted<S> {
+    fn shape_at(&self, position: BlockPos) -> VoxelShape {
+        self.reads.set(self.reads.get() + 1);
+        self.inner.shape_at(position)
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.inner.revision()
+    }
+}
+
+/// A flat floor that names a revision, so the paired physics rows differ in
+/// exactly one thing again.
+///
+/// `physics.thousand_bodies_step` and `physics.thousand_bodies_step_flat`
+/// measure the voxel lookup by subtraction, which only means something while
+/// the terrain source is the *only* difference between them. DEBT-0012 gave
+/// the terrain row a reason to skip the depenetration scan — `World` counts
+/// its edits, so a resting body can be taken at its word — and the library's
+/// `FlatGround` has no revision to offer. The rows started differing in two
+/// things and the subtraction stopped measuring anything.
+///
+/// The revision lives here rather than on `FlatGround` because a revision is
+/// only honest when it says *which* world is being described. A constant on
+/// the library type would be shared by every floor built from it, and two
+/// floors at different heights would swear they were the same world — which is
+/// the one way a revision can lie. This one is derived from the plane it
+/// describes: constant in time, because the plane is immutable, and different
+/// for a different plane.
+///
+/// The high bit keeps it clear of `World::revision`, which starts at zero and
+/// counts up. Nothing in the engine steps one `PhysicsWorld` against two
+/// sources, and a body's proof does not record which source made it
+/// (DEBT-0038) — so the two namespaces are kept apart here rather than
+/// relied upon not to meet.
+#[derive(Debug, Clone, Copy)]
+struct StillFloor {
+    ground: FlatGround,
+    revision: u64,
+}
+
+impl StillFloor {
+    fn at(surface_y: i64) -> Self {
+        Self {
+            ground: FlatGround::at(surface_y),
+            // FNV-1a over the one value that decides every answer this source
+            // gives. Cheap, and it changes when the floor does.
+            revision: (1 << 63)
+                | (surface_y
+                    .to_le_bytes()
+                    .iter()
+                    .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+                    })
+                    >> 1),
+        }
+    }
+}
+
+impl VoxelSource for StillFloor {
+    fn shape_at(&self, position: BlockPos) -> VoxelShape {
+        self.ground.shape_at(position)
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.revision)
+    }
+}
 
 /// Seed used for every world the benchmark builds, so runs are comparable.
 const BENCH_SEED: u64 = 0x0BEEF_0BEEF;
@@ -836,7 +939,7 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
     let world = populated_world()?;
     let voxels = WorldVoxels::new(&world);
     let surface = world.surface_height(4, 4);
-    let flat = FlatGround::at(0);
+    let flat = StillFloor::at(0);
     // Large enough to hold every body the suite spawns, so that re-waking is
     // not itself measuring a region test that missed.
     let everywhere = Aabb::new(Vec3::splat(-4_000.0), Vec3::splat(4_000.0))
@@ -909,6 +1012,58 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
         || {
             flat_crowd.wake_in(everywhere);
             consume(flat_crowd.step_once(&flat, SUBSTEP).simulated);
+        },
+    ));
+
+    // The two halves the flat pair can no longer weigh by subtraction.
+    //
+    // How many cells a step asks about is a property of the solver and the
+    // scene, not of the box running them: the same thousand bodies in the same
+    // places ask the same questions every time, on every machine. Pricing one
+    // question is a separate, small measurement. Multiplied, they say what the
+    // lookup costs in a step — and either half can be re-measured on its own
+    // when one of them changes.
+    let watched = Counted::new(WorldVoxels::new(&world));
+    let mut asked = PhysicsWorld::earthlike(TICKS_PER_SECOND)?;
+    for index in 0..POPULATION {
+        let x = (index % 30) as i64;
+        let z = (index / 30) as i64;
+        asked.spawn(BodyDescriptor::dynamic().at(Vec3::new(
+            x as f64 + 0.5,
+            (world.surface_height(x, z) + 4) as f64,
+            z as f64 + 0.5,
+        )))?;
+    }
+    // Let them land first. A falling body asks about cells it is about to
+    // enter; a settled one asks about the ground it is standing on, and the
+    // settled case is the one a running game spends its time in.
+    for _ in 0..600 {
+        asked.wake_in(everywhere);
+        asked.step_once(&watched, SUBSTEP);
+    }
+    watched.take();
+    asked.wake_in(everywhere);
+    asked.step_once(&watched, SUBSTEP);
+    out.push(record_quantity(
+        "physics.world_reads_per_step",
+        "Cells the world is asked about in one substep of 1,000 settled awake bodies",
+        watched.take(),
+    ));
+
+    // One of those questions, on the path a step actually takes: the section
+    // is already resident and the view has just answered from it. A body of
+    // 0.6 x 1.8 x 0.6 against sections of 32 cubed asks nearly all of its
+    // questions this way.
+    let resident = BlockPos::new(4, surface - 1, 4);
+    out.push(measure(
+        "physics.voxel_lookup",
+        "One cell question answered by the world view, section already resident",
+        Budget {
+            iterations_per_sample: 20_000,
+            ..budget
+        },
+        || {
+            consume(voxels.shape_at(consume(resident)).is_solid());
         },
     ));
 

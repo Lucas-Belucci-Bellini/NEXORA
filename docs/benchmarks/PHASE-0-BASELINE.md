@@ -497,6 +497,95 @@ constant revision, which is deliberately **not** done here: `FlatGround` is
 constructed inline and two of them with different floors would report the same
 constant, which is the one way a revision can lie. Recorded as **DEBT-0037**.
 
+### 10d. The ruler is rebuilt out of two parts, and one of them never drifts (2026-09-14)
+
+**Measured on a different, noisier box than 10a-10c.** Every number in this
+section was taken here, and none of it is comparable to the tables above: the
+same unchanged code that measured `thousand_bodies_step` at 84.6 µs in 10c
+measures ~140 µs here. That is the machine, not a regression, which is exactly
+why nothing below is quoted across.
+
+**DEBT-0037 asked for a flat fixture that names a revision. That was the easy
+half, and on its own it does not work.** `StillFloor` now gives the flat row a
+revision, so the pair differs in one thing again, and the A/B says so:
+
+| flat fixture | `thousand_bodies_step_flat` |
+| --- | ---: |
+| `FlatGround`, no revision | 145.34 µs |
+| `StillFloor`, revision | 142.79 µs |
+
+1.8%, against a run-to-run spread of 10–23% on this box. **The subtraction is
+not a measurement here, it is noise.** And it was always going to be: after
+DEBT-0012 a settled body makes one world read per step instead of two, so what
+the pair has to resolve is now a fifth of a step hiding inside two numbers of
+140 µs each.
+
+**So the pair was replaced by a product rather than a difference.** Two
+measurements, each resolvable on its own:
+
+| | value | spread |
+| --- | ---: | ---: |
+| `physics.world_reads_per_step` | **1 000** | — |
+| `physics.voxel_lookup` | **25.9 ns** | 5.8% |
+
+`1 000 × 25.9 ns = 25.9 µs` of a `141.16 µs` step: **18%**. The first row is a
+count — one cell question per settled body per step, the same integer on every
+machine, and independent confirmation that DEBT-0012's skip is live. The second
+is a 26 ns microbenchmark rather than a 140 µs one, which is the whole point:
+it can be re-measured cheaply and it is the only half that needs a quiet box.
+
+**How quiet is not a detail.** A second run of the same binary read
+`physics.voxel_lookup` at **38.2 ns with a 26% spread**, putting the share at
+27% instead of 18%. The count did not move by one. Reported as a range, 18–27%,
+because choosing the run that reads better is how a measurement becomes an
+advertisement.
+
+**And 38.6% is not what this contradicts.** That figure was taken while the
+depenetration scan still ran, when a settled body made two reads a step instead
+of one. Halving the reads was supposed to roughly halve the share, and it did.
+
+### 10e. The paletted read was one division, not two, and it was worth 13%
+
+**`voxel.get_paletted`: 13.1 ns → 11.4 ns.** What is left of DEBT-0011 after
+10b is the palette read and the address arithmetic, and the palette read had a
+divisor no compiler could see: cells pack `64 / bits` to a word, and
+`64 / 12` is five. Both the word and the offset inside it came from dividing by
+that.
+
+The twelve possible widths are known at compile time, so each one's layout is
+now a table entry: the quotient is a multiply and a shift against
+`ceil(2^32 / per_word)`, and the remainder falls out of the quotient. The
+identity is exact for every index a section can hold — `MAX_SECTION_EXTENT`
+cubed is 2^24, and the error bound `(N + d - 1) · e < 2^32` clears it by two
+orders of magnitude — and a test walks the last index of every word near the
+top of the range, which is where an approximate reciprocal breaks first.
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `voxel.get_paletted` | 13.1 ns | **11.4 ns** | −13% |
+| `physics.voxel_lookup` | 28.3 ns | **25.9 ns** | −8.5% |
+| `voxel.get_uniform` | 5.2 ns | 5.3 ns | — |
+| `spatial.index_of` | 6.3 ns | 6.3 ns | — |
+
+**The last two rows are the controls and they held still.** Uniform storage
+never calls the packed read, and `index_of` was not touched; a machine that had
+simply got faster would have moved both. `voxel.get_paletted` read 11.4 ns on
+two separate runs, against a 3–4% spread.
+
+**13% is less than a division costs, and that is the finding.** The guess
+behind this change was that two integer divisions were most of a 13 ns read.
+They are worth 1.7 ns. The likely reason is that there were never two: x86-64's
+`div` yields the quotient and the remainder from one instruction, so the
+compiler had already fused the pair, and an out-of-order core overlaps most of
+what is left with the surrounding work. This is reasoning, not measurement —
+what was measured is 1.7 ns.
+
+**DEBT-0011 stays open at the smaller number.** The address arithmetic —
+`split_of` at the top of every lookup, three divisions by runtime section
+extents — is now the largest single piece left, and it has the same shape: a
+divisor fixed for a world's lifetime that the compiler cannot see. Unlike the
+palette width it is not drawn from twelve values, so a table does not close it.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |
