@@ -25,7 +25,6 @@
 //! expression must be independently created"*.
 
 pub mod color;
-pub mod deflate;
 pub mod forge;
 pub mod layout;
 pub mod manifest;

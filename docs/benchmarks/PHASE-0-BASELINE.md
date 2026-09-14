@@ -643,6 +643,43 @@ this box. Not a single figure. Recorded as **DEBT-0039**, along with the fix:
 build the same source twice with a neutral change in between and publish the
 spread between builds, not only within one.
 
+### 10h. The save stops writing packed words raw (2026-09-14)
+
+**744,954 → 117,908 bytes for the slice's world: 6.3×.** `DEBT-0003` had the
+container writing every section exactly as handed to it, which for the chunk
+section means the palette-packed words with no further coding.
+
+The codec was already written and already measured — `DEBT-0034` took it to
+1.0233× of zlib -9 — and it was sitting in `tools/texture-forge`, where only the
+PNG encoder could reach it. Promoting it to `nexora_foundation::deflate` added
+**no dependency edge at all**: persistence and the texture forge both already
+depended on foundation. All twelve generated PNGs are byte-identical across the
+move, checked by hash rather than by argument.
+
+| | bytes |
+| --- | ---: |
+| slice save, format 1 (raw sections) | 744,954 |
+| slice save, format 2 (coded sections) | **117,908** |
+
+**Compression is kept only when it wins.** High-entropy bytes deflate to
+slightly more than they started with; writing that would make the format worse
+at exactly the inputs it is already worst at. `Coding::Stored` is not a failure
+path — there is no failure path — it is the answer when compressing did not pay.
+
+**Format 1 stays readable.** `MIN_SUPPORTED_SAVE_FORMAT` was deliberately not
+raised: one branch in the decoder, against throwing away every world written
+before the change. Verified against a real format-1 file written by the previous
+build, not only against a hand-built frame.
+
+**A failing test found something the change had missed.** The first damage test
+flipped "a byte in the middle" and hit the coding byte rather than the deflate
+stream — caught, but by the coding range check rather than by the checksum. That
+exposed the new frame fields sitting *outside* the section checksum, whose own
+comment already explains why the name is inside it: a flipped bit in an
+unchecksummed field does not look like damage, it looks like a different and
+wrong instruction. A coding byte that flips turns a deflate stream into a raw
+payload. Coding and length are inside `frame_crc` now, with a test for each.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |

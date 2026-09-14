@@ -47,7 +47,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use nexora_foundation::error::{Domain, Error, Recovery, Result};
+use crate::error::{Domain, Error, Recovery, Result};
 
 /// Largest distance a match may reach back. RFC 1951 §3.2.5.
 pub const WINDOW: usize = 32_768;

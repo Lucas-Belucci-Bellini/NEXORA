@@ -106,7 +106,40 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **PROPOSED REMEDIATION:** Compressão por seção, com o algoritmo registrado no
   cabeçalho para permitir troca versionada.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **RESOLUÇÃO (2026-09-14):** a remediação proposta, **num lugar diferente do que
+  esta entrada supôs**. O `SYSTEM` dizia `engine/world::persist`; a costura certa
+  é o contêiner. Toda seção passa pela mesma moldura — chunks hoje, entidades
+  amanhã — e resolver no contêiner faz isso uma vez em vez de cada produtor
+  decidir por si. O `world::persist` não mudou uma linha.
+
+  **O save do slice: 744.954 → 117.908 bytes, 6,3× menor.** O codec é o mesmo do
+  DEBT-0034 (1,02× do zlib), que estava em `tools/texture-forge` onde só o PNG o
+  alcançava; foi promovido para `nexora_foundation::deflate`. **Zero arestas
+  novas no grafo de crates** — persistência e texture-forge já dependiam de
+  foundation. Os 12 PNGs saem byte-idênticos antes e depois da mudança de casa.
+
+  **Comprimir é mantido só quando ganha.** Bytes de alta entropia deflacionam
+  para um pouco mais do que eram, e escrever isso pioraria o formato exatamente
+  nas entradas em que ele já é pior. `Coding::Stored` não é caminho de falha —
+  não há falha — é a resposta quando comprimir não pagou.
+
+  **Formato 2, e o formato 1 continua legível.** `MIN_SUPPORTED_SAVE_FORMAT`
+  ficou em 1 de propósito: ler um save antigo custa um `if` no decodificador, e
+  recusá-lo jogaria fora todo mundo escrito antes da mudança por nada além de
+  conveniência. Verificado contra um arquivo formato 1 **real**, escrito pelo
+  build anterior, além do teste que monta a moldura à mão.
+
+  **Um achado no caminho, de um teste que falhou.** O primeiro teste de dano
+  virou um bit "no meio do arquivo" e acertou o byte de codificação — pego, mas
+  pelo guarda errado. Isso expôs que os campos novos da moldura estavam **fora**
+  do checksum da seção, cujo comentário já dizia que o nome entra nele
+  justamente para não ser renomeado em silêncio. A mesma razão vale para a
+  codificação e o comprimento: um bit virado ali não parece dano, parece
+  instrução diferente — um fluxo deflate virando "isto é cru". Agora os quatro
+  campos estão dentro do `frame_crc`, e há teste para o byte de codificação.
+- **STATUS:** **CLOSED** — o save deixou de gravar palavras empacotadas cruas. O
+  algoritmo está na moldura de cada seção, então trocá-lo é uma versão de
+  formato e não uma migração.
 
 ### DEBT-0004 — Journal de chunk descarta o mais antigo em silêncio parcial
 
