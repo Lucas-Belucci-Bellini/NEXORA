@@ -586,6 +586,63 @@ extents — is now the largest single piece left, and it has the same shape: a
 divisor fixed for a world's lifetime that the compiler cannot see. Unlike the
 palette width it is not drawn from twelve values, so a table does not close it.
 
+### 10f. A proof needs to say who made it, and "controls held still" is not enough (2026-09-14)
+
+**The skip from 10c believed a number with no owner.** A body remembers the
+cells it was proven clear of solids in, keyed on the source's revision. A
+revision is a `u64`: `World` counts its edits from zero, any other source that
+opts in starts somewhere too, and two of them agree on the number while
+describing different terrain.
+
+**The obvious identity does not work, and that was checked rather than
+assumed.** A source built on the stack for one step and a *different* source
+built the same way for the next occupy the same address —
+`two_sources_at_one_address_do_not_share_a_proof` guarantees it by reusing one
+variable, and both grounds report revision 1. Address plus revision would have
+matched, and the body would have been left standing inside a block.
+
+What replaced it is a **session**: `PhysicsWorld::against(&source)` returns a
+`Stepper` that borrows the source for as long as the proof can be consulted, so
+every substep it runs is answered by the same live object. The borrow checker
+says so; nothing is compared. Opening a session mints a number never used
+before, and the proof records it.
+
+| ten settled steps | cells asked |
+| --- | ---: |
+| inside one session | **10** |
+| a session per step | **20** |
+
+`step_once` and `advance` open a session for the single call, so the safe
+default costs nothing to know: they are correct and they never skip. Holding the
+optimisation is what now takes holding the session, which the headless slice and
+the benchmark both do. The slice's save is **byte-identical** to the one from
+before the change.
+
+**And the test can fail.** With `proof.session == session` removed it reports
+"the check was skipped on the strength of a proof the old source made".
+
+### 10g. The palette read moved 30% in a commit that did not touch it
+
+**This corrects 10e's precision, not its direction.** 10e reported
+`voxel.get_paletted` at 13.1 ns → 11.4 ns, −13%, with `voxel.get_uniform` and
+`spatial.index_of` held still as controls. One commit later, having changed
+`engine/physics` and `engine/benchmark` and **not one line of `engine/world`**
+(checked with `git diff --name-only`), the same source reads **7.8 ns and 8.2 ns
+across two runs** — and the same two controls are still still, at 6.0 and 5.1 ns.
+
+The release profile is `lto = "thin"` with `codegen-units = 1`. Changing any
+crate in the workspace relinks the whole binary and moves `Section::get`; at
+under 10 ns, alignment and inlining decisions are worth tens of percent.
+
+**So the method has a hole in it.** "Move one thing and check the controls did
+not move" is necessary and not sufficient when the change itself relinks the
+binary — the controls can hold still while an untouched kernel moves 30%. What
+10e's measurement supports is the direction and the order of magnitude: the
+division came out, and the read got somewhere between ~13% and ~40% faster on
+this box. Not a single figure. Recorded as **DEBT-0039**, along with the fix:
+build the same source twice with a neutral change in between and publish the
+spread between builds, not only within one.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |

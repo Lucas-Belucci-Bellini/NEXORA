@@ -973,17 +973,25 @@ fn simulate_physics(world: &World, diagnostics: &Diagnostics) -> Result<PhysicsO
     let mut contacts = 0;
     // Ten world seconds, in one-tick slices, so the accumulator is exercised
     // the way a running server would exercise it rather than in one bulk call.
-    for _ in 0..(ticks_per_second * 10) {
-        let report = physics.advance(&voxels, WorldDuration::from_ticks(1));
-        substeps += report.substeps;
-        contacts += report.stats.contacts;
-        if report.stats.stuck > 0 {
-            return Err(Error::new(
-                Domain::Physics,
-                "slice/physics",
-                "a body was buried in terrain and could not be freed",
-            )
-            .with_context("bodies", report.stats.stuck.to_string()));
+    //
+    // One session across all of them: what a body proves about the terrain
+    // around it survives inside a session and nowhere else (`DEBT-0038`), and a
+    // server ticking one world against one view is exactly the shape the
+    // session is for.
+    {
+        let mut ticking = physics.against(&voxels);
+        for _ in 0..(ticks_per_second * 10) {
+            let report = ticking.advance(WorldDuration::from_ticks(1));
+            substeps += report.substeps;
+            contacts += report.stats.contacts;
+            if report.stats.stuck > 0 {
+                return Err(Error::new(
+                    Domain::Physics,
+                    "slice/physics",
+                    "a body was buried in terrain and could not be freed",
+                )
+                .with_context("bodies", report.stats.stuck.to_string()));
+            }
         }
     }
 

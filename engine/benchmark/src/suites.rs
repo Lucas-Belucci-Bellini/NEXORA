@@ -953,6 +953,9 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
     let character =
         single.spawn(BodyDescriptor::character().at(Vec3::new(4.5, (surface + 3) as f64, 4.5)))?;
     let controller = CharacterController::new(character);
+    // One session per measurement: a proof only lives inside one, so measuring
+    // through the flat API would be measuring the un-skipped path (`DEBT-0038`).
+    let mut single = single.against(&voxels);
     out.push(measure(
         "physics.character_step",
         "One character substep on generated terrain: gravity, sweep, ground, friction",
@@ -962,9 +965,12 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
         },
         || {
             controller
-                .apply(&mut single, MoveIntent::walking(Vec3::new(1.0, 0.0, 0.3)))
+                .apply(
+                    single.world_mut(),
+                    MoveIntent::walking(Vec3::new(1.0, 0.0, 0.3)),
+                )
                 .expect("live body");
-            consume(single.step_once(&voxels, SUBSTEP).contacts);
+            consume(single.step_once(SUBSTEP).contacts);
         },
     ));
 
@@ -981,6 +987,7 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
             z as f64 + 0.5,
         )))?;
     }
+    let mut crowd = crowd.against(&voxels);
     out.push(measure(
         "physics.thousand_bodies_step",
         "One substep of 1,000 awake dynamic bodies against generated terrain",
@@ -989,8 +996,8 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
             ..budget
         },
         || {
-            crowd.wake_in(everywhere);
-            consume(crowd.step_once(&voxels, SUBSTEP).simulated);
+            crowd.world_mut().wake_in(everywhere);
+            consume(crowd.step_once(SUBSTEP).simulated);
         },
     ));
 
@@ -1002,6 +1009,7 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
             (index / 30) as f64 + 0.5,
         )))?;
     }
+    let mut flat_crowd = flat_crowd.against(&flat);
     out.push(measure(
         "physics.thousand_bodies_step_flat",
         "The same substep against a flat fixture: the solver without the world lookup",
@@ -1010,8 +1018,8 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
             ..budget
         },
         || {
-            flat_crowd.wake_in(everywhere);
-            consume(flat_crowd.step_once(&flat, SUBSTEP).simulated);
+            flat_crowd.world_mut().wake_in(everywhere);
+            consume(flat_crowd.step_once(SUBSTEP).simulated);
         },
     ));
 
@@ -1037,13 +1045,14 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
     // Let them land first. A falling body asks about cells it is about to
     // enter; a settled one asks about the ground it is standing on, and the
     // settled case is the one a running game spends its time in.
+    let mut asked = asked.against(&watched);
     for _ in 0..600 {
-        asked.wake_in(everywhere);
-        asked.step_once(&watched, SUBSTEP);
+        asked.world_mut().wake_in(everywhere);
+        asked.step_once(SUBSTEP);
     }
     watched.take();
-    asked.wake_in(everywhere);
-    asked.step_once(&watched, SUBSTEP);
+    asked.world_mut().wake_in(everywhere);
+    asked.step_once(SUBSTEP);
     out.push(record_quantity(
         "physics.world_reads_per_step",
         "Cells the world is asked about in one substep of 1,000 settled awake bodies",
@@ -1173,13 +1182,14 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
             (index / 30) as f64 + 0.5,
         )))?;
     }
+    let mut settled = settled.against(&flat);
     for _ in 0..600 {
-        settled.step_once(&flat, SUBSTEP);
+        settled.step_once(SUBSTEP);
     }
     out.push(record_quantity(
         "physics.sleeping_bodies_of_1000",
         "Bodies asleep after ten seconds: what sleeping actually saves",
-        (settled.len() - settled.awake_count()) as u64,
+        (settled.world().len() - settled.world().awake_count()) as u64,
     ));
     out.push(measure(
         "physics.thousand_sleeping_step",
@@ -1189,7 +1199,7 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
             ..budget
         },
         || {
-            consume(settled.step_once(&flat, SUBSTEP).simulated);
+            consume(settled.step_once(SUBSTEP).simulated);
         },
     ));
 

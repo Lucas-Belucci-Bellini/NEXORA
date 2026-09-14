@@ -357,6 +357,15 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   As duas últimas são os controles e não se moveram: armazenamento uniforme
   nunca chama a leitura empacotada, e `index_of` não foi tocado.
 
+  **CORREÇÃO (2026-09-14, um commit depois):** os −13% são precisos demais para
+  o que a medida aguenta. O commit seguinte não tocou `engine/world` e mesmo
+  assim `voxel.get_paletted` leu **7,8–8,2 ns**, com os mesmos dois controles
+  parados de novo. Sob `lto = "thin"` e `codegen-units = 1`, religar o binário
+  realoca `Section::get`, e a ~10 ns isso vale dezenas de por cento. O que a
+  medida sustenta é **a direção e a ordem de grandeza — a divisão saiu e a
+  leitura ficou entre ~13% e ~40% mais rápida neste box** — não um único número.
+  Registrado como DEBT-0039.
+
   **13% é menos do que uma divisão custa, e é esse o achado.** O palpite era que
   duas divisões inteiras fossem o grosso de uma leitura de 13 ns. Valem 1,7 ns.
   A razão provável é que nunca foram duas: o `div` do x86-64 devolve quociente e
@@ -525,6 +534,67 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** a segunda fonte com revisão a ser usada em produção, ou qualquer
   código que passe fontes diferentes ao mesmo `PhysicsWorld`.
 - **TARGET STAGE:** Phase 1
+- **RESOLUÇÃO (2026-09-14):** nem o caminho barato nem o caro — um terceiro, que
+  não compara nada.
+
+  **Comparar endereços não funciona, e isso foi verificado antes de descartar.**
+  Uma fonte construída para um passo e uma fonte *diferente* construída do mesmo
+  jeito para o próximo ficam no mesmo endereço; o teste
+  `two_sources_at_one_address_do_not_share_a_proof` garante isso em vez de
+  torcer, porque usa a mesma variável, e as duas ainda declaram revisão 1.
+
+  O que existe agora é `PhysicsWorld::against(&source) -> Stepper`, uma
+  **sessão**. O `Stepper` toma `&'s S` emprestado enquanto a prova puder ser
+  consultada, então todo substep que ele roda é respondido pelo **mesmo objeto
+  vivo** — quem diz isso é o borrow checker, não uma comparação e não uma
+  convenção. É o mesmo argumento que o `WorldVoxels` usa para o cache de seção.
+  Abrir uma sessão cunha um número nunca usado; a prova guarda esse número, e
+  uma prova de sessão anterior só pode falhar em casar.
+
+  `step_once` e `advance` continuam existindo e abrem uma sessão só para a
+  chamada: **corretos e nunca pulando**. O padrão seguro é o que não exige saber
+  de nada; manter a otimização é que passou a exigir manter a sessão — o slice
+  headless e o benchmark seguram uma.
+
+  | dez passos assentados | células perguntadas |
+  | --- | ---: |
+  | dentro de uma sessão | **10** |
+  | uma sessão por passo | **20** |
+
+  O teste que fecha a brecha **falha sem a correção**: removida a condição
+  `proof.session == session`, ele acusa exatamente "the check was skipped on the
+  strength of a proof the old source made".
+- **STATUS:** **CLOSED** — a prova deixou de valer por convenção de numeração. O
+  `StillFloor` ainda liga o bit alto, mas agora isso é higiene, não a linha de
+  defesa.
+
+### DEBT-0039 — Microbenchmark de poucos nanossegundos não é comparável entre builds
+
+- **SYSTEM:** `engine/benchmark`
+- **CLASS:** MEASUREMENT
+- **WHY CREATED:** `voxel.get_paletted` leu **11,4 ns** no commit `14086ec` e
+  **7,8–8,2 ns** no commit seguinte, que **não tocou uma linha de
+  `engine/world`** (verificado com `git diff --name-only`). O perfil de release
+  usa `lto = "thin"` e `codegen-units = 1`, então mudar qualquer crate do
+  workspace religa o binário inteiro e realoca `Section::get`. A ~10 ns,
+  alinhamento e decisões de inline valem dezenas de por cento.
+- **IMPACT:** o método em vigor — mover uma coisa, conferir que os controles não
+  se moveram — é **necessário e insuficiente** quando a própria mudança religa o
+  binário. Os controles (`spatial.index_of`, `voxel.get_uniform`) ficaram
+  parados nas duas medições e mesmo assim `get_paletted` andou 30%. Nenhum
+  número abaixo de ~20 ns publicado aqui deve ser lido como preciso melhor que
+  uma faixa.
+- **RISK:** baixo para o produto, alto para a tomada de decisão: é assim que uma
+  otimização inexistente ganha crédito, e é o erro que o próprio Apêndice B
+  existe para impedir.
+- **PROPOSED REMEDIATION:** medir *n* builds do mesmo código-fonte, não uma, e
+  publicar a faixa entre builds junto com o espalhamento dentro de uma. Um
+  `--repeat-build` no runner não resolve — a variação é do link, não da
+  execução. O caminho é o script de release construir duas vezes com uma
+  mudança neutra no meio e reportar as duas.
+- **TRIGGER:** a próxima vez que alguém quiser publicar um ganho abaixo de
+  ~20 ns, ou antes de mexer em `spatial.index_of` (o que sobrou do DEBT-0011).
+- **TARGET STAGE:** Phase 4
 - **STATUS:** OPEN
 
 ### DEBT-0013 — Física não publicou orçamento, embora agora tenha os números
