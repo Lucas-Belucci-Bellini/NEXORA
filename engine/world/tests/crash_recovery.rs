@@ -14,7 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use nexora_foundation::ident::Identifier;
-use nexora_foundation::spatial::{BlockPos, ChunkCoord};
+use nexora_foundation::spatial::{BlockPos, ChunkCoord, SectionCoord};
 use nexora_foundation::time::CalendarConfig;
 use nexora_persistence::journal::{self, Damage, Journal, SnapshotId};
 use nexora_persistence::SaveContainer;
@@ -546,5 +546,80 @@ fn a_journalled_world_and_a_plain_one_reach_the_same_state() {
         persist::save(&plain).expect("saved").encode(),
         persist::save(&journalled).expect("saved").encode(),
         "attaching a journal changed the world it produced"
+    );
+}
+
+// --- DEBT-0024: a recovery wider than the resident set ---------------------
+
+/// The scenario the debt named: a world that saved with more columns resident
+/// than the session reloading it has.
+///
+/// The engine journals an edit in a column that the snapshot does not carry.
+/// Replay cannot place it — that part is unchanged and still reported — but the
+/// edit is now filed against the column it needs, so loading that column
+/// afterwards applies it. Before this, the record stayed in the journal and the
+/// report listed it, and nobody ever put it back.
+#[test]
+fn an_edit_in_a_column_the_reload_has_not_loaded_lands_when_that_column_does() {
+    let scratch = Scratch::new("wider-than-resident");
+    let path = scratch.file("world.nxjr");
+
+    // The live world has two columns; the snapshot is taken of both.
+    let mut live = world();
+    let far = ChunkCoord::new(7, -2);
+    live.load_or_generate(far).expect("generated");
+    let near_edit = BlockPos::new(1, 202, 1);
+    let far_edit = live
+        .descriptor()
+        .shape
+        .section_origin(SectionCoord::new(7, 3, -2))
+        .expect("in range");
+
+    let (bytes, id) = snapshot(&live);
+    live.attach_journal(Journal::create(&path, id).expect("created"));
+    let state = live.block_id(&stone()).expect("registered");
+    live.set_block(near_edit, state).expect("written");
+    live.set_block(far_edit, state).expect("written");
+    live.sync_journal().expect("committed");
+    drop(live.detach_journal());
+
+    // The reload only brings the near column in. That is the partial load the
+    // debt is about, forced here rather than waited for.
+    let mut recovered = reload(&bytes);
+    recovered.unload_chunk(far);
+    assert!(recovered.chunk(far).is_none());
+
+    let replay = journal::replay(&path, id).expect("read");
+    let report = recovery::apply(&mut recovered, &replay).expect("reported");
+
+    assert_eq!(report.applied, 1, "the near edit lands immediately");
+    assert_eq!(
+        report.skipped.len(),
+        1,
+        "the far one cannot, and is reported"
+    );
+    assert!(matches!(
+        report.skipped[0].reason,
+        SkipReason::NotWritable(_)
+    ));
+    assert!(
+        !report.is_complete(),
+        "a deferred edit is not a complete recovery"
+    );
+
+    // And it is waiting, rather than gone.
+    let mut pending = report.deferred;
+    assert_eq!(pending.waiting_on(far), 1);
+
+    recovered.load_or_generate(far).expect("the column arrives");
+    let finished = pending.apply_column(&mut recovered, far).expect("applied");
+    assert_eq!(finished.applied, 1);
+    assert!(finished.refused.is_empty());
+    assert!(pending.is_empty());
+
+    assert_ne!(
+        recovered.get_block(far_edit).expect("resident now"),
+        AIR,
+        "the edit that was waiting for this column did not land with it"
     );
 }

@@ -37,6 +37,7 @@ use nexora_streaming::backend::ResidencyBackend;
 use nexora_streaming::lod::Lod;
 use nexora_streaming::target::StreamTarget;
 use nexora_world::chunk::Chunk;
+use nexora_world::recovery::PendingEdits;
 use nexora_world::world::World;
 
 /// Chunks that were evicted but whose content cannot be regenerated.
@@ -115,12 +116,56 @@ impl RetainedChunks {
 pub struct WorldResidency<'a> {
     world: &'a mut World,
     retained: &'a mut RetainedChunks,
+    pending: Option<&'a mut PendingEdits>,
 }
 
 impl<'a> WorldResidency<'a> {
     /// Borrow a world and its retained chunks for one tick.
     pub fn new(world: &'a mut World, retained: &'a mut RetainedChunks) -> Self {
-        Self { world, retained }
+        Self {
+            world,
+            retained,
+            pending: None,
+        }
+    }
+
+    /// Also finish a recovery whose columns were not all resident at load.
+    ///
+    /// `recovery::apply` files the edits it could not place against the column
+    /// they are waiting for. Handing that index here is what finishes the job:
+    /// each column that becomes resident gets its edits applied at that moment,
+    /// in the order they were journalled, before anything else can read it.
+    ///
+    /// Without this the edits are not lost — they stay in the journal and the
+    /// recovery report lists them — but nobody ever re-applies them, which is
+    /// what `DEBT-0024` was.
+    #[must_use]
+    pub fn recovering(mut self, pending: &'a mut PendingEdits) -> Self {
+        self.pending = Some(pending);
+        self
+    }
+
+    /// Apply whatever was waiting on a column that has just become resident.
+    ///
+    /// An edit that is still refused with the column resident is not waiting on
+    /// residency; it is surfaced as an error rather than dropped, because the
+    /// alternative is a world that quietly differs from its journal.
+    fn finish_recovery(&mut self, coord: ChunkCoord) -> Result<()> {
+        let Some(pending) = self.pending.as_deref_mut() else {
+            return Ok(());
+        };
+        let recovered = pending.apply_column(self.world, coord)?;
+        if recovered.refused.is_empty() {
+            return Ok(());
+        }
+        Err(Error::new(
+            Domain::World,
+            "world-residency",
+            "a recovered edit was refused by a column that is now resident",
+        )
+        .with_recovery(Recovery::Reject)
+        .with_context("chunk", format!("{},{}", coord.x, coord.z))
+        .with_context("refused", recovered.refused.len().to_string()))
     }
 
     /// The world being streamed.
@@ -152,6 +197,10 @@ impl ResidencyBackend for WorldResidency<'_> {
             self.world.load_or_generate(coord)?;
             self.retained.generated += 1;
         }
+        // Before the caller can read the column, and before anything can be
+        // evicted again: a column that arrives already carries its journalled
+        // edits or it never will.
+        self.finish_recovery(coord)?;
         Ok(self.bytes_of(coord))
     }
 
@@ -231,6 +280,80 @@ mod tests {
     fn observer(at: ChunkCoord, radius: u32) -> InterestSource {
         InterestSource::new(InterestId(1), at)
             .with_radii(LodRadii::new(radius, radius, radius, 0).expect("valid"))
+    }
+
+    /// `DEBT-0024`, from the streaming side. A journal that names a column this
+    /// session has not loaded is not a loss: residency is where the column
+    /// arrives, so residency is where the edit lands.
+    #[test]
+    fn a_column_streamed_in_carries_the_edits_that_were_waiting_for_it() {
+        use nexora_world::recovery::{apply, EditRecord, JournalReplay};
+
+        let mut world = world();
+        let far = ChunkCoord::new(4, 0);
+        let position = world
+            .descriptor()
+            .shape
+            .section_origin(nexora_foundation::spatial::SectionCoord::new(4, 2, 0))
+            .expect("in range");
+
+        // Replayed against a world that has loaded nothing: the edit cannot
+        // land, and is filed against the column it needs.
+        let record = EditRecord::SetBlock {
+            position,
+            block: Identifier::parse("nexora:block/stone").expect("valid"),
+        };
+        let report = apply(
+            &mut world,
+            &JournalReplay {
+                records: vec![record.encode()],
+                damage: None,
+            },
+        )
+        .expect("replayed");
+        assert_eq!(report.applied, 0);
+        let mut pending = report.deferred;
+        assert_eq!(pending.waiting_on(far), 1);
+
+        // Now let streaming bring the world in, with the index attached.
+        let mut retained = RetainedChunks::new();
+        let mut system = StreamingSystem::new();
+        system
+            .set_interest(observer(ChunkCoord::new(2, 0), 3))
+            .expect("source");
+        for _ in 0..64 {
+            let mut backend =
+                WorldResidency::new(&mut world, &mut retained).recovering(&mut pending);
+            let report = system
+                .tick(&mut backend, StreamingBudget::UNLIMITED)
+                .expect("budget");
+            if report.is_quiet() {
+                break;
+            }
+        }
+
+        assert!(
+            world.chunk(far).is_some(),
+            "the observer's radius has to reach the column for this to test anything"
+        );
+        assert_eq!(pending.applied(), 1, "the waiting edit was never applied");
+        assert!(pending.is_empty());
+        let found = world.get_block(position).expect("resident");
+        assert_eq!(
+            world.block_identifier(found),
+            Some(Identifier::parse("nexora:block/stone").expect("valid")),
+            "the column arrived without the edit that was waiting for it"
+        );
+    }
+
+    /// The index is opt-in, and a backend built without one behaves exactly as
+    /// it did before it existed.
+    #[test]
+    fn residency_without_an_index_neither_recovers_nor_complains() {
+        let mut world = world();
+        let mut retained = RetainedChunks::new();
+        let mut backend = WorldResidency::new(&mut world, &mut retained);
+        assert!(backend.activate(target(0, 0), Lod::Full).is_ok());
     }
 
     fn settle(system: &mut StreamingSystem, world: &mut World, retained: &mut RetainedChunks) {

@@ -867,7 +867,45 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro load cujo conjunto residente difira do que escreveu o
   journal — na prática, streaming dirigir o carregamento inicial.
 - **TARGET STAGE:** Phase 3
-- **STATUS:** OPEN
+- **RESOLUÇÃO (2026-09-14):** exatamente a remediação proposta. O
+  `recovery::apply` agora arquiva por coluna todo registro que só falhou por
+  residência, e o relatório carrega esse índice em `RecoveryReport::deferred`.
+  O `WorldResidency::recovering(&mut pending)` liga o índice ao streaming: toda
+  coluna que entra recebe os seus registros **antes** que qualquer coisa possa
+  lê-la, na ordem em que foram journalados.
+
+  **Por que adiar é seguro, e não uma quebra da regra de ordem.** O `apply`
+  exige ordem de journal porque uma edição antiga escrita por cima de uma nova
+  produz um mundo que nunca existiu. Dois registros que podem se sobrescrever
+  estão na mesma posição, e a mesma posição está na mesma coluna: preservar a
+  ordem *dentro* de cada coluna basta, e entre colunas não há o que preservar.
+  Um teste fixa isso escrevendo duas vezes na mesma posição e exigindo que a
+  segunda vença.
+
+  **Três decisões:**
+
+  1. **O relatório não ficou menos honesto.** Uma edição adiada continua em
+     `skipped` e `is_complete()` continua falso. O índice **acrescenta** a
+     capacidade de terminar o serviço; não troca o aviso por silêncio.
+  2. **Só o que espera por residência é arquivado.** Um bloco que esta sessão
+     não conhece não fica conhecido esperando, então é reportado e não
+     enfileirado — arquivá-lo significaria retentá-lo contra toda coluna que
+     carregasse, para sempre.
+  3. **Uma edição ainda recusada com a coluna residente vira erro**, não
+     descarte. Ela não estava esperando residência, e engolir isso é como um
+     mundo passa a divergir do próprio journal em silêncio.
+
+  Uma coluna que ninguém traz mantém suas edições no índice, sem aplicar —
+  resultado honesto e **contável** (`PendingEdits::len`), não um silêncio.
+
+  De quebra: `nexora_world::recovery` passou a reexportar `Replay` e `Damage`
+  (como `JournalReplay`/`JournalDamage`). Os dois aparecem na assinatura pública
+  de `apply`, e sem a reexportação todo chamador tinha de depender de
+  `nexora-persistence` por um tipo que só vê através desta API.
+- **STATUS:** **CLOSED** — a recuperação deixou de valer só até onde o conjunto
+  residente alcançava. O slice não muda: cada chunk que ele edita já é residente
+  no checkpoint, então ele continua exigindo zero `skipped` e o save segue
+  byte-idêntico. Quem exercita o caminho adiado são os testes e o streaming.
 
 ### DEBT-0025 — O motor não escreve no journal ainda
 
