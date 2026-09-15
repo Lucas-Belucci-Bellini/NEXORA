@@ -18,7 +18,7 @@ use nexora_foundation::ident::Identifier;
 use nexora_foundation::ident::WorldId;
 use nexora_foundation::rng::Rng;
 use nexora_foundation::spatial::WorldPosition;
-use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, SectionCoord};
+use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, RegionShape, SectionCoord};
 use nexora_foundation::time::CalendarConfig;
 use nexora_foundation::time::WorldDuration;
 use nexora_persistence::journal::{self, Journal, SnapshotId};
@@ -41,6 +41,7 @@ use nexora_streaming::lod::Lod;
 use nexora_streaming::system::StreamingSystem;
 use nexora_streaming::target::StreamTarget;
 use nexora_world::persist;
+use nexora_world::region::RegionStore;
 use nexora_world::voxel::{BlockStateId, Section, AIR};
 use nexora_world::world::{World, WorldDescriptor};
 
@@ -559,6 +560,77 @@ pub fn persistence(budget: Budget, scratch: &Path) -> Result<Vec<Measurement>> {
             container.write_atomic(&path).expect("write");
         },
     ));
+
+    // --- region store --------------------------------------------------------
+    // What DEBT-0002 is about: the container above pays for the whole world on
+    // every save. A region store pays for the regions that moved. The benchmark
+    // world is 3x3 columns, grouped two per region so it spans four regions --
+    // at the engine default of 32 a world this size is a single region, and a
+    // measurement there could not tell skipping from writing.
+    {
+        let region_root = scratch.join("benchmark-regions");
+        let _ = std::fs::remove_dir_all(&region_root);
+        let store = RegionStore::with_shape(
+            &region_root,
+            RegionShape::new(2).expect("two columns per region"),
+        );
+        let mut world = populated_world()?;
+        let stone = world.block_id(&Identifier::parse("nexora:block/stone")?)?;
+        let seed = store.write_all(&mut world)?;
+
+        out.push(measure(
+            "save.region_write_all",
+            "Write every region of the world: four region files and the header",
+            Budget {
+                iterations_per_sample: 1,
+                ..budget
+            },
+            || {
+                store.write_all(&mut world).expect("write all");
+            },
+        ));
+
+        // One block, in one region, on every iteration -- otherwise the second
+        // iteration has nothing dirty and measures an empty write.
+        let mut touch = 0i64;
+        out.push(measure(
+            "save.region_write_one_dirty",
+            "Write after a single block edit: one region file and the header",
+            Budget {
+                iterations_per_sample: 1,
+                ..budget
+            },
+            || {
+                touch += 1;
+                world
+                    .set_block(BlockPos::new(-20, 90 + (touch % 8), -20), stone)
+                    .expect("edit");
+                store.write_dirty(&mut world).expect("write dirty");
+            },
+        ));
+
+        // The figure that does not depend on the machine: a count. One edited
+        // block touches one of the four regions, on any box, in any build.
+        world.set_block(BlockPos::new(-20, 99, -20), stone)?;
+        let after_one_edit = store.write_dirty(&mut world)?;
+        out.push(record_quantity(
+            "save.regions_written_per_edit",
+            "Region files rewritten after one block changed, out of four",
+            after_one_edit.written.len() as u64,
+        ));
+        out.push(record_bytes(
+            "save.region_bytes_all",
+            "Bytes across every region file when the whole world is written",
+            seed.bytes,
+        ));
+        out.push(record_bytes(
+            "save.region_bytes_one_dirty",
+            "Bytes written after one block changed",
+            after_one_edit.bytes,
+        ));
+
+        let _ = std::fs::remove_dir_all(&region_root);
+    }
 
     // --- journalling ---------------------------------------------------------
     // `DEBT-0025` will not choose a durability policy without these. The

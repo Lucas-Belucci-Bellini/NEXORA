@@ -384,6 +384,25 @@ impl World {
         self.chunks.get_mut(&coord)
     }
 
+    /// Clear a resident chunk's dirty set after its contents reached storage.
+    ///
+    /// Returns whether the column was resident.
+    ///
+    /// This deliberately does **not** move [`World::revision`], and
+    /// [`World::chunk_mut`] therefore cannot stand in for it. The revision
+    /// answers "could any cell's answer have changed"; writing a chunk out
+    /// changes no cell. Bumping it here would invalidate every body's
+    /// clear-span proof on every save - correct, but a cost paid for nothing.
+    pub fn mark_saved(&mut self, coord: ChunkCoord) -> bool {
+        match self.chunks.get_mut(&coord) {
+            Some(chunk) => {
+                chunk.mark_clean();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Insert an already-built chunk, e.g. one read from a save.
     pub fn insert_chunk(&mut self, chunk: Chunk) {
         self.revision = self.revision.wrapping_add(1);

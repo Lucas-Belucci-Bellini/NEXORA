@@ -201,6 +201,10 @@ jobs:
         run: ./scripts/compare-stacks.sh --smoke
 
       # A second run at a different worker count must produce an identical save.
+      # Both layouts are checked: the single container, and the region store the
+      # same run writes beside it (ADR-0014). A region file is deflated on its
+      # own, so the store is the stricter of the two - nine independent streams
+      # that all have to come out the same.
       - name: Determinism smoke test
         run: |
           ./target/release/nexora-headless --quiet --seed 987654321 --threads 1 \
@@ -208,6 +212,7 @@ jobs:
           ./target/release/nexora-headless --quiet --seed 987654321 --threads 8 \
             --save "${RUNNER_TEMP}/det-b.nxsv"
           cmp "${RUNNER_TEMP}/det-a.nxsv" "${RUNNER_TEMP}/det-b.nxsv"
+          diff -r "${RUNNER_TEMP}/det-a-regions" "${RUNNER_TEMP}/det-b-regions"
 
   docs:
     name: rustdoc

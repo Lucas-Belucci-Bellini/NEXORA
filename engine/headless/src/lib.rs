@@ -34,7 +34,7 @@ use std::sync::Arc;
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, Record, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
-use nexora_foundation::spatial::{BlockPos, ChunkCoord};
+use nexora_foundation::spatial::{BlockPos, ChunkCoord, RegionShape};
 use nexora_foundation::time::{CalendarConfig, TimeScale, WorldDuration, WorldTime};
 use std::path::Path;
 
@@ -54,6 +54,7 @@ use nexora_streaming::budget::StreamingBudget;
 use nexora_streaming::interest::{InterestId, InterestSource, LodRadii};
 use nexora_streaming::system::StreamingSystem;
 use nexora_world::persist;
+use nexora_world::region::RegionStore;
 use nexora_world::voxel::BlockStateId;
 use nexora_world::world::{World, WorldDescriptor};
 
@@ -99,6 +100,14 @@ pub struct SliceReport {
     pub ticks_advanced: u64,
     /// Size of the save file on disk, in bytes.
     pub save_bytes: usize,
+    /// Regions the same world spans in a region store.
+    pub regions_total: usize,
+    /// Region files rewritten after a single block changed.
+    pub regions_rewritten: usize,
+    /// Bytes across every region file when the whole world is written.
+    pub region_bytes_all: u64,
+    /// Bytes written after a single block changed.
+    pub region_bytes_dirty: u64,
     /// Approximate in-memory voxel storage, in bytes.
     pub storage_bytes: usize,
     /// Non-air blocks across resident chunks.
@@ -368,7 +377,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
 
     // --- reopen and verify -------------------------------------------------
     let reopened = SaveContainer::read(&config.save_path)?;
-    let restored = persist::load(&reopened)?;
+    let mut restored = persist::load(&reopened)?;
 
     if restored.clock().now() != saved_time {
         return Err(mismatch("world time did not survive the save")
@@ -399,6 +408,14 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     }
     log(&diagnostics, "reload verified");
 
+    // --- region store --------------------------------------------------------
+    // The same world written the other way round: one file per region instead
+    // of one file for everything, so a save can leave alone what did not move.
+    // Run on the world just read back, which is clean, so "nothing is dirty" is
+    // a fact about the world rather than an arrangement of the stage.
+    let regions = region_stage(&mut restored, config, &probes, &diagnostics)?;
+    log(&diagnostics, "region store verified");
+
     // --- recovery ------------------------------------------------------------
     // Snapshot + Journal -> Recovery, proved against this run's own data: take
     // the pre-edit checkpoint, replay the journal the engine wrote while
@@ -422,6 +439,10 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         blocks_edited,
         ticks_advanced,
         save_bytes,
+        regions_total: regions.total,
+        regions_rewritten: regions.rewritten,
+        region_bytes_all: regions.bytes_all,
+        region_bytes_dirty: regions.bytes_dirty,
         storage_bytes,
         non_air_blocks,
         journal_edits,
@@ -804,6 +825,13 @@ pub fn format_report(report: &SliceReport) -> String {
     out.push_str(&format!("ticks advanced     {}\n", report.ticks_advanced));
     out.push_str(&format!("save size          {} bytes\n", report.save_bytes));
     out.push_str(&format!(
+        "region store       {} regions, {} bytes; one edit rewrote {} for {} bytes\n",
+        report.regions_total,
+        report.region_bytes_all,
+        report.regions_rewritten,
+        report.region_bytes_dirty
+    ));
+    out.push_str(&format!(
         "physics bodies     {} ({} settled)\n",
         report.physics_bodies, report.physics_settled
     ));
@@ -833,6 +861,129 @@ pub fn format_report(report: &SliceReport) -> String {
         report.phases.join(" -> ")
     ));
     out
+}
+
+/// What the region-store stage observed.
+struct RegionOutcome {
+    total: usize,
+    rewritten: usize,
+    bytes_all: u64,
+    bytes_dirty: u64,
+}
+
+/// Write the world a second time as a region store, then change one block and
+/// write again.
+///
+/// This is the claim DEBT-0002 makes, run against the slice's own world rather
+/// than a fixture: a save that knows which regions moved does not pay for the
+/// ones that did not. The stage proves three things together - that the region
+/// layout carries the same world, that a single edit rewrites a single region,
+/// and that a store written incrementally still reads back whole.
+///
+/// The region extent here is **two columns**, not the engine default of 32. At
+/// 32 the slice's 5x5 columns are one region and the stage could not tell
+/// skipping from writing; the mechanism is what is under test, not the default.
+///
+/// # Errors
+///
+/// Returns an error when a write fails, when more than one region is rewritten
+/// for one edit, or when a probe does not hold in the world read back.
+fn region_stage(
+    world: &mut World,
+    config: &SliceConfig,
+    probes: &[Probe],
+    diagnostics: &Diagnostics,
+) -> Result<RegionOutcome> {
+    // Named after the save it mirrors, not just "regions": two slices writing
+    // into one directory - which the determinism check does - must not land in
+    // the same store and delete each other's evidence.
+    let stem = config
+        .save_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("world");
+    let root = config
+        .save_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{stem}-regions"));
+    // A stale store from an earlier run would make "this region has no file"
+    // false for reasons that have nothing to do with this run.
+    let _ = std::fs::remove_dir_all(&root);
+
+    let shape = RegionShape::new(2)?;
+    let store = RegionStore::with_shape(&root, shape);
+
+    let everything = store.write_all(world)?;
+    if !everything.skipped.is_empty() {
+        return Err(
+            mismatch("the first write of a region store skipped a region")
+                .with_context("skipped", everything.skipped.len().to_string()),
+        );
+    }
+
+    // One block, in one region. The probe positions are the ones the save/load
+    // boundary already guards, so the edit goes somewhere else on purpose.
+    let marker = probes.first().map_or_else(
+        || BlockPos::new(0, 80, 0),
+        |p| BlockPos::new(p.position.x, p.position.y + 1, p.position.z),
+    );
+    let stone = world.block_id(&Identifier::parse("nexora:block/stone")?)?;
+    world.set_block(marker, stone)?;
+
+    let after_edit = store.write_dirty(world)?;
+    if after_edit.written.len() != 1 {
+        return Err(
+            mismatch("one block changed and more than one region was rewritten")
+                .with_context("written", after_edit.written.len().to_string())
+                .with_context("regions", everything.written.len().to_string()),
+        );
+    }
+    if after_edit.regions() != everything.regions() {
+        return Err(
+            mismatch("the world stopped spanning the regions it spanned")
+                .with_context("before", everything.regions().to_string())
+                .with_context("after", after_edit.regions().to_string()),
+        );
+    }
+
+    // A store half of which was written a save ago still reads back whole.
+    let reopened = store.read()?;
+    for probe in probes {
+        let found = reopened.get_block(probe.position)?;
+        let found_id = reopened.block_identifier(found).ok_or_else(|| {
+            mismatch("a region-stored block state has no registered identifier")
+                .with_context("position", describe(probe.position))
+        })?;
+        if found_id != probe.expected {
+            return Err(mismatch("a block changed across the region-store boundary")
+                .with_context("position", describe(probe.position))
+                .with_context("expected", probe.expected.to_string())
+                .with_context("found", found_id.to_string()));
+        }
+    }
+    if reopened.get_block(marker)? != stone {
+        return Err(
+            mismatch("the edit that dirtied a region did not survive it")
+                .with_context("position", describe(marker)),
+        );
+    }
+    if reopened.chunk_count() != world.chunk_count() {
+        return Err(mismatch("the region store lost or gained a column")
+            .with_context("expected", world.chunk_count().to_string())
+            .with_context("found", reopened.chunk_count().to_string()));
+    }
+
+    diagnostics
+        .counters()
+        .add("region.written", after_edit.written.len() as u64);
+
+    Ok(RegionOutcome {
+        total: everything.regions(),
+        rewritten: after_edit.written.len(),
+        bytes_all: everything.bytes,
+        bytes_dirty: after_edit.bytes,
+    })
 }
 
 /// What the streaming stage observed.

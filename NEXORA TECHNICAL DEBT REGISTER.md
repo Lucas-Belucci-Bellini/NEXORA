@@ -92,7 +92,40 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **RISK:** Alto a partir de mundos grandes; irrelevante na escala da Phase 0.
 - **PROPOSED REMEDIATION:** Region files com escrita apenas dos chunks sujos.
 - **TARGET STAGE:** Phase 2 (Voxel Vertical Slice)
-- **STATUS:** OPEN
+- **RESOLUÇÃO PARCIAL (2026-09-15):** existe agora um
+  `nexora_world::region::RegionStore` — um diretório com **um arquivo por
+  região**, cada um um `SaveContainer` comum. Decisões em
+  [ADR-0014](docs/adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md).
+
+  **Salvar depois de um bloco mudar: 12,8–13,2 ms → 2,9 ms, e 40,8 KiB →
+  4,7 KiB.** Cerca de 4,5× menos tempo e 8,7× menos bytes, no mundo de
+  benchmark agrupado a duas colunas por região. A região limpa não é
+  codificada, não é deflacionada, não é escrita e não é relida — o arquivo dela
+  não é aberto.
+
+  **O número que não depende da máquina é uma contagem:**
+  `save.regions_written_per_edit` é **1** de 4, em qualquer caixa e em qualquer
+  build. É também a confirmação independente de que a sujeira por seção — que
+  já era rastreada e nunca tinha sido lida na hora de salvar — agora é lida.
+
+  **O preço, medido e não escondido: a escrita completa custa 13–17% a mais** e
+  o total cresce 2,2%. Cinco arquivos em vez de um são cinco molduras, cinco
+  `fsync`, cinco releituras de verificação e cinco fluxos deflate que não
+  compartilham dicionário; a paleta também é escrita uma vez por região. A
+  escrita completa é exatamente o caso para o qual este arranjo **não** é.
+
+  **Dividir a seção dentro do mesmo contêiner não resolveria nada hoje** — o
+  contêiner codifica como uma unidade, então toda seção deflaciona a cada
+  `encode` e o arquivo inteiro é escrito e verificado. O custo segue o arquivo,
+  então as regiões precisavam ser arquivos.
+- **STATUS:** OPEN (reduzido) — o mecanismo existe e está medido, mas
+  **nada no motor ainda salva por ele**: o slice escreve o contêiner único e o
+  `RegionStore` roda ao lado como verificação. Fechar exige escolher o
+  `RegionStore` como o formato de save do runtime, o que por sua vez espera o
+  `DEBT-0020` (a coluna despejada ir para o arquivo de região em vez do
+  `BTreeMap` em memória). No extent padrão de 32 colunas, todo mundo deste
+  repositório cabe numa região só — a economia é real a partir da escala em que
+  um mundo passa de uma região, e não antes.
 
 ### DEBT-0003 — Sem compressão de chunk
 
@@ -112,7 +145,12 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   amanhã — e resolver no contêiner faz isso uma vez em vez de cada produtor
   decidir por si. O `world::persist` não mudou uma linha.
 
-  **O save do slice: 744.954 → 117.908 bytes, 6,3× menor.** O codec é o mesmo do
+  **O save do slice: 744.954 → 116.904 bytes, 6,4× menor.** *(Corrigido em
+  2026-09-15: a publicação original emparelhava 744.954, que é o slice na seed
+  padrão, com 117.908, que é o slice do smoke de determinismo na seed
+  987654321 — dois mundos diferentes. Ambos os números estavam certos; o par
+  não estava. Na seed padrão, o antes e o depois são 744.954 e 116.904.)* O
+  codec é o mesmo do
   DEBT-0034 (1,02× do zlib), que estava em `tools/texture-forge` onde só o PNG o
   alcançava; foi promovido para `nexora_foundation::deflate`. **Zero arestas
   novas no grafo de crates** — persistência e texture-forge já dependiam de
@@ -805,6 +843,12 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** retenção passar de ~1.000 colunas, ou o primeiro servidor
   dedicado.
 - **TARGET STAGE:** Phase 3 (Persistence + Simulation)
+- **NOTA (2026-09-15):** o destino já existe. `RegionStore::read_region` lê uma
+  região sozinha — o arquivo carrega a própria paleta justamente para isso
+  (ADR-0014) — e `write_dirty` escreve só as regiões que mudaram. O que falta é
+  o lado do `residency`: `persist` escrever a coluna despejada na região e
+  `activate` lê-la de volta, em vez do `BTreeMap`. O bloqueio deixou de ser
+  "não há para onde escrever".
 - **STATUS:** OPEN (medido)
 
 ### DEBT-0021 — Command System parou em CMD-4; CMD-5 a CMD-15 não existem

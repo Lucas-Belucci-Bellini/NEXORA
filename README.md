@@ -38,7 +38,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 469 tests
+cargo test --workspace          # 953 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -53,7 +53,8 @@ world id           0x368cfbaaa04ab32c
 chunks generated   25
 non-air blocks     50818052
 voxel storage      722304 bytes
-save size          744954 bytes
+save size          116904 bytes
+region store       9 regions, 119482 bytes; one edit rewrote 1 for 18718 bytes
 physics bodies     9 (9 settled)
 physics substeps   600 (270 contacts)
 character drop     1010 cm
@@ -67,6 +68,11 @@ Fifty million blocks held in 722 KB is the palette and uniform-section storage
 doing its job: solid rock costs nothing to hold. The observer walks away from
 the edited region and back before the save, so those 76 verified probes are also
 proof that streaming evicted 120 columns without losing an edit.
+
+The region-store line is the same world written the other way round, one file
+per region ([ADR-0014](docs/adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md)):
+changing one block afterwards rewrote one of the nine files instead of all of
+them.
 
 ```bash
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path

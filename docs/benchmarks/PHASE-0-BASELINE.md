@@ -645,7 +645,13 @@ spread between builds, not only within one.
 
 ### 10h. The save stops writing packed words raw (2026-09-14)
 
-**744,954 → 117,908 bytes for the slice's world: 6.3×.** `DEBT-0003` had the
+**744,954 → 116,904 bytes for the slice's world: 6.4×.** *(Corrected on
+2026-09-15. The figure first published here paired 744,954, which is the slice
+at its default seed, with 117,908, which is the determinism smoke's slice at
+seed 987654321. Both numbers were right and the pair was not. At the default
+seed the before and after are 744,954 and 116,904; at seed 987654321 the after
+is 117,908. The ratio survives either way, which is why it went unnoticed.)*
+`DEBT-0003` had the
 container writing every section exactly as handed to it, which for the chunk
 section means the palette-packed words with no further coding.
 
@@ -659,7 +665,7 @@ move, checked by hash rather than by argument.
 | | bytes |
 | --- | ---: |
 | slice save, format 1 (raw sections) | 744,954 |
-| slice save, format 2 (coded sections) | **117,908** |
+| slice save, format 2 (coded sections) | **116,904** |
 
 **Compression is kept only when it wins.** High-entropy bytes deflate to
 slightly more than they started with; writing that would make the format worse
@@ -679,6 +685,57 @@ comment already explains why the name is inside it: a flipped bit in an
 unchecksummed field does not look like damage, it looks like a different and
 wrong instruction. A coding byte that flips turns a deflate stream into a raw
 payload. Coding and length are inside `frame_crc` now, with a test for each.
+
+### 10i. A region store pays for the regions that moved (2026-09-15)
+
+**A save after one block changed: 12.8–13.2 ms → 2.9 ms, and 40.8 KiB →
+4.7 KiB.** `DEBT-0002` had every save rewriting the whole world however little
+of it moved — encode every column, deflate every byte, write the file, then read
+it back and decode it to verify (ADR-0004's guarantee, priced as `DEBT-0006`).
+
+`nexora_world::region::RegionStore` writes the same world as a directory, one
+`SaveContainer` per region. Decisions in
+[ADR-0014](../adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md).
+
+| benchmark world, 3×3 columns | one container | region store |
+| --- | ---: | ---: |
+| save after one block changed | 12.76 / 13.16 ms | **2.91 / 2.87 ms** |
+| bytes written for that save | 40.8 KiB | **4.7 KiB** |
+| save of the whole world | 12.76 / 13.16 ms | 14.95 / 14.91 ms |
+| bytes for the whole world | 40.8 KiB | 41.7 KiB |
+
+Two runs of each, and **`save.write_atomic_disk` is the control**: 13.19 ms
+before the change, 12.76 and 13.16 ms after. It did not move, which is what
+makes the rest attributable — nothing here touches the container path.
+
+**The figure that does not depend on the machine is a count.**
+`save.regions_written_per_edit` is **1** of 4, on any box and in any build. It
+is also the independent confirmation that per-section dirty tracking, which the
+chunk lifecycle has recorded since it was built and no save had ever read, is
+now read.
+
+**Two columns per region, not the default 32.** At the engine default a 3×3
+world is one region and the measurement could not tell skipping from writing.
+The extent is a parameter of the store, and the mechanism is what is under test.
+
+**The price, measured rather than omitted: a full write costs 13–17% more**, and
+the total grows 2.2%. Five files instead of one is five sets of framing, five
+`fsync`s, five read-back verifications, and five deflate streams that cannot
+share a dictionary; the palette is also written once per region, deliberately,
+so that a region file can be read with nothing else present. A full write is the
+case this arrangement is not for.
+
+**Splitting the section inside the same container would have bought nothing.**
+The container encodes as a unit: every section deflates on every `encode`, and
+the whole file is written and verified. The cost follows the file, so the
+regions had to be files — and the alternative would have been a structure whose
+benefit arrives in some later change.
+
+**What this does not do yet.** Nothing in the engine saves through it. The slice
+writes the single container and runs the store beside it as verification, which
+is where the nine-region line in its report comes from. `DEBT-0002` is reduced,
+not closed, and closing it waits on `DEBT-0020` — the evicted column going to
+its region file instead of to a `BTreeMap` in memory.
 
 ### 11. Sleeping is worth about 180×, and it actually engages
 
