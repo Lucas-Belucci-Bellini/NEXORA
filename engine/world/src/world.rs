@@ -182,6 +182,15 @@ pub struct World {
     /// will be forgotten. Every path that changes a block goes through
     /// [`World::set_block`], so every path is journalled.
     journal: Option<Journal>,
+    /// Bumped by everything that can change what a cell answers.
+    ///
+    /// Physics caches "this box is not inside terrain" and needs to know when
+    /// that could have stopped being true (`DEBT-0012`). The counter is
+    /// deliberately coarse and deliberately eager: a bump that changed nothing
+    /// costs one skipped optimisation, and a change without a bump costs a body
+    /// standing inside a block. So `chunk_mut` bumps on handing out the borrow
+    /// rather than on a write it cannot observe.
+    revision: u64,
 }
 
 impl World {
@@ -219,6 +228,7 @@ impl World {
             clock: WorldClock::new(calendar),
             blocks,
             chunks: BTreeMap::new(),
+            revision: 0,
             phase: WorldPhase::Requested,
             journal: None,
         })
@@ -334,6 +344,14 @@ impl World {
             .map(|entry| entry.id().clone())
     }
 
+    /// A counter that moves whenever any cell's answer could have changed.
+    ///
+    /// Monotonic within one `World`, and meaningless across two.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Chunk columns currently resident.
     #[must_use]
     pub fn loaded_chunks(&self) -> Vec<ChunkCoord> {
@@ -360,11 +378,34 @@ impl World {
 
     /// Mutably borrow a resident chunk.
     pub fn chunk_mut(&mut self, coord: ChunkCoord) -> Option<&mut Chunk> {
+        // Handing out the borrow is the last point at which this can be
+        // counted: what the caller does with it is not observable from here.
+        self.revision = self.revision.wrapping_add(1);
         self.chunks.get_mut(&coord)
+    }
+
+    /// Clear a resident chunk's dirty set after its contents reached storage.
+    ///
+    /// Returns whether the column was resident.
+    ///
+    /// This deliberately does **not** move [`World::revision`], and
+    /// [`World::chunk_mut`] therefore cannot stand in for it. The revision
+    /// answers "could any cell's answer have changed"; writing a chunk out
+    /// changes no cell. Bumping it here would invalidate every body's
+    /// clear-span proof on every save - correct, but a cost paid for nothing.
+    pub fn mark_saved(&mut self, coord: ChunkCoord) -> bool {
+        match self.chunks.get_mut(&coord) {
+            Some(chunk) => {
+                chunk.mark_clean();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Insert an already-built chunk, e.g. one read from a save.
     pub fn insert_chunk(&mut self, chunk: Chunk) {
+        self.revision = self.revision.wrapping_add(1);
         self.chunks.insert(chunk.coord(), chunk);
     }
 
@@ -376,6 +417,8 @@ impl World {
     pub fn load_or_generate(&mut self, coord: ChunkCoord) -> Result<&Chunk> {
         if !self.chunks.contains_key(&coord) {
             let chunk = self.generate_chunk(coord)?;
+            // Cells that answered "not resident, so solid" now answer terrain.
+            self.revision = self.revision.wrapping_add(1);
             self.chunks.insert(coord, chunk);
         }
         self.chunks.get(&coord).ok_or_else(|| {
@@ -393,6 +436,8 @@ impl World {
     /// Returns the chunk so the caller can persist it; dropping it here would
     /// discard unsaved edits silently.
     pub fn unload_chunk(&mut self, coord: ChunkCoord) -> Option<Chunk> {
+        // The other direction of the same change: terrain becomes a refusal.
+        self.revision = self.revision.wrapping_add(1);
         self.chunks.remove(&coord)
     }
 
@@ -437,6 +482,7 @@ impl World {
         }
 
         let now = self.clock.now();
+        self.revision = self.revision.wrapping_add(1);
         let coord = self.descriptor.shape.section_of(position).column();
         let chunk = self.chunks.get_mut(&coord).ok_or_else(|| {
             Error::new(Domain::World, "world", "chunk is not resident")

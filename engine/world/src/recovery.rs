@@ -24,11 +24,18 @@
 //! unfortunately similar names, and conflating them would mean trusting a lossy
 //! debug aid to reconstruct a world.
 
+use std::collections::BTreeMap;
+
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
-use nexora_foundation::spatial::BlockPos;
+use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape};
 use nexora_persistence::codec::{Reader, Writer};
 use nexora_persistence::journal::{Damage, Replay};
+
+// Both appear in this module's public signatures, so a caller has to be able to
+// name them. Re-exported rather than left for every caller to reach into
+// `nexora-persistence` for a type it only sees through this API.
+pub use nexora_persistence::journal::{Damage as JournalDamage, Replay as JournalReplay};
 
 use crate::world::World;
 
@@ -50,6 +57,22 @@ pub enum EditRecord {
 
 /// Tag byte for [`EditRecord::SetBlock`].
 const TAG_SET_BLOCK: u8 = 1;
+
+impl EditRecord {
+    /// The column this edit writes into.
+    ///
+    /// Every edit that names a position names exactly one column, and that is
+    /// what makes deferring safe: two records at the same position are
+    /// necessarily in the same column, so keeping each column's records in
+    /// journal order keeps the final state right, whatever order the columns
+    /// arrive in. See [`PendingEdits`].
+    #[must_use]
+    pub fn column(&self, shape: ChunkShape) -> ChunkCoord {
+        match self {
+            Self::SetBlock { position, .. } => shape.section_of(*position).column(),
+        }
+    }
+}
 
 impl EditRecord {
     /// Encode this edit into journal record bytes.
@@ -113,6 +136,105 @@ pub struct RecoveryReport {
     pub skipped: Vec<SkippedEdit>,
     /// What the journal read reported, if anything was wrong with the file.
     pub damage: Option<Damage>,
+    /// The skipped edits that are only waiting for their column, indexed by it.
+    ///
+    /// These also appear in `skipped` — the report still says what did not make
+    /// it into the world. What this adds is the ability to finish the job:
+    /// hand it to the thing that brings columns in and each edit is applied the
+    /// moment its column arrives. `DEBT-0024`.
+    pub deferred: PendingEdits,
+}
+
+/// Edits a replay could not apply because their column was not resident,
+/// indexed so they can be applied when it becomes so.
+///
+/// **Why this can be deferred at all.** `apply` insists on journal order,
+/// because an earlier edit written over a later one produces a world that never
+/// existed. Deferring looks like it breaks that, and does not: two records that
+/// can overwrite each other are at the same position, and the same position is
+/// in the same column. Order is preserved *within* each column, and between
+/// columns there is nothing to preserve.
+///
+/// **What it does not do.** A column nobody ever brings in keeps its edits
+/// here, unapplied. That is the honest outcome and it is countable —
+/// [`PendingEdits::len`] — rather than a silence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PendingEdits {
+    by_column: BTreeMap<ChunkCoord, Vec<EditRecord>>,
+    applied: usize,
+}
+
+impl PendingEdits {
+    /// How many edits are still waiting.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_column.values().map(Vec::len).sum()
+    }
+
+    /// Whether nothing is waiting.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_column.is_empty()
+    }
+
+    /// How many deferred edits have been applied through this index so far.
+    #[must_use]
+    pub const fn applied(&self) -> usize {
+        self.applied
+    }
+
+    /// The columns something is waiting on, in a stable order.
+    pub fn columns(&self) -> impl Iterator<Item = ChunkCoord> + '_ {
+        self.by_column.keys().copied()
+    }
+
+    /// Whether anything is waiting on one column.
+    #[must_use]
+    pub fn waiting_on(&self, column: ChunkCoord) -> usize {
+        self.by_column.get(&column).map_or(0, Vec::len)
+    }
+
+    fn push(&mut self, column: ChunkCoord, record: EditRecord) {
+        self.by_column.entry(column).or_default().push(record);
+    }
+
+    /// Apply everything waiting on one column, in the order it was journalled.
+    ///
+    /// The column is cleared whether or not every edit lands: an edit that
+    /// still cannot be applied with the column resident is not waiting on
+    /// residency, and keeping it here would mean retrying it forever. Those
+    /// come back in the returned report instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the world itself cannot be queried.
+    pub fn apply_column(
+        &mut self,
+        world: &mut World,
+        column: ChunkCoord,
+    ) -> Result<ColumnRecovery> {
+        let Some(records) = self.by_column.remove(&column) else {
+            return Ok(ColumnRecovery::default());
+        };
+        let mut recovery = ColumnRecovery::default();
+        for record in records {
+            match apply_one(world, &record) {
+                Ok(()) => recovery.applied += 1,
+                Err(reason) => recovery.refused.push(reason),
+            }
+        }
+        self.applied += recovery.applied;
+        Ok(recovery)
+    }
+}
+
+/// What applying one column's deferred edits achieved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ColumnRecovery {
+    /// Edits that landed.
+    pub applied: usize,
+    /// Edits that still could not be applied, with the column resident.
+    pub refused: Vec<SkipReason>,
 }
 
 impl RecoveryReport {
@@ -160,8 +282,10 @@ pub enum SkipReason {
 /// cannot be applied is reported in [`RecoveryReport::skipped`], because losing
 /// one edit must not cost the rest of the journal.
 pub fn apply(world: &mut World, replay: &Replay) -> Result<RecoveryReport> {
+    let shape = world.descriptor().shape;
     let mut applied = 0usize;
     let mut skipped = Vec::new();
+    let mut deferred = PendingEdits::default();
 
     for (index, bytes) in replay.records.iter().enumerate() {
         let Ok(record) = EditRecord::decode(bytes) else {
@@ -172,23 +296,17 @@ pub fn apply(world: &mut World, replay: &Replay) -> Result<RecoveryReport> {
             continue;
         };
 
-        match record {
-            EditRecord::SetBlock { position, block } => {
-                let Ok(state) = world.block_id(&block) else {
-                    skipped.push(SkippedEdit {
-                        index,
-                        reason: SkipReason::UnknownBlock(block),
-                    });
-                    continue;
-                };
-                if world.set_block(position, state).is_err() {
-                    skipped.push(SkippedEdit {
-                        index,
-                        reason: SkipReason::NotWritable(position),
-                    });
-                    continue;
+        match apply_one(world, &record) {
+            Ok(()) => applied += 1,
+            Err(reason) => {
+                // A refusal that residency can undo is filed against the column
+                // it is waiting for, as well as reported. Anything else — a
+                // block this session does not know — will not improve by
+                // waiting, so it is only reported. `DEBT-0024`.
+                if matches!(reason, SkipReason::NotWritable(_)) {
+                    deferred.push(record.column(shape), record);
                 }
-                applied += 1;
+                skipped.push(SkippedEdit { index, reason });
             }
         }
     }
@@ -197,7 +315,23 @@ pub fn apply(world: &mut World, replay: &Replay) -> Result<RecoveryReport> {
         applied,
         skipped,
         damage: replay.damage,
+        deferred,
     })
+}
+
+/// Apply one decoded record, or say why it could not be.
+fn apply_one(world: &mut World, record: &EditRecord) -> core::result::Result<(), SkipReason> {
+    match record {
+        EditRecord::SetBlock { position, block } => {
+            let Ok(state) = world.block_id(block) else {
+                return Err(SkipReason::UnknownBlock(block.clone()));
+            };
+            world
+                .set_block(*position, state)
+                .map(|_| ())
+                .map_err(|_| SkipReason::NotWritable(*position))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -222,8 +356,146 @@ mod tests {
         Identifier::parse("nexora:block/stone").expect("valid")
     }
 
+    fn air() -> Identifier {
+        Identifier::parse("nexora:block/air").expect("valid")
+    }
+
     fn replay_of(records: Vec<Vec<u8>>, damage: Option<Damage>) -> Replay {
         Replay { records, damage }
+    }
+
+    /// `DEBT-0024`. An edit whose column is not resident is not lost and is not
+    /// silently dropped: it is filed against the column it needs, and applied
+    /// the moment that column arrives.
+    #[test]
+    fn an_edit_waiting_on_a_column_is_applied_when_the_column_arrives() {
+        let mut world = world();
+        let away = ChunkCoord::new(9, 9);
+        let position = world
+            .descriptor()
+            .shape
+            .section_origin(nexora_foundation::spatial::SectionCoord::new(9, 2, 9))
+            .expect("in range");
+        assert!(
+            world.chunk(away).is_none(),
+            "the fixture must start without the column this edit needs"
+        );
+
+        let record = EditRecord::SetBlock {
+            position,
+            block: stone(),
+        };
+        let report = apply(&mut world, &replay_of(vec![record.encode()], None)).expect("replayed");
+
+        // Reported as before: nothing about the honesty of the report changed.
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert!(matches!(
+            report.skipped[0].reason,
+            SkipReason::NotWritable(_)
+        ));
+        // And now also recoverable.
+        let mut deferred = report.deferred;
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred.waiting_on(away), 1);
+        assert_eq!(deferred.columns().collect::<Vec<_>>(), vec![away]);
+
+        world.load_or_generate(away).expect("column arrives");
+        let recovered = deferred.apply_column(&mut world, away).expect("applied");
+        assert_eq!(recovered.applied, 1);
+        assert!(recovered.refused.is_empty());
+        assert!(deferred.is_empty());
+        assert_eq!(deferred.applied(), 1);
+
+        let found = world.get_block(position).expect("resident now");
+        assert_eq!(
+            world.block_identifier(found),
+            Some(stone()),
+            "the deferred edit did not land"
+        );
+    }
+
+    /// The order rule `apply` states has to survive being deferred. Two writes
+    /// to one position can only be in one column, so keeping each column in
+    /// journal order is enough — and this is the case that proves it: the last
+    /// write must win, not the first.
+    #[test]
+    fn a_deferred_column_keeps_its_records_in_journal_order() {
+        let mut world = world();
+        let away = ChunkCoord::new(-3, 5);
+        let position = world
+            .descriptor()
+            .shape
+            .section_origin(nexora_foundation::spatial::SectionCoord::new(-3, 2, 5))
+            .expect("in range");
+
+        let first = EditRecord::SetBlock {
+            position,
+            block: stone(),
+        };
+        let last = EditRecord::SetBlock {
+            position,
+            block: air(),
+        };
+        let report = apply(
+            &mut world,
+            &replay_of(vec![first.encode(), last.encode()], None),
+        )
+        .expect("replayed");
+        let mut deferred = report.deferred;
+        assert_eq!(deferred.waiting_on(away), 2);
+
+        world.load_or_generate(away).expect("column arrives");
+        assert_eq!(
+            deferred
+                .apply_column(&mut world, away)
+                .expect("applied")
+                .applied,
+            2
+        );
+
+        let found = world.get_block(position).expect("resident now");
+        assert_eq!(
+            world.block_identifier(found),
+            Some(air()),
+            "the second write must have landed over the first"
+        );
+    }
+
+    /// A block this session does not know will not become known by waiting, so
+    /// it is reported and not filed. Filing it would mean retrying it against
+    /// every column that ever loads.
+    #[test]
+    fn an_unknown_block_is_not_deferred_because_waiting_cannot_help() {
+        let mut world = world();
+        let record = EditRecord::SetBlock {
+            position: BlockPos::new(1, 2, 3),
+            block: Identifier::parse("nexora:block/not-a-real-block").expect("valid"),
+        };
+        let report = apply(&mut world, &replay_of(vec![record.encode()], None)).expect("replayed");
+
+        assert_eq!(report.skipped.len(), 1);
+        assert!(matches!(
+            report.skipped[0].reason,
+            SkipReason::UnknownBlock(_)
+        ));
+        assert!(
+            report.deferred.is_empty(),
+            "an unknown block is not waiting on residency"
+        );
+    }
+
+    /// Asking for a column nothing is waiting on is not an error, because the
+    /// caller is residency and it does not know which columns are interesting.
+    #[test]
+    fn a_column_with_nothing_waiting_recovers_nothing_and_says_so() {
+        let mut world = world();
+        let mut deferred = PendingEdits::default();
+        let recovered = deferred
+            .apply_column(&mut world, ChunkCoord::new(0, 0))
+            .expect("no error");
+        assert_eq!(recovered, ColumnRecovery::default());
+        assert_eq!(deferred.applied(), 0);
     }
 
     #[test]

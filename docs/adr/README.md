@@ -22,3 +22,5 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0010](ADR-0010-commands-are-intent-and-carry-their-own-authority.md) | Commands are intent, and the crate graph enforces the boundary | ACCEPTED |
 | [0011](ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md) | A torn tail is a crash; corruption is not, and each has its own answer | ACCEPTED |
 | [0012](ADR-0012-a-mesh-is-a-data-structure-not-a-picture.md) | A mesh is a data structure, not a picture | ACCEPTED |
+| [0013](ADR-0013-recovery-finishes-when-a-column-arrives.md) | Recovery is not a moment; it finishes when a column arrives | ACCEPTED |
+| [0014](ADR-0014-a-region-file-is-authoritative-for-its-region.md) | A region file is authoritative for its region; the resident set is not a delete list | ACCEPTED |

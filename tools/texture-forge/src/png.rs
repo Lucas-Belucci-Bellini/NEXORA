@@ -12,7 +12,7 @@
 //! The first version wrote **stored** deflate blocks: legal, read by every
 //! decoder, and compressing nothing. That was deliberate — correctness first,
 //! then a measurement to decide whether a compressor was worth writing. The
-//! measurement said 12.11x, so [`crate::deflate`] exists and this module now
+//! measurement said 12.11x, so [`nexora_foundation::deflate`] exists and this module now
 //! uses it. Nothing that calls the encoder changed, which was the point of
 //! putting the seam here.
 //!
@@ -232,7 +232,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded> {
     if (u32::from(idat[0]) * 256 + u32::from(idat[1])) % 31 != 0 {
         return Err(malformed("the zlib header fails its own check value"));
     }
-    let raw = crate::deflate::inflate(&idat[2..idat.len() - 4])?;
+    let raw = nexora_foundation::deflate::inflate(&idat[2..idat.len() - 4])?;
     let stated = u32::from_be_bytes(idat[idat.len() - 4..].try_into().expect("four bytes"));
     if stated != adler32(&raw) {
         return Err(
@@ -302,7 +302,7 @@ fn malformed(message: &'static str) -> Error {
 
 /// Wrap a deflate stream in the zlib framing `IDAT` requires.
 fn zlib(data: &[u8]) -> Vec<u8> {
-    let compressed = crate::deflate::deflate(data);
+    let compressed = nexora_foundation::deflate::deflate(data);
     let mut out = Vec::with_capacity(compressed.len() + 6);
     out.extend_from_slice(&ZLIB_HEADER);
     out.extend_from_slice(&compressed);
@@ -423,8 +423,8 @@ fn unsupported(message: &'static str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deflate::inflate;
     use nexora_asset::texture::{MapRole, Resolution, TextureFormat};
+    use nexora_foundation::deflate::inflate;
 
     /// Undo PNG's per-scanline filtering, so a test can compare pixels.
     fn unfilter(raw: &[u8], width: usize, channels: usize) -> Vec<u8> {

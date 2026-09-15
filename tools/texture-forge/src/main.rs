@@ -10,12 +10,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use nexora_asset::document;
+use nexora_asset::generator::Backend;
 use nexora_asset::texture::MapRole;
 use nexora_asset::validation::Verdict;
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
-use nexora_texture_forge::forge::Forge;
+use nexora_texture_forge::forge::{Forge, Outcome, WriteStatus};
 use nexora_texture_forge::layout;
+use nexora_texture_forge::manifest;
 
 /// Where materials are written when `--out` is not given.
 const DEFAULT_ROOT: &str = "assets/materials";
@@ -47,14 +49,23 @@ fn usage() -> String {
      \n\
      commands:\n\
      \x20 generate <definition.json>   realise a material and write it\n\
+     \x20 batch    <manifest.json>     realise every material a manifest declares\n\
+     \x20 variant  <definition.json>    another material like one already written\n\
+     \x20 repair   <material-id>        restore maps that are lost or corrupt\n\
      \x20 validate <material-id>       check what is on disk for a material\n\
      \x20 inspect  <material-id>       print a material's definition and origin\n\
      \x20 list                         every material written under the root\n\
      \n\
      options:\n\
      \x20 --out <dir>     where materials live (default: assets/materials)\n\
-     \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0)\n\
+     \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0;\n\
+     \x20                 `batch` takes the manifest's seed instead)\n\
      \x20 --force         replace a material that is already written\n\
+     \x20 --of <material-id>  the material a variant is varied from (required)\n\
+     \x20 --index <n>     which variant, counted from one (default: 1)\n\
+     \x20 --no-preview    skip the lit preview image\n\
+     \x20 --backend <name>  procedural | ai | hybrid (default: procedural;\n\
+     \x20                   the other two have no backend installed yet)\n\
      \x20 --help          show this message\n\
      \n\
      exit codes:\n\
@@ -65,9 +76,26 @@ fn usage() -> String {
 }
 
 enum Command {
+    Variant {
+        definition: PathBuf,
+        of: Identifier,
+        index: u32,
+        setup: Setup,
+        seed: u64,
+        force: bool,
+    },
+    Repair {
+        id: Identifier,
+        setup: Setup,
+    },
+    Batch {
+        manifest: PathBuf,
+        setup: Setup,
+        force: bool,
+    },
     Generate {
         definition: PathBuf,
-        root: PathBuf,
+        setup: Setup,
         seed: u64,
         force: bool,
     },
@@ -99,6 +127,10 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     let mut root = PathBuf::from(DEFAULT_ROOT);
     let mut seed = 0u64;
     let mut force = false;
+    let mut of: Option<String> = None;
+    let mut index = 1u32;
+    let mut preview = true;
+    let mut backend = Backend::Procedural;
 
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -116,6 +148,36 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
                 seed = parse_seed(&raw)?;
             }
             "--force" => force = true,
+            "--no-preview" => preview = false,
+            "--backend" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| "--backend needs a name".to_owned())?;
+                backend = Backend::parse(&raw).map_err(|_| {
+                    format!(
+                        "`{raw}` is not a backend; use {}",
+                        Backend::ALL
+                            .iter()
+                            .map(|each| each.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            }
+            "--of" => {
+                of = Some(
+                    args.next()
+                        .ok_or_else(|| "--of needs a material id".to_owned())?,
+                );
+            }
+            "--index" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| "--index needs a number".to_owned())?;
+                index = raw
+                    .parse()
+                    .map_err(|_| format!("`{raw}` is not a variant index"))?;
+            }
             other if other.starts_with('-') => {
                 return Err(format!("unknown option `{other}`"));
             }
@@ -127,6 +189,12 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
         }
     }
 
+    let setup = Setup {
+        root: root.clone(),
+        preview,
+        backend,
+    };
+
     let needed = |what: &str| -> std::result::Result<String, String> {
         positional
             .clone()
@@ -134,9 +202,26 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     };
 
     match verb.as_str() {
+        "variant" => Ok(Some(Command::Variant {
+            definition: PathBuf::from(needed("a definition file")?),
+            of: identifier(&of.ok_or_else(|| "`variant` needs --of <material-id>".to_owned())?)?,
+            index,
+            setup: setup.clone(),
+            seed,
+            force,
+        })),
+        "repair" => Ok(Some(Command::Repair {
+            id: identifier(&needed("a material id")?)?,
+            setup,
+        })),
+        "batch" => Ok(Some(Command::Batch {
+            manifest: PathBuf::from(needed("a manifest file")?),
+            setup,
+            force,
+        })),
         "generate" => Ok(Some(Command::Generate {
             definition: PathBuf::from(needed("a definition file")?),
-            root,
+            setup,
             seed,
             force,
         })),
@@ -172,33 +257,107 @@ fn identifier(raw: &str) -> std::result::Result<Identifier, String> {
 
 fn run(command: Command) -> Result<ExitCode> {
     match command {
-        Command::Generate {
+        Command::Variant {
             definition,
-            root,
+            of,
+            index,
+            setup,
             seed,
             force,
-        } => generate(&definition, root, seed, force),
+        } => variant(&definition, &of, index, setup, seed, force),
+        Command::Repair { id, setup } => repair(&id, setup),
+        Command::Batch {
+            manifest,
+            setup,
+            force,
+        } => batch(&manifest, setup, force),
+        Command::Generate {
+            definition,
+            setup,
+            seed,
+            force,
+        } => generate(&definition, setup, seed, force),
         Command::Validate { id, root } => validate(&id, root),
         Command::Inspect { id, root } => inspect(&id, root),
         Command::List { root } => list(root),
     }
 }
 
-fn generate(path: &PathBuf, root: PathBuf, seed: u64, force: bool) -> Result<ExitCode> {
-    let text = std::fs::read_to_string(path).map_err(|cause| {
-        nexora_foundation::error::Error::new(
-            nexora_foundation::error::Domain::Content,
-            "texture-forge",
-            "the definition could not be read",
-        )
-        .with_context("path", path.display().to_string())
-        .with_context("cause", cause.to_string())
-    })?;
-    let definition = document::from_text(&text)?;
+/// How to build the forge, gathered because these three always travel
+/// together: where materials live, whether to render previews, and which
+/// backend generates.
+#[derive(Debug, Clone)]
+struct Setup {
+    root: PathBuf,
+    preview: bool,
+    backend: Backend,
+}
 
-    let forge = Forge::new(root)?;
-    let outcome = forge.generate(&definition, seed, force)?;
+/// Build a forge with the backend that was asked for.
+///
+/// The one place in the tool that decides which generator runs, and the one
+/// place a new one gets installed. An uninstalled backend is refused by name —
+/// never quietly served by the procedural one, because a caller who asked for
+/// a model and silently got noise would ship the noise.
+fn forge(setup: Setup) -> Result<Forge> {
+    let built = Forge::new(setup.root)?;
+    let built = match setup.backend {
+        Backend::Procedural => built,
+        other => {
+            return Err(nexora_foundation::error::Error::new(
+                nexora_foundation::error::Domain::Content,
+                "texture-forge",
+                "no generator is installed for that backend",
+            )
+            .with_context("backend", other.as_str())
+            .with_context("installed", Backend::Procedural.as_str())
+            .with_recovery(nexora_foundation::error::Recovery::Reject))
+        }
+    };
+    Ok(if setup.preview {
+        built
+    } else {
+        built.without_previews()
+    })
+}
 
+fn variant(
+    path: &PathBuf,
+    of: &Identifier,
+    index: u32,
+    setup: Setup,
+    seed: u64,
+    force: bool,
+) -> Result<ExitCode> {
+    let definition = document::from_text(&read_input(path, "the definition could not be read")?)?;
+    let forge = forge(setup)?;
+    let outcome = forge.variant(&definition, of, index, seed, force)?;
+    report(&outcome)
+}
+
+fn repair(id: &Identifier, setup: Setup) -> Result<ExitCode> {
+    let forge = forge(setup)?;
+    let definition = forge.read_definition(id)?;
+
+    // What is wrong is printed before anything is done about it: a repair that
+    // only says "replaced" leaves nobody any wiser about what was lost.
+    let survey = forge.survey(&definition);
+    for (role, health) in &survey {
+        if !health.is_intact() {
+            println!("  {:<18} {}", role.as_str(), health.as_str());
+        }
+    }
+
+    let outcome = forge.repair(id)?;
+    if outcome.status == WriteStatus::Unchanged {
+        println!("intact {id}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    report(&outcome)
+}
+
+/// Print what one run did, the same way for every verb that does one.
+fn report(outcome: &Outcome) -> Result<ExitCode> {
     println!("{} {}", outcome.status.as_str(), outcome.material.id());
     if let Some(refusal) = &outcome.refusal {
         eprintln!("texture-forge: {refusal}");
@@ -214,6 +373,49 @@ fn generate(path: &PathBuf, root: PathBuf, seed: u64, force: bool) -> Result<Exi
         println!("{}", outcome.validation);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn batch(path: &PathBuf, setup: Setup, force: bool) -> Result<ExitCode> {
+    let manifest = manifest::from_text(&read_input(path, "the manifest could not be read")?)?;
+
+    let forge = forge(setup)?;
+    let report = forge.batch(&manifest, force);
+
+    for outcome in &report.outcomes {
+        println!("{:<10} {}", outcome.status.as_str(), outcome.material.id());
+        if let Some(refusal) = &outcome.refusal {
+            eprintln!("texture-forge: {refusal}");
+        }
+        if outcome.validation.verdict() != Verdict::Pass {
+            println!("{}", outcome.validation);
+        }
+    }
+    for (id, cause) in &report.failures {
+        eprintln!("texture-forge: {id} could not be produced -- {cause}");
+    }
+
+    println!(
+        "\n{} in `{}`: {} written, {} replaced, {} unchanged, {} refused, {} failed ({})",
+        manifest.len(),
+        manifest.name,
+        report.counted(WriteStatus::Written),
+        report.counted(WriteStatus::Replaced),
+        report.counted(WriteStatus::Unchanged),
+        report.counted(WriteStatus::Refused),
+        report.failures.len(),
+        human(report.byte_len()),
+    );
+    Ok(if report.is_clean() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn generate(path: &PathBuf, setup: Setup, seed: u64, force: bool) -> Result<ExitCode> {
+    let text = read_input(path, "the definition could not be read")?;
+    let definition = document::from_text(&text)?;
+    report(&forge(setup)?.generate(&definition, seed, force)?)
 }
 
 fn validate(id: &Identifier, root: PathBuf) -> Result<ExitCode> {
@@ -323,7 +525,7 @@ fn list(root: PathBuf) -> Result<ExitCode> {
             .filter(|role| layout::map_file(forge.root(), material.id(), *role).is_file())
             .count();
         println!(
-            "{:<40} {:<10} {:<4} {}x{}  {} maps",
+            "{:<52} {:<10} {:<4} {}x{}  {} maps",
             material.id().to_string(),
             material.category().as_str(),
             material.revision().to_string(),
@@ -339,6 +541,19 @@ fn list(root: PathBuf) -> Result<ExitCode> {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    })
+}
+
+/// Read a file the command line named, saying which one when it cannot.
+fn read_input(path: &PathBuf, message: &'static str) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|cause| {
+        nexora_foundation::error::Error::new(
+            nexora_foundation::error::Domain::Content,
+            "texture-forge",
+            message,
+        )
+        .with_context("path", path.display().to_string())
+        .with_context("cause", cause.to_string())
     })
 }
 

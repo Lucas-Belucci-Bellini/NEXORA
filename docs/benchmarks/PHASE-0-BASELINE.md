@@ -382,6 +382,361 @@ The pair of measurements is the point. A single "physics costs 294 ns per body"
 number would have been attributed to the solver by default, and the work would
 have gone to the wrong half.
 
+### 10b. The fix bought a third of it, and the diagnosis needed correcting
+
+Finding 10 named the cause: "walks a `BTreeMap` of chunk columns and then a
+palette-indexed section, once per cell per axis per body, with no caching". Two
+things about that turned out to be wrong, and the second is the useful one.
+
+**There are two ordered maps on the path, not one.** `World::get_block` descends
+`World::chunks` for the column, and then `Chunk::get` descends `Chunk::sections`
+for the section. Finding 10 counted the first and read the second as part of
+"the palette-indexed section". They are separate descents and both are per-cell.
+`WorldVoxels` now keeps the last resolved *section* — one entry, not a map —
+which removes both from every repeat question, and a repeat is what almost every
+question is: a body is roughly 0.6 × 1.8 × 0.6 against sections of 32³.
+
+**And the descents were about a third of the lookup, not the bulk of it.**
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `physics.raycast_40m` | 1.90 µs | **1.14 µs** | −40.0% |
+| `physics.depenetration_check` | 123.6 ns | **78.5 ns** | −36.5% |
+| `physics.character_step` | 743.2 ns | **545.4 ns** | −26.6% |
+| `physics.box_sweep` | 289.1 ns | **219.0 ns** | −24.3% |
+| `physics.thousand_bodies_step` | 209.8 µs | **174.3 µs** | −16.9% |
+| — the lookup half of it | 102.7 µs | **67.2 µs** | **−34.6%** |
+| `physics.thousand_bodies_step_flat` | 107.1 µs | 107.1 µs | — |
+
+The last row is the control and it is the reason the rest can be attributed at
+all: the flat fixture does not go through `WorldVoxels`, and it did not move. A
+machine that had simply got faster would have moved it too.
+
+The ordering across the other rows is the second check. `raycast_40m` is a walk
+of forty metres of cells and almost nothing else, and it gains the most.
+`thousand_bodies_step` is half solver, and it gains the least. Nothing else
+would produce that gradient in that order.
+
+Two changes, measured separately: keeping the section is most of it (the lookup
+falls to **77.1 µs** on its own), and `ChunkShape::split_of` — which returns the
+section address and the section-local offset from one pass, because
+`section_of` takes the quotient and `local_of` the remainder of the same three
+divisions — takes it the rest of the way to 67.2 µs.
+
+Medians over five to seven runs. `physics.thousand_bodies_step` carries the
+highest variance in the suite (up to 30% relative σ on a loaded run), which is
+why the argument rests on `raycast_40m`, `depenetration_check` and
+`box_sweep`, all of which sit under 3%.
+
+**`DEBT-0011` stays open at a smaller number.** The lookup was 49% of a physics
+step and is now **38.6%** — still the larger half of what is left to win, and
+still not the solver. What remains is the palette read and the address
+arithmetic, neither of which a cache addresses; `voxel.get_paletted` at 6.9 ns
+and `spatial.index_of` at 3.7 ns are what the next attempt would have to move.
+
+`DEBT-0012` moved without being worked on. Its trigger read "junto com
+DEBT-0011", and `physics.depenetration_check` fell 36.5% because the
+depenetration scan reads the world through the same view. The debt is about the
+scan happening at all, so it stays open — but it now costs a third less while
+it waits.
+
+### 10c. The depenetration scan stops running, and the pair that measured 10b stops working
+
+`DEBT-0012` said the check for having started inside terrain costs ~42% of a
+sweep and runs for every body every step, down a path that almost never fires.
+It now runs only when it can tell the reader something new: when the body has
+moved into different cells, or the source says it changed.
+
+**The figure that does not depend on this machine.** A settled body makes two
+world reads per step; one of them is that check. Over ten steps, against a
+source that names a revision and one that does not:
+
+| ten settled steps | cells asked |
+| --- | ---: |
+| source names a revision | **10** |
+| source will not say | **20** |
+
+Exactly half, asserted as an equality in `a_resting_body_stops_being_asked_
+whether_it_started_inside_terrain`. Counting is the only honest way to state
+this: a timing test proves it on one machine and nothing on another.
+
+**And the timing, measured in interleaved pairs on one sitting:**
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `physics.thousand_bodies_step` | 137.3 µs | **84.6 µs** | −38.4% |
+| `physics.character_step` | 386.7 ns | **343.6 ns** | −11.1% |
+| `physics.thousand_bodies_step_flat` | 82.8 µs | 82.2 µs | −0.7% |
+| `physics.depenetration_check` | 56.1 ns | 55.2 ns | −1.6% |
+
+Two controls this time, and both had to hold still. The flat fixture names no
+revision, so it never skips — it did not move. `physics.depenetration_check`
+calls `depenetrate` directly and never sees the skip at all — it did not move
+either, which says the primitive is not faster; the calls to it stopped
+happening.
+
+**These are not on 10b's scale.** The same code that measured 174.3 µs there
+measures 137.3 µs as the "before" here, on a machine in a different state hours
+later. That is why the before column was re-measured by stashing rather than
+quoted: a 21% drift would have been reported as a 21% improvement.
+
+**A control caught a regression in the first attempt.** The cell span was
+computed before checking whether the source names a revision, so a source that
+had opted out paid for machinery it could not use — `thousand_bodies_step_flat`
+went *up* 17%. The span is now computed only once both halves of the proof
+exist.
+
+**The cost of the fix is that 10b's measurement no longer works.** The
+terrain/flat pair isolated the voxel lookup because the two rows differed in
+exactly one thing: where terrain came from. They now differ in two — the
+terrain row skips the depenetration scan and the flat row does not, because
+`FlatGround` names no revision. So "38.6% of a physics step is the lookup"
+cannot be re-derived from this pair, and any number taken from it now would be
+measuring both changes at once. Restoring it needs a flat fixture that names a
+constant revision, which is deliberately **not** done here: `FlatGround` is
+constructed inline and two of them with different floors would report the same
+constant, which is the one way a revision can lie. Recorded as **DEBT-0037**.
+
+### 10d. The ruler is rebuilt out of two parts, and one of them never drifts (2026-09-14)
+
+**Measured on a different, noisier box than 10a-10c.** Every number in this
+section was taken here, and none of it is comparable to the tables above: the
+same unchanged code that measured `thousand_bodies_step` at 84.6 µs in 10c
+measures ~140 µs here. That is the machine, not a regression, which is exactly
+why nothing below is quoted across.
+
+**DEBT-0037 asked for a flat fixture that names a revision. That was the easy
+half, and on its own it does not work.** `StillFloor` now gives the flat row a
+revision, so the pair differs in one thing again, and the A/B says so:
+
+| flat fixture | `thousand_bodies_step_flat` |
+| --- | ---: |
+| `FlatGround`, no revision | 145.34 µs |
+| `StillFloor`, revision | 142.79 µs |
+
+1.8%, against a run-to-run spread of 10–23% on this box. **The subtraction is
+not a measurement here, it is noise.** And it was always going to be: after
+DEBT-0012 a settled body makes one world read per step instead of two, so what
+the pair has to resolve is now a fifth of a step hiding inside two numbers of
+140 µs each.
+
+**So the pair was replaced by a product rather than a difference.** Two
+measurements, each resolvable on its own:
+
+| | value | spread |
+| --- | ---: | ---: |
+| `physics.world_reads_per_step` | **1 000** | — |
+| `physics.voxel_lookup` | **25.9 ns** | 5.8% |
+
+`1 000 × 25.9 ns = 25.9 µs` of a `141.16 µs` step: **18%**. The first row is a
+count — one cell question per settled body per step, the same integer on every
+machine, and independent confirmation that DEBT-0012's skip is live. The second
+is a 26 ns microbenchmark rather than a 140 µs one, which is the whole point:
+it can be re-measured cheaply and it is the only half that needs a quiet box.
+
+**How quiet is not a detail.** A second run of the same binary read
+`physics.voxel_lookup` at **38.2 ns with a 26% spread**, putting the share at
+27% instead of 18%. The count did not move by one. Reported as a range, 18–27%,
+because choosing the run that reads better is how a measurement becomes an
+advertisement.
+
+**And 38.6% is not what this contradicts.** That figure was taken while the
+depenetration scan still ran, when a settled body made two reads a step instead
+of one. Halving the reads was supposed to roughly halve the share, and it did.
+
+### 10e. The paletted read was one division, not two, and it was worth 13%
+
+**`voxel.get_paletted`: 13.1 ns → 11.4 ns.** What is left of DEBT-0011 after
+10b is the palette read and the address arithmetic, and the palette read had a
+divisor no compiler could see: cells pack `64 / bits` to a word, and
+`64 / 12` is five. Both the word and the offset inside it came from dividing by
+that.
+
+The twelve possible widths are known at compile time, so each one's layout is
+now a table entry: the quotient is a multiply and a shift against
+`ceil(2^32 / per_word)`, and the remainder falls out of the quotient. The
+identity is exact for every index a section can hold — `MAX_SECTION_EXTENT`
+cubed is 2^24, and the error bound `(N + d - 1) · e < 2^32` clears it by two
+orders of magnitude — and a test walks the last index of every word near the
+top of the range, which is where an approximate reciprocal breaks first.
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `voxel.get_paletted` | 13.1 ns | **11.4 ns** | −13% |
+| `physics.voxel_lookup` | 28.3 ns | **25.9 ns** | −8.5% |
+| `voxel.get_uniform` | 5.2 ns | 5.3 ns | — |
+| `spatial.index_of` | 6.3 ns | 6.3 ns | — |
+
+**The last two rows are the controls and they held still.** Uniform storage
+never calls the packed read, and `index_of` was not touched; a machine that had
+simply got faster would have moved both. `voxel.get_paletted` read 11.4 ns on
+two separate runs, against a 3–4% spread.
+
+**13% is less than a division costs, and that is the finding.** The guess
+behind this change was that two integer divisions were most of a 13 ns read.
+They are worth 1.7 ns. The likely reason is that there were never two: x86-64's
+`div` yields the quotient and the remainder from one instruction, so the
+compiler had already fused the pair, and an out-of-order core overlaps most of
+what is left with the surrounding work. This is reasoning, not measurement —
+what was measured is 1.7 ns.
+
+**DEBT-0011 stays open at the smaller number.** The address arithmetic —
+`split_of` at the top of every lookup, three divisions by runtime section
+extents — is now the largest single piece left, and it has the same shape: a
+divisor fixed for a world's lifetime that the compiler cannot see. Unlike the
+palette width it is not drawn from twelve values, so a table does not close it.
+
+### 10f. A proof needs to say who made it, and "controls held still" is not enough (2026-09-14)
+
+**The skip from 10c believed a number with no owner.** A body remembers the
+cells it was proven clear of solids in, keyed on the source's revision. A
+revision is a `u64`: `World` counts its edits from zero, any other source that
+opts in starts somewhere too, and two of them agree on the number while
+describing different terrain.
+
+**The obvious identity does not work, and that was checked rather than
+assumed.** A source built on the stack for one step and a *different* source
+built the same way for the next occupy the same address —
+`two_sources_at_one_address_do_not_share_a_proof` guarantees it by reusing one
+variable, and both grounds report revision 1. Address plus revision would have
+matched, and the body would have been left standing inside a block.
+
+What replaced it is a **session**: `PhysicsWorld::against(&source)` returns a
+`Stepper` that borrows the source for as long as the proof can be consulted, so
+every substep it runs is answered by the same live object. The borrow checker
+says so; nothing is compared. Opening a session mints a number never used
+before, and the proof records it.
+
+| ten settled steps | cells asked |
+| --- | ---: |
+| inside one session | **10** |
+| a session per step | **20** |
+
+`step_once` and `advance` open a session for the single call, so the safe
+default costs nothing to know: they are correct and they never skip. Holding the
+optimisation is what now takes holding the session, which the headless slice and
+the benchmark both do. The slice's save is **byte-identical** to the one from
+before the change.
+
+**And the test can fail.** With `proof.session == session` removed it reports
+"the check was skipped on the strength of a proof the old source made".
+
+### 10g. The palette read moved 30% in a commit that did not touch it
+
+**This corrects 10e's precision, not its direction.** 10e reported
+`voxel.get_paletted` at 13.1 ns → 11.4 ns, −13%, with `voxel.get_uniform` and
+`spatial.index_of` held still as controls. One commit later, having changed
+`engine/physics` and `engine/benchmark` and **not one line of `engine/world`**
+(checked with `git diff --name-only`), the same source reads **7.8 ns and 8.2 ns
+across two runs** — and the same two controls are still still, at 6.0 and 5.1 ns.
+
+The release profile is `lto = "thin"` with `codegen-units = 1`. Changing any
+crate in the workspace relinks the whole binary and moves `Section::get`; at
+under 10 ns, alignment and inlining decisions are worth tens of percent.
+
+**So the method has a hole in it.** "Move one thing and check the controls did
+not move" is necessary and not sufficient when the change itself relinks the
+binary — the controls can hold still while an untouched kernel moves 30%. What
+10e's measurement supports is the direction and the order of magnitude: the
+division came out, and the read got somewhere between ~13% and ~40% faster on
+this box. Not a single figure. Recorded as **DEBT-0039**, along with the fix:
+build the same source twice with a neutral change in between and publish the
+spread between builds, not only within one.
+
+### 10h. The save stops writing packed words raw (2026-09-14)
+
+**744,954 → 116,904 bytes for the slice's world: 6.4×.** *(Corrected on
+2026-09-15. The figure first published here paired 744,954, which is the slice
+at its default seed, with 117,908, which is the determinism smoke's slice at
+seed 987654321. Both numbers were right and the pair was not. At the default
+seed the before and after are 744,954 and 116,904; at seed 987654321 the after
+is 117,908. The ratio survives either way, which is why it went unnoticed.)*
+`DEBT-0003` had the
+container writing every section exactly as handed to it, which for the chunk
+section means the palette-packed words with no further coding.
+
+The codec was already written and already measured — `DEBT-0034` took it to
+1.0233× of zlib -9 — and it was sitting in `tools/texture-forge`, where only the
+PNG encoder could reach it. Promoting it to `nexora_foundation::deflate` added
+**no dependency edge at all**: persistence and the texture forge both already
+depended on foundation. All twelve generated PNGs are byte-identical across the
+move, checked by hash rather than by argument.
+
+| | bytes |
+| --- | ---: |
+| slice save, format 1 (raw sections) | 744,954 |
+| slice save, format 2 (coded sections) | **116,904** |
+
+**Compression is kept only when it wins.** High-entropy bytes deflate to
+slightly more than they started with; writing that would make the format worse
+at exactly the inputs it is already worst at. `Coding::Stored` is not a failure
+path — there is no failure path — it is the answer when compressing did not pay.
+
+**Format 1 stays readable.** `MIN_SUPPORTED_SAVE_FORMAT` was deliberately not
+raised: one branch in the decoder, against throwing away every world written
+before the change. Verified against a real format-1 file written by the previous
+build, not only against a hand-built frame.
+
+**A failing test found something the change had missed.** The first damage test
+flipped "a byte in the middle" and hit the coding byte rather than the deflate
+stream — caught, but by the coding range check rather than by the checksum. That
+exposed the new frame fields sitting *outside* the section checksum, whose own
+comment already explains why the name is inside it: a flipped bit in an
+unchecksummed field does not look like damage, it looks like a different and
+wrong instruction. A coding byte that flips turns a deflate stream into a raw
+payload. Coding and length are inside `frame_crc` now, with a test for each.
+
+### 10i. A region store pays for the regions that moved (2026-09-15)
+
+**A save after one block changed: 12.8–13.2 ms → 2.9 ms, and 40.8 KiB →
+4.7 KiB.** `DEBT-0002` had every save rewriting the whole world however little
+of it moved — encode every column, deflate every byte, write the file, then read
+it back and decode it to verify (ADR-0004's guarantee, priced as `DEBT-0006`).
+
+`nexora_world::region::RegionStore` writes the same world as a directory, one
+`SaveContainer` per region. Decisions in
+[ADR-0014](../adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md).
+
+| benchmark world, 3×3 columns | one container | region store |
+| --- | ---: | ---: |
+| save after one block changed | 12.76 / 13.16 ms | **2.91 / 2.87 ms** |
+| bytes written for that save | 40.8 KiB | **4.7 KiB** |
+| save of the whole world | 12.76 / 13.16 ms | 14.95 / 14.91 ms |
+| bytes for the whole world | 40.8 KiB | 41.7 KiB |
+
+Two runs of each, and **`save.write_atomic_disk` is the control**: 13.19 ms
+before the change, 12.76 and 13.16 ms after. It did not move, which is what
+makes the rest attributable — nothing here touches the container path.
+
+**The figure that does not depend on the machine is a count.**
+`save.regions_written_per_edit` is **1** of 4, on any box and in any build. It
+is also the independent confirmation that per-section dirty tracking, which the
+chunk lifecycle has recorded since it was built and no save had ever read, is
+now read.
+
+**Two columns per region, not the default 32.** At the engine default a 3×3
+world is one region and the measurement could not tell skipping from writing.
+The extent is a parameter of the store, and the mechanism is what is under test.
+
+**The price, measured rather than omitted: a full write costs 13–17% more**, and
+the total grows 2.2%. Five files instead of one is five sets of framing, five
+`fsync`s, five read-back verifications, and five deflate streams that cannot
+share a dictionary; the palette is also written once per region, deliberately,
+so that a region file can be read with nothing else present. A full write is the
+case this arrangement is not for.
+
+**Splitting the section inside the same container would have bought nothing.**
+The container encodes as a unit: every section deflates on every `encode`, and
+the whole file is written and verified. The cost follows the file, so the
+regions had to be files — and the alternative would have been a structure whose
+benefit arrives in some later change.
+
+**What this does not do yet.** Nothing in the engine saves through it. The slice
+writes the single container and runs the store beside it as verification, which
+is where the nine-region line in its report comes from. `DEBT-0002` is reduced,
+not closed, and closing it waits on `DEBT-0020` — the evicted column going to
+its region file instead of to a `BTreeMap` in memory.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |
@@ -897,8 +1252,8 @@ in exactly one thing — where the voxels come from:
 `mesh.cull_only_16` confirms it from the other direction: strip merging out
 entirely and you save about 3%.
 
-This is [finding 10](#) again — 49% of a physics step is the voxel lookup — and
-here it is far more extreme. Two independent measurements now point at the same
+This is [finding 10](#) again — 49% of a physics step was the voxel lookup, 38.6%
+of one after finding 10b — and here it is far more extreme. Two independent measurements now point at the same
 place, which is worth more than either alone.
 
 **The consequence is architectural, not merely an optimisation note.** A region
@@ -906,6 +1261,32 @@ snapshotted into a dense array can be meshed on a worker thread *without
 touching the world at all*. So the fix for meshing speed and the mechanism that
 makes RENDER-12's async meshing **safe** are the same change. `DEBT-0029` and
 `DEBT-0027` are one piece of work wearing two labels.
+
+### 22b. What the snapshot actually costs, once it is real (2026-09-13)
+
+The measurement above is a **diagnostic**: it excludes the cost of *building*
+the snapshot, which is itself a pass of world reads. It answers "how much of
+meshing is lookup", not "is the snapshot worth it". Those are different
+questions and the second one decides the work, so `DEBT-0029` added the
+measurement that answers it:
+
+| measurement | median |
+| --- | ---: |
+| `mesh.region_16` (read from the world) | **3.32 ms** |
+| `mesh.region_16_with_snapshot` (snapshot **built**, then meshed) | **1.22 ms** |
+| `mesh.region_16_from_snapshot` (snapshot already held) | **296 µs** |
+
+Two different numbers, and quoting one for the other would be wrong:
+
+* **First mesh of a region: 2.7×.** Building the snapshot costs 0.92 ms — 76%
+  of the with-snapshot time — because it is the pass that pays the world reads.
+* **Re-mesh while the snapshot is held: 11.2×.** That is the headline figure
+  from finding 22, and it applies only when the voxels have not changed.
+
+So the snapshot pays for itself immediately, and pays far more when a region is
+meshed again — a moved camera, a changed LOD tier, a second pass — without the
+voxels having changed underneath. It is worth being precise about which is
+which: **11.2× is the re-mesh figure, not the speedup a single mesh gets.**
 
 `mesh.region_32` at **26.12 ms** is the other half of why: that is more than a
 60 Hz frame, for one section, on the tick thread.

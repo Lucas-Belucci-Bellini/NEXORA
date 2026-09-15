@@ -311,9 +311,60 @@ pub struct RigidBody {
     pending_force: Vec3,
     /// Consecutive slow steps.
     still_steps: u32,
+    /// The cell span last *proven* free of solid cells, and what it was proven
+    /// against.
+    ///
+    /// `DEBT-0012`: the check for having started inside terrain costs a scan of
+    /// every cell the box covers, runs for every body every step, and answers
+    /// "no" almost every time. While a body sits in the same cells against an
+    /// unchanged world, the answer cannot have changed, and this is the proof
+    /// that lets the scan be skipped.
+    clear_span: Option<ClearSpan>,
+}
+
+/// A proof that a body's cells held no solids, and the conditions it holds
+/// under.
+///
+/// All three parts have to still match for the proof to be worth anything, and
+/// each answers a different way of being wrong:
+///
+/// * **`session`** — *the same source object answered.* A revision is a `u64`
+///   with no owner, and two sources counting from zero (`World` starts there)
+///   will agree on the number while describing different terrain. The session
+///   is minted by [`PhysicsWorld::against`](crate::world::PhysicsWorld::against),
+///   which borrows the source for as long as the proof can be used, so the
+///   borrow checker is what rules out a second source — not an address, and not
+///   a convention. `DEBT-0038`.
+/// * **`revision`** — *that source has not changed.* See
+///   [`VoxelSource::revision`](crate::voxel::VoxelSource::revision).
+/// * **`low`/`high`** — *the body is still in the same cells.* Keyed on the
+///   cells, not the position: a body whose centre is written directly from
+///   outside the solver is still inside cells that were proven clear, so long
+///   as it is still inside the same ones. That is why this stays sound without
+///   making `center` private.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClearSpan {
+    /// The stepping session that proved it.
+    pub session: u64,
+    /// The source revision it was proven at.
+    pub revision: u64,
+    /// Lower corner of the cell span, inclusive.
+    pub low: [i64; 3],
+    /// Upper corner of the cell span, inclusive.
+    pub high: [i64; 3],
 }
 
 impl RigidBody {
+    /// The span this body was last proven clear of solids in, if any.
+    pub(crate) const fn clear_span(&self) -> Option<ClearSpan> {
+        self.clear_span
+    }
+
+    /// Record — or forget — the span proven clear.
+    pub(crate) const fn set_clear_span(&mut self, span: Option<ClearSpan>) {
+        self.clear_span = span;
+    }
+
     /// Build a body from a validated descriptor.
     ///
     /// # Errors
@@ -337,6 +388,9 @@ impl RigidBody {
             ground_material: None,
             pending_force: Vec3::ZERO,
             still_steps: 0,
+            // Nothing is proven yet, and a body can be spawned inside terrain —
+            // which is one of the cases the check exists for.
+            clear_span: None,
         })
     }
 

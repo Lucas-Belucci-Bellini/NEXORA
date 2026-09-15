@@ -21,6 +21,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use nexora_foundation::deflate::{deflate, inflate};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::hashing::crc32;
 use nexora_foundation::ident::Identifier;
@@ -134,13 +135,26 @@ impl SaveContainer {
 
         for (name, data) in &self.sections {
             let rendered = name.to_string();
+            let (coding, stored) = pack(data);
+            let raw_len = data.len() as u32;
             out.string(&rendered);
             // The checksum covers the name as well as the payload. Covering only
             // the payload leaves the name unprotected, and a single flipped bit
             // in a section name silently renames the section instead of being
             // reported as damage.
-            out.u32(section_crc(&rendered, data));
-            out.bytes(data);
+            //
+            // It covers the bytes **as stored**, not as they were handed in:
+            // the point of the checksum is to catch damage to the file, and a
+            // damaged compressed payload has to be caught *before* anything
+            // tries to decompress it.
+            out.u32(frame_crc(&rendered, coding, raw_len, &stored));
+            out.u8(coding as u8);
+            // The uncompressed length, so the reader knows what it should have
+            // got. A stream that inflates to a different size is damage the
+            // checksum could not see — it would have to be damage that is still
+            // a valid deflate stream, which is rare and not impossible.
+            out.u32(raw_len);
+            out.bytes(&stored);
         }
         out.raw(TRAILER);
 
@@ -218,12 +232,38 @@ impl SaveContainer {
                     .with_source(cause)
             })?;
             let declared_crc = reader.u32()?;
-            let data = reader.bytes()?;
-            if section_crc(rendered, data) != declared_crc {
+            // Format 1 stored every section raw. Reading one is still supported
+            // — `MIN_SUPPORTED_SAVE_FORMAT` says so — so the coding byte and the
+            // length are read only from the format that writes them.
+            let framed = save_format >= SAVE_FORMAT_COMPRESSED;
+            let (coding_tag, raw_len) = if framed {
+                (reader.u8()?, reader.u32()?)
+            } else {
+                (Coding::Stored as u8, 0)
+            };
+            let stored = reader.bytes()?;
+            // Verified before the coding byte is even interpreted, so a
+            // damaged frame is reported as damage rather than acted on.
+            let computed = if framed {
+                crc32(&{
+                    let mut combined = Vec::with_capacity(rendered.len() + stored.len() + 5);
+                    combined.extend_from_slice(rendered.as_bytes());
+                    combined.push(coding_tag);
+                    combined.extend_from_slice(&raw_len.to_le_bytes());
+                    combined.extend_from_slice(stored);
+                    combined
+                })
+            } else {
+                section_crc(rendered, stored)
+            };
+            if computed != declared_crc {
                 return Err(corrupt("save section failed its checksum")
                     .with_context("section", name.to_string()));
             }
-            if sections.insert(name.clone(), data.to_vec()).is_some() {
+            let coding = Coding::decode(coding_tag, &name)?;
+            let expected_len = framed.then_some(raw_len as usize);
+            let data = unpack(coding, stored, expected_len, &name)?;
+            if sections.insert(name.clone(), data).is_some() {
                 return Err(corrupt("save contains the same section twice")
                     .with_context("section", name.to_string()));
             }
@@ -370,10 +410,111 @@ fn temporary_path(path: &Path) -> PathBuf {
 }
 
 /// Checksum of one section, covering its name and its payload together.
+/// The first save format that frames each section with how it is coded.
+///
+/// Below this, every section is stored raw and there is no coding byte to read.
+const SAVE_FORMAT_COMPRESSED: SaveFormatVersion = SaveFormatVersion(2);
+
+/// How one section's bytes are laid down on disk.
+///
+/// `DEBT-0003` asked for per-section compression "with the algorithm recorded
+/// in the header, to allow a versioned swap". This is that record. It sits in
+/// the container rather than in `nexora_world::persist`, where the entry
+/// expected it, because the seam is the same for every section: chunks today,
+/// entities and whatever else tomorrow, all framed once instead of each
+/// producer deciding for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Coding {
+    /// The bytes are the payload.
+    Stored = 0,
+    /// RFC 1951, as produced by [`nexora_foundation::deflate`].
+    Deflate = 1,
+}
+
+impl Coding {
+    fn decode(tag: u8, section: &Identifier) -> Result<Self> {
+        match tag {
+            0 => Ok(Self::Stored),
+            1 => Ok(Self::Deflate),
+            // A coding this build does not know is not a guess to make. The
+            // save is readable in the sense that its checksums pass, and
+            // unreadable in the sense that matters.
+            other => Err(
+                corrupt("save section uses a coding this build does not know")
+                    .with_context("section", section.to_string())
+                    .with_context("coding", other.to_string()),
+            ),
+        }
+    }
+}
+
+/// Choose how to lay a section down, and lay it down.
+///
+/// Compression is attempted and then **kept only if it won**. A section of
+/// high-entropy bytes deflates to slightly more than it started with, and
+/// writing that would make the format worse at exactly the inputs it is
+/// already worst at. `Coding::Stored` is not a fallback for failure — there is
+/// no failure path — it is the answer when compressing did not pay.
+fn pack(data: &[u8]) -> (Coding, Vec<u8>) {
+    if data.is_empty() {
+        return (Coding::Stored, Vec::new());
+    }
+    let deflated = deflate(data);
+    if deflated.len() < data.len() {
+        (Coding::Deflate, deflated)
+    } else {
+        (Coding::Stored, data.to_vec())
+    }
+}
+
+/// Recover a section's bytes from how they were stored.
+fn unpack(
+    coding: Coding,
+    stored: &[u8],
+    expected_len: Option<usize>,
+    section: &Identifier,
+) -> Result<Vec<u8>> {
+    let data = match coding {
+        Coding::Stored => stored.to_vec(),
+        Coding::Deflate => inflate(stored).map_err(|cause| {
+            corrupt("save section did not decompress")
+                .with_context("section", section.to_string())
+                .with_source(cause)
+        })?,
+    };
+    if let Some(expected) = expected_len {
+        if data.len() != expected {
+            return Err(corrupt("save section decompressed to the wrong size")
+                .with_context("section", section.to_string())
+                .with_context("expected", expected.to_string())
+                .with_context("found", data.len().to_string()));
+        }
+    }
+    Ok(data)
+}
+
 fn section_crc(name: &str, data: &[u8]) -> u32 {
     let mut combined = Vec::with_capacity(name.len() + data.len());
     combined.extend_from_slice(name.as_bytes());
     combined.extend_from_slice(data);
+    crc32(&combined)
+}
+
+/// The checksum for one format-2 section frame.
+///
+/// Covers the coding and the uncompressed length as well as the name and the
+/// stored bytes, for the reason the name is covered: a flipped bit in a field
+/// that is not checksummed does not look like damage, it looks like a
+/// different — and wrong — instruction. A coding byte that flips turns a
+/// deflate stream into a raw payload; a length that flips turns a good section
+/// into a refusal that blames the wrong thing. Both are now damage, reported
+/// against the section they belong to.
+fn frame_crc(name: &str, coding: Coding, raw_len: u32, stored: &[u8]) -> u32 {
+    let mut combined = Vec::with_capacity(name.len() + stored.len() + 5);
+    combined.extend_from_slice(name.as_bytes());
+    combined.push(coding as u8);
+    combined.extend_from_slice(&raw_len.to_le_bytes());
+    combined.extend_from_slice(stored);
     crc32(&combined)
 }
 
@@ -407,6 +548,204 @@ mod tests {
         container.put(id("nexora:save/chunks"), vec![7u8; 1024]);
         container.put(id("example:save/mod_state"), b"mod bytes".to_vec());
         container
+    }
+
+    /// Build a container frame by hand at a chosen format version, so the
+    /// reader can be tested against a layout this build no longer writes.
+    fn framed(save_format: u32, sections: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut header = Writer::new();
+        header.raw(MAGIC);
+        header.u32(save_format);
+        header.u16(0);
+        header.u16(0);
+        header.u16(0);
+        header.u32(1);
+        header.u32(1);
+        header.u32(1);
+        header.u32(sections.len() as u32);
+
+        let mut out = Writer::new();
+        out.raw(header.as_slice());
+        out.u32(crc32(header.as_slice()));
+        for (name, data) in sections {
+            out.string(name);
+            out.u32(section_crc(name, data));
+            if save_format >= SAVE_FORMAT_COMPRESSED.0 {
+                out.u8(Coding::Stored as u8);
+                out.u32(data.len() as u32);
+            }
+            out.bytes(data);
+        }
+        out.raw(TRAILER);
+        let body = out.as_slice().to_vec();
+        out.u32(crc32(&body));
+        out.finish()
+    }
+
+    /// `DEBT-0003`. Voxel words are the most compressible thing in the file and
+    /// were being written raw.
+    #[test]
+    fn a_compressible_section_round_trips_and_the_file_gets_smaller() {
+        // Not `vec![7; n]`: a single repeated byte is the easiest input there
+        // is, and would flatter the result. This is a pattern with structure,
+        // which is what a chunk actually looks like.
+        let payload: Vec<u8> = (0..8_192u32).map(|i| ((i / 37) % 11) as u8).collect();
+        let mut container = SaveContainer::new();
+        container.put(id("nexora:save/chunks"), payload.clone());
+
+        let encoded = container.encode();
+        assert!(
+            encoded.len() < payload.len() / 2,
+            "8 KiB of structured bytes framed into {} — that is not compression",
+            encoded.len()
+        );
+
+        let back = SaveContainer::decode(&encoded).expect("decodes");
+        assert_eq!(
+            back.get(&id("nexora:save/chunks")),
+            Some(payload.as_slice()),
+            "what comes back has to be exactly what went in"
+        );
+        assert_eq!(back.versions().save_format, SAVE_FORMAT_COMPRESSED);
+    }
+
+    /// Compression is kept only when it wins. Deflating high-entropy bytes
+    /// costs a few more than it started with, and writing that would make the
+    /// format worse at exactly the inputs it is already worst at.
+    #[test]
+    fn a_section_that_does_not_shrink_is_stored_rather_than_grown() {
+        let mut rng = nexora_foundation::rng::Rng::from_seed(0x9E37_79B9_7F4A_7C15);
+        let noise: Vec<u8> = (0..4_096).map(|_| (rng.next_u64() >> 24) as u8).collect();
+
+        let (coding, stored) = pack(&noise);
+        assert_eq!(coding, Coding::Stored, "random bytes must not be deflated");
+        assert_eq!(stored, noise);
+
+        let mut container = SaveContainer::new();
+        container.put(id("nexora:save/chunks"), noise.clone());
+        let back = SaveContainer::decode(&container.encode()).expect("decodes");
+        assert_eq!(back.get(&id("nexora:save/chunks")), Some(noise.as_slice()));
+    }
+
+    /// An empty section has nothing to compress and must not acquire a deflate
+    /// stream's fixed overhead on the way to disk.
+    #[test]
+    fn an_empty_section_stays_empty() {
+        let (coding, stored) = pack(&[]);
+        assert_eq!((coding, stored.len()), (Coding::Stored, 0));
+    }
+
+    /// `MIN_SUPPORTED_SAVE_FORMAT` says format 1 is still readable, and this is
+    /// what that costs: the coding byte and the length are read only from the
+    /// format that writes them. A real format-1 world was decoded by this build
+    /// while the change was made; this keeps that true without a fixture file.
+    #[test]
+    fn a_format_one_save_written_before_coding_existed_still_decodes() {
+        let bytes = framed(1, &[("nexora:save/chunks", b"raw payload, no coding byte")]);
+        let container = SaveContainer::decode(&bytes).expect("format 1 must still decode");
+        assert_eq!(container.versions().save_format, SaveFormatVersion(1));
+        assert_eq!(
+            container.get(&id("nexora:save/chunks")),
+            Some(b"raw payload, no coding byte".as_slice())
+        );
+    }
+
+    /// The checksum covers the bytes **as stored**, and is verified before
+    /// anything tries to inflate them. Handing damaged bytes to a decompressor
+    /// is how a corrupt file becomes a crash instead of a diagnosis.
+    #[test]
+    fn damage_to_a_compressed_section_is_caught_before_it_is_inflated() {
+        let payload: Vec<u8> = (0..4_096u32).map(|i| ((i / 13) % 7) as u8).collect();
+        let mut container = SaveContainer::new();
+        container.put(id("nexora:save/chunks"), payload.clone());
+        let mut bytes = container.encode();
+
+        // Find the deflate stream rather than guessing an offset. A first
+        // draft flipped "the middle byte" and hit the coding byte instead —
+        // caught, but by the wrong guard, and the test would have passed while
+        // proving something else.
+        let (_, stream) = pack(&payload);
+        let at = bytes
+            .windows(stream.len())
+            .position(|window| window == stream.as_slice())
+            .expect("the stored stream is in the file")
+            + stream.len() / 2;
+        bytes[at] ^= 0b0010_0000;
+        // Repair the whole-file checksum so the *section* checksum is the one
+        // doing the catching, which is the one that names which section failed.
+        let body_len = bytes.len() - 4;
+        let repaired = crc32(&bytes[..body_len]).to_le_bytes();
+        bytes[body_len..].copy_from_slice(&repaired);
+
+        let error = SaveContainer::decode(&bytes).expect_err("damage must be reported");
+        assert!(
+            error.to_string().contains("checksum"),
+            "expected a checksum failure, got: {error}"
+        );
+    }
+
+    /// The coding byte is inside the section checksum, so flipping it is damage
+    /// rather than a different instruction. Without that, a flipped bit turns a
+    /// deflate stream into "this is raw" and the section decodes to garbage.
+    #[test]
+    fn damage_to_the_coding_byte_is_damage_and_not_a_new_instruction() {
+        let payload: Vec<u8> = (0..4_096u32).map(|i| ((i / 13) % 7) as u8).collect();
+        let mut container = SaveContainer::new();
+        container.put(id("nexora:save/chunks"), payload.clone());
+        let mut bytes = container.encode();
+
+        let (_, stream) = pack(&payload);
+        let stream_at = bytes
+            .windows(stream.len())
+            .position(|window| window == stream.as_slice())
+            .expect("the stored stream is in the file");
+        // The frame is name, crc, coding, raw length, then the payload behind
+        // its own `u64` length prefix — so the coding byte sits eight bytes for
+        // that prefix, four for the raw length, and one for itself ahead of the
+        // stream.
+        let coding_at = stream_at - 8 - 4 - 1;
+        assert_eq!(
+            bytes[coding_at],
+            Coding::Deflate as u8,
+            "aimed at the wrong byte"
+        );
+        bytes[coding_at] = Coding::Stored as u8;
+
+        let body_len = bytes.len() - 4;
+        let repaired = crc32(&bytes[..body_len]).to_le_bytes();
+        bytes[body_len..].copy_from_slice(&repaired);
+
+        let error = SaveContainer::decode(&bytes).expect_err("must be reported");
+        assert!(
+            error.to_string().contains("checksum"),
+            "a flipped coding byte must read as damage, got: {error}"
+        );
+    }
+
+    /// A coding this build does not know is not a guess to make.
+    #[test]
+    fn an_unknown_coding_is_refused_rather_than_assumed_to_be_raw() {
+        let error = Coding::decode(200, &id("nexora:save/chunks"))
+            .expect_err("an unknown coding must be refused");
+        assert!(error.to_string().contains("coding"), "got: {error}");
+    }
+
+    /// The stored length is the check the checksum cannot make: damage that
+    /// happens to still be a valid deflate stream passes the CRC and lands on
+    /// the wrong number of bytes.
+    #[test]
+    fn a_section_that_inflates_to_the_wrong_length_is_refused() {
+        let payload = b"twelve bytes";
+        let (coding, stored) = pack(&[0u8; 4_096]);
+        assert_eq!(coding, Coding::Deflate);
+        let error = unpack(
+            coding,
+            &stored,
+            Some(payload.len()),
+            &id("nexora:save/chunks"),
+        )
+        .expect_err("a length mismatch must be reported");
+        assert!(error.to_string().contains("size"), "got: {error}");
     }
 
     /// A scratch directory that cleans itself up.
