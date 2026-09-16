@@ -82,6 +82,16 @@ every edit ever made — and the save comes out byte-identical either way.
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
 ```
 
+### Prebuilt binaries
+
+[`web/`](web) is a download page that reads the repository's releases at load
+time, and [`docs/RELEASING.md`](docs/RELEASING.md) describes the pipeline
+behind it: a version tag builds on Linux, Windows and macOS, **runs the
+binaries it is about to package on each platform**, and publishes the archives
+with a `SHA256SUMS` covering them. No release has been cut yet, so building
+from source is currently the only way to get it — which is the three commands
+above and no dependencies.
+
 ## Measuring it
 
 The language selection gate needs evidence, so the reference implementation is

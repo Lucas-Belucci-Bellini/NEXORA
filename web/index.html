@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NEXORA — download</title>
+<meta name="description" content="Download the NEXORA voxel engine: the headless vertical slice, the benchmark harness and the texture forge. Open source, MIT or Apache-2.0.">
+<meta property="og:title" content="NEXORA — download">
+<meta property="og:description" content="A voxel engine you can run and verify yourself. Phase 0 is implemented, tested and runnable — and there is no renderer yet.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230b0f14'/><path d='M3 12V4l4 5V4h1v8H7L3 7v5z' fill='%234fd6c8'/></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="top">
+  <span class="wordmark">NEXORA</span>
+  <nav>
+    <a href="#downloads">Downloads</a>
+    <a href="#source">Build from source</a>
+    <a href="https://github.com/Lucas-Belucci-Bellini/NEXORA">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+  <section class="hero">
+    <p class="eyebrow">Voxel engine · Phase 0</p>
+    <h1>The world is generated.<br>The world then lives.</h1>
+    <p class="lead">
+      NEXORA is a voxel sandbox engine written in Rust with
+      <strong>zero external dependencies</strong> and <code>unsafe_code = "forbid"</code>.
+      The engine foundation is implemented, tested and runnable.
+    </p>
+
+    <div class="notice">
+      <strong>Read this before you download.</strong>
+      There is <em>no renderer and no window yet</em> — that is the state of the
+      project, not a packaging mistake. What you get is three command-line
+      programs. The engine builds a world, simulates it, saves it, reopens it and
+      tells you whether it survived. You watch that happen in a terminal.
+    </div>
+
+    <div class="cta">
+      <a class="button primary" href="#downloads">Get the build</a>
+      <a class="button" href="https://github.com/Lucas-Belucci-Bellini/NEXORA">Read the source</a>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>What it actually does</h2>
+    <p class="sub">
+      This is the real output of <code>nexora-headless</code>, not a mock-up. It
+      exits non-zero if any of it fails.
+    </p>
+    <pre class="terminal" aria-label="Example output of the headless vertical slice"><code>NEXORA headless vertical slice
+------------------------------
+world id           0x368cfbaaa04ab32c
+chunks generated   25
+non-air blocks     50818052
+voxel storage      722304 bytes
+save size          116904 bytes
+region store       9 regions, 119482 bytes; one edit rewrote 1 for 18718 bytes
+physics bodies     9 (9 settled)
+physics substeps   600 (270 contacts)
+character drop     1010 cm
+streaming ticks    29 (95 generated, 120 evicted, 25 restored)
+chunks retained    15 (peak, edits that cannot be regenerated)
+retention spill    25 columns to 12 region files, 25 read back
+probes verified    76
+
+result             OK</code></pre>
+    <p class="sub">
+      Fifty million blocks held in 722 KB. An observer walks away from the edited
+      region and back, so those 76 verified probes are also proof that streaming
+      evicted 120 columns without losing an edit.
+    </p>
+  </section>
+
+  <section id="downloads">
+    <h2>Downloads</h2>
+    <div id="release-status" class="status" role="status">Looking for the latest release…</div>
+    <div id="release-grid" class="grid" hidden></div>
+
+    <details class="verify" id="verify" hidden>
+      <summary>Verify what you downloaded</summary>
+      <p>
+        Every release ships a <code>SHA256SUMS</code> covering all of its
+        archives, so you can check a download without trusting this page.
+      </p>
+      <pre class="terminal"><code>shasum -a 256 -c SHA256SUMS     # macOS, Linux
+sha256sum -c SHA256SUMS         # Linux (coreutils)</code></pre>
+    </details>
+  </section>
+
+  <section class="band">
+    <h2>What is in the archive</h2>
+    <dl class="programs">
+      <div>
+        <dt><code>nexora-headless</code></dt>
+        <dd>
+          The vertical slice. Builds a world from a seed, generates chunks across
+          a worker pool, edits voxels, drops a character and simulates it until it
+          settles, streams an observer away and back, advances the clock, saves,
+          shuts down, reopens and verifies every probe.
+        </dd>
+      </div>
+      <div>
+        <dt><code>nexora-benchmark</code></dt>
+        <dd>
+          The measurement harness behind the published baseline. Run it on your own
+          machine — the numbers in the repository are from one box and say so.
+        </dd>
+      </div>
+      <div>
+        <dt><code>nexora-texture-forge</code></dt>
+        <dd>
+          The procedural material generator. Reads the material definitions bundled
+          in the archive and writes PBR maps that are reproducible from their own
+          record.
+        </dd>
+      </div>
+    </dl>
+    <p class="sub">
+      Plus the content the forge reads, and both licences. Every binary was run on
+      its own platform by the workflow that built it, before it was packaged.
+    </p>
+  </section>
+
+  <section id="source">
+    <h2>Build it from source</h2>
+    <p class="sub">
+      Rust 1.85 or newer, and nothing else — the engine crates pull in no external
+      dependencies at all.
+    </p>
+    <pre class="terminal"><code>git clone https://github.com/Lucas-Belucci-Bellini/NEXORA
+cd NEXORA
+
+cargo test --workspace          # the full test suite
+cargo run -p nexora-headless    # the vertical slice, verified end to end
+cargo run -p nexora-benchmark -- --markdown</code></pre>
+  </section>
+
+  <section class="band">
+    <h2>Open source, and specific about it</h2>
+    <div class="grid links">
+      <a class="card" href="https://github.com/Lucas-Belucci-Bellini/NEXORA/blob/main/docs/benchmarks/PHASE-0-BASELINE.md">
+        <h3>The measurements</h3>
+        <p>Every performance claim, with its controls, its spread, and the ones that were later corrected.</p>
+      </a>
+      <a class="card" href="https://github.com/Lucas-Belucci-Bellini/NEXORA/blob/main/NEXORA%20TECHNICAL%20DEBT%20REGISTER.md">
+        <h3>The debt register</h3>
+        <p>What is known to be wrong or unfinished, why it was accepted, and what would trigger fixing it.</p>
+      </a>
+      <a class="card" href="https://github.com/Lucas-Belucci-Bellini/NEXORA/tree/main/docs/adr">
+        <h3>The decisions</h3>
+        <p>Architecture decision records: context, options considered, and the consequence that was accepted.</p>
+      </a>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <p>
+    NEXORA is licensed under
+    <a href="https://github.com/Lucas-Belucci-Bellini/NEXORA/blob/main/LICENSE-MIT">MIT</a>
+    or
+    <a href="https://github.com/Lucas-Belucci-Bellini/NEXORA/blob/main/LICENSE-APACHE">Apache-2.0</a>,
+    at your option.
+  </p>
+  <p class="muted">
+    The archives are built and published by a GitHub Actions workflow from a
+    tagged commit. Nothing is uploaded by hand.
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
