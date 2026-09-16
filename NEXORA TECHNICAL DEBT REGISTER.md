@@ -193,7 +193,54 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **PROPOSED REMEDIATION:** Drenar o journal a cada tick para o History System
   em vez de acumular no chunk.
 - **TARGET STAGE:** Phase 11 (History), ou antes se a replicação chegar primeiro
-- **STATUS:** OPEN
+- **MEDIÇÃO (2026-09-16):** medir esta entrada achou um defeito **maior do que
+  ela**, e que ela não nomeia. O teto era imposto com `Vec::remove(0)`, então
+  toda escrita passada a marca movia as outras 4.095 entradas:
+
+  | | mediana |
+  | --- | ---: |
+  | `chunk.change_feed_append` (feed abaixo do teto) | 40,7 ns |
+  | `chunk.change_feed_at_cap` (feed cheio, descarta a cada escrita) | **49,95 µs** |
+
+  **1.227×**, pago exatamente pela coluna que está sendo mais editada — a que
+  chega ao teto. São ~190 KB de `memmove` por voxel escrito.
+- **RESOLUÇÃO PARCIAL (2026-09-16):** duas das três metades. A terceira está
+  bloqueada e o bloqueio é o que esta entrada sempre disse.
+
+  **O teto ficou de graça: 49,95 µs → 42,0 ns.** O feed virou `VecDeque` e o
+  descarte é `pop_front`. O número que importa não é o 1.190× — é que
+  `change_feed_at_cap` (42,0 ns) e `change_feed_append` (40,9 ns) agora são **o
+  mesmo número**: descartar deixou de custar. Os controles não se mexeram
+  (`voxel.get_paletted` 6,6 → 6,5 ns, `get_uniform` 3,2 → 3,2 ns,
+  `set_existing_state` 13,5 → 14,1 ns, `compact_section` 164 → 169 µs). Isto é
+  provado pelo benchmark e não por teste: trocar a estrutura de dados não muda
+  comportamento, e os testes de correção passam nas duas versões.
+
+  **O silêncio parcial fechou, pelo tipo.** `take_journal` devolvia
+  `Vec<VoxelChange>` **e zerava** `dropped_journal_entries` — então quem drenava
+  sem olhar antes destruía o único registro de que faltava coisa. Agora devolve
+  um `ChangeFeed { changes, dropped }`, `#[must_use]`: a lacuna sai junto com o
+  dado ou não sai. Os dois lugares que descartavam o retorno em silêncio
+  (`persist::decode_chunks` e `World::generate_chunk`) foram apontados pelo
+  próprio `must_use` e viraram `clear_journal()`, que é o que eles queriam dizer
+  — um chunk recém-gerado ou recém-lido não tem feed para ninguém consumir.
+
+  **E alguém lê o sinal.** `World::change_feed_gaps()` soma as lacunas dos chunks
+  residentes, e o slice falha se houver alguma. Com 76 edições em 25 colunas
+  contra um teto de 4.096 isso não dispara hoje — o ponto é que passou a ser
+  **verificado** em vez de apenas contável.
+
+  **Uma correção de leitura:** uma lacuna aqui **não é perda de durabilidade**.
+  `World::set_block` grava no journal de save (ADR-0011) **antes** de tocar o
+  chunk; o feed do chunk é alimentação de mudanças para History e replicação.
+  Perder uma entrada custa história, nunca o bloco.
+- **STATUS:** OPEN (bloqueado) — **o feed não tem nenhum consumidor real**, e é
+  isso que sobra. `take_journal` não é chamado por nada no motor: o History
+  System é Phase 11 e não existe, e a replicação não chegou. A remediação
+  proposta (drenar por tick para o History) continua sendo a certa e continua
+  esperando o History; construir um consumidor agora seria construir na frente
+  da evidência. O que mudou é que, quando ele chegar, o teto não custa nada e a
+  lacuna não tem como passar despercebida.
 
 ### DEBT-0005 — Conversão de coordenadas usa divisão por valor de runtime
 

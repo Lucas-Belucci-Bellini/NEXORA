@@ -21,6 +21,7 @@ use nexora_foundation::spatial::WorldPosition;
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, RegionShape, SectionCoord};
 use nexora_foundation::time::CalendarConfig;
 use nexora_foundation::time::WorldDuration;
+use nexora_foundation::time::WorldTime;
 use nexora_persistence::journal::{self, Journal, SnapshotId};
 use nexora_persistence::SaveContainer;
 use nexora_physics::body::BodyDescriptor;
@@ -40,6 +41,7 @@ use nexora_streaming::interest::{InterestId, InterestSource, LodRadii};
 use nexora_streaming::lod::Lod;
 use nexora_streaming::system::StreamingSystem;
 use nexora_streaming::target::StreamTarget;
+use nexora_world::chunk::{Chunk, MAX_JOURNAL_ENTRIES};
 use nexora_world::persist;
 use nexora_world::region::RegionStore;
 use nexora_world::voxel::{BlockStateId, Section, AIR};
@@ -322,6 +324,85 @@ pub fn voxel(budget: Budget) -> Result<Vec<Measurement>> {
             consume(section.storage_bytes());
         },
     ));
+
+    // --- the chunk change feed at its cap (DEBT-0004) -------------------------
+    // A write below the cap appends; a write at the cap also has to discard the
+    // oldest entry. The pair isolates what that discard costs, which is the
+    // question `DEBT-0004` never asked.
+    {
+        let column = ChunkCoord::new(0, 0);
+        let write_at = BlockPos::new(1, 40, 1);
+
+        let mut below = Chunk::new(column, shape);
+        below.put_section(1, Section::uniform(shape, stone));
+        below.clear_journal();
+        let mut clock = 0u64;
+        let mut toggle = false;
+        out.push(measure(
+            "chunk.change_feed_append",
+            "One journalled voxel write with the change feed below its cap",
+            Budget {
+                iterations_per_sample: 2_000,
+                ..budget
+            },
+            || {
+                clock += 1;
+                toggle = !toggle;
+                let state = if toggle { dirt } else { stone };
+                // Drain before the cap is reached, so this row measures the
+                // append and never the discard.
+                // Resetting the fixture, not consuming a feed: `clear_journal`
+                // is the call that says so, and it keeps this row measuring the
+                // append rather than the discard.
+                if below.journal().len() + 1 >= MAX_JOURNAL_ENTRIES {
+                    below.clear_journal();
+                }
+                consume(
+                    below
+                        .set(write_at, state, WorldTime(clock))
+                        .expect("in bounds"),
+                );
+            },
+        ));
+
+        let mut saturated = Chunk::new(column, shape);
+        saturated.put_section(1, Section::uniform(shape, stone));
+        let mut fill = 0u64;
+        let mut fill_toggle = false;
+        while saturated.journal().len() < MAX_JOURNAL_ENTRIES {
+            fill += 1;
+            fill_toggle = !fill_toggle;
+            let state = if fill_toggle { dirt } else { stone };
+            saturated
+                .set(write_at, state, WorldTime(fill))
+                .expect("in bounds");
+        }
+        let mut clock = fill;
+        let mut toggle = false;
+        out.push(measure(
+            "chunk.change_feed_at_cap",
+            "The same write with the feed full, so each one discards the oldest entry",
+            Budget {
+                iterations_per_sample: 2_000,
+                ..budget
+            },
+            || {
+                clock += 1;
+                toggle = !toggle;
+                let state = if toggle { dirt } else { stone };
+                consume(
+                    saturated
+                        .set(write_at, state, WorldTime(clock))
+                        .expect("in bounds"),
+                );
+            },
+        ));
+        out.push(record_quantity(
+            "chunk.change_feed_cap",
+            "Entries a chunk's change feed holds before it starts discarding",
+            MAX_JOURNAL_ENTRIES as u64,
+        ));
+    }
 
     Ok(out)
 }

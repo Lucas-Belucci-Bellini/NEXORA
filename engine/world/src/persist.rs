@@ -358,7 +358,9 @@ pub(crate) fn decode_chunks(
         // A chunk read from storage starts life already loaded and clean.
         chunk.force_state(ChunkState::Loaded);
         chunk.mark_clean();
-        chunk.take_journal();
+        // Not `take_journal`: these entries describe how the chunk was rebuilt
+        // from the save, not what happened to the world. Nothing consumes them.
+        chunk.clear_journal();
         chunks.push(chunk);
     }
 

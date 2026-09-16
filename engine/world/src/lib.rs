@@ -20,6 +20,6 @@ pub mod region;
 pub mod voxel;
 pub mod world;
 
-pub use chunk::{Chunk, ChunkState, VoxelChange};
+pub use chunk::{ChangeFeed, Chunk, ChunkState, VoxelChange};
 pub use voxel::{BlockStateId, Section, AIR};
 pub use world::{World, WorldDescriptor, WorldId, WorldPhase};

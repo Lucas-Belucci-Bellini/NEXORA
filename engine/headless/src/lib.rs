@@ -360,6 +360,20 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         .sum();
     let saved_time = world.clock().now();
 
+    // The first consumer of the signal `DEBT-0004` added and nothing read: a
+    // chunk whose change feed overflowed is no longer a complete record of what
+    // happened to it. At 76 edits across 25 columns this cannot trip today --
+    // the cap is 4,096 per column -- and the point is that it is now checked
+    // rather than merely countable. A change that starts discarding entries in
+    // the slice fails here instead of passing quietly.
+    let feed_gaps = world.change_feed_gaps();
+    if feed_gaps != 0 {
+        return Err(
+            mismatch("a chunk's change feed overflowed and lost entries")
+                .with_context("dropped", feed_gaps.to_string()),
+        );
+    }
+
     // --- save --------------------------------------------------------------
     let container = persist::save(&world)?;
     let save_bytes = container.encode().len();

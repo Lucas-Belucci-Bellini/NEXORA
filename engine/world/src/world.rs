@@ -384,6 +384,24 @@ impl World {
         self.chunks.get_mut(&coord)
     }
 
+    /// Change-feed entries discarded across every resident chunk.
+    ///
+    /// Non-zero means some chunk's feed is no longer a complete record of what
+    /// happened to it (`DEBT-0004`). This is **not** a durability question: an
+    /// edit reaches the save journal before it reaches the chunk
+    /// ([`World::set_block`]), so a gap here costs history and replication,
+    /// never the block itself.
+    ///
+    /// Resident chunks only. A column that left memory took its unconsumed feed
+    /// with it, and the gap count went with the data it described.
+    #[must_use]
+    pub fn change_feed_gaps(&self) -> u64 {
+        self.chunks
+            .values()
+            .map(Chunk::dropped_journal_entries)
+            .sum()
+    }
+
     /// Clear a resident chunk's dirty set after its contents reached storage.
     ///
     /// Returns whether the column was resident.
@@ -692,7 +710,9 @@ impl World {
         chunk.transition_to(ChunkState::Generated)?;
         chunk.transition_to(ChunkState::Loaded)?;
         chunk.mark_clean();
-        chunk.take_journal();
+        // Not `take_journal`: generation's own writes are not changes to the
+        // world, and no consumer wants a feed describing terrain appearing.
+        chunk.clear_journal();
         Ok(chunk)
     }
 }

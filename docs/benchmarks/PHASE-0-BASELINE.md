@@ -781,6 +781,62 @@ is not worth paying; `DEBT-0020`'s own trigger is ~1,000 retained columns or the
 first dedicated server, and neither has happened. The mechanism is built and
 measured so that the switch is a decision rather than a project.
 
+### 10k. Measuring a debt about silence found one about cost (2026-09-16)
+
+**`DEBT-0004` is about a change feed going quietly incomplete. Measuring it
+first turned up that enforcing the cap cost 49.95 µs per voxel write.**
+
+The feed kept the newest 4,096 changes and dropped the oldest with
+`Vec::remove(0)` — which moves the other 4,095 entries, about 190 KB, on every
+write past the cap. Paid by exactly the column being edited hardest, because
+that is the one that reaches the cap.
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `chunk.change_feed_at_cap` | 49.95 µs | **42.0 ns** | −99.9% |
+| `chunk.change_feed_append` | 40.7 ns | 40.9 ns | — |
+| `voxel.get_paletted` | 6.6 ns | 6.5 ns | — |
+| `voxel.get_uniform` | 3.2 ns | 3.2 ns | — |
+| `voxel.set_existing_state` | 13.5 ns | 14.1 ns | — |
+| `voxel.compact_section` | 164.34 µs | 168.84 µs | — |
+
+**1,190× is not the finding. The finding is that the two top rows are now the
+same number.** A `VecDeque` discards from the front in constant time, so a write
+that also discards costs what a write costs — 42.0 against 40.9 ns. The cap
+stopped being something the hot path pays for, rather than becoming cheaper.
+
+The four rows below are the controls, and they held. The second row is the
+sharper one: the **append** path did not change, which is what makes the whole
+difference attributable to the discard and nothing else.
+
+**This one is proved by the benchmark and not by a test, and that is not a gap
+in the testing.** Swapping the container changes no behaviour: the correctness
+tests — the cap holds at 4,096, the retained window is the most recent one, the
+drop count is right — pass identically before and after. A test that could tell
+the two apart would be a test of `VecDeque`.
+
+**The silence the entry is actually about closed separately, and by the type.**
+`Chunk::take_journal` returned the changes and *reset* the drop count, so a
+consumer that never read `dropped_journal_entries` destroyed the only record
+that entries had gone missing. It now returns a `#[must_use] ChangeFeed` holding
+the changes and the gap together. Compiling that change pointed at the two call
+sites that were discarding the return in silence; both meant "this chunk was
+just built, there is nothing to consume" and now say so with `clear_journal`.
+
+`World::change_feed_gaps` sums the gaps across resident chunks and the slice
+fails if any is non-zero. At 76 edits across 25 columns against a 4,096 cap that
+cannot trip today; what changed is that the signal is read at all.
+
+**A gap here is not a lost block.** `World::set_block` writes the save journal
+(ADR-0011) before it touches the chunk, so durability never depended on this
+feed. A gap costs history and replication.
+
+**And the feed still has no consumer.** `take_journal` is called nowhere in the
+engine. The entry's own remediation — drain per tick into the History System —
+waits on Phase 11, and building a consumer now would be working ahead of the
+evidence. What this change buys is that the cap is free and the gap is
+un-ignorable by the time one exists.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |
