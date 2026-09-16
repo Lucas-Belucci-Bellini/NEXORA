@@ -162,6 +162,16 @@ impl Bounds {
         })
     }
 
+    /// The larger of the two horizontal half-extents.
+    ///
+    /// The spatial index widens a box query by this, because an entity whose
+    /// centre lies outside the query rectangle can still overlap it. Horizontal
+    /// only: the grid has no vertical subdivision to widen.
+    #[must_use]
+    pub fn widest_horizontal_half(self) -> f64 {
+        self.half_x.max(self.half_z)
+    }
+
     /// Whether two placed boxes share any space.
     ///
     /// Touching faces do **not** count as overlapping: two entities standing

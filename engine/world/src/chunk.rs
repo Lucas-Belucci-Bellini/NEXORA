@@ -8,7 +8,7 @@
 //! air optimization from §9 - a world with a 3840-block vertical range does not
 //! allocate storage for the empty majority of it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, SectionCoord};
@@ -116,6 +116,42 @@ pub struct VoxelChange {
     pub at: WorldTime,
 }
 
+/// A drained change feed, and the gap the cap left in it.
+///
+/// Returned by [`Chunk::take_journal`] so that the two cannot be separated: the
+/// count of discarded entries is reset by the drain, so handing it back with
+/// the changes is the only way a consumer cannot fail to be told.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[must_use = "a drained change feed carries the gap the cap left; dropping it \
+              discards the only record that entries went missing - use \
+              Chunk::clear_journal when there is nothing to consume"]
+pub struct ChangeFeed {
+    /// The recorded changes, oldest first.
+    pub changes: Vec<VoxelChange>,
+    /// Entries the cap discarded before this drain.
+    pub dropped: u64,
+}
+
+impl ChangeFeed {
+    /// Whether the feed is the whole story: nothing was discarded.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.dropped == 0
+    }
+
+    /// How many changes came back.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.changes.len()
+    }
+
+    /// Whether no changes came back. A feed can be empty and still incomplete.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
+}
+
 /// A column of voxel sections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
@@ -124,7 +160,13 @@ pub struct Chunk {
     sections: BTreeMap<i64, Section>,
     state: ChunkState,
     dirty_sections: BTreeSet<i64>,
-    journal: Vec<VoxelChange>,
+    /// The change feed, oldest first.
+    ///
+    /// A deque rather than a `Vec` because the cap discards from the **front**.
+    /// `Vec::remove(0)` moves every remaining entry on every write past the cap,
+    /// which measured **49.95 µs against a 40.7 ns append** - 1,227x, paid by
+    /// exactly the chunk that is being edited hardest. `DEBT-0004`.
+    journal: VecDeque<VoxelChange>,
     dropped_journal_entries: u64,
 }
 
@@ -138,7 +180,7 @@ impl Chunk {
             sections: BTreeMap::new(),
             state: ChunkState::Unloaded,
             dirty_sections: BTreeSet::new(),
-            journal: Vec::new(),
+            journal: VecDeque::new(),
             dropped_journal_entries: 0,
         }
     }
@@ -306,8 +348,11 @@ impl Chunk {
     }
 
     /// The recorded changes, oldest first.
+    ///
+    /// A deque rather than a slice because the cap discards from the front; see
+    /// the field's own note for what that is worth.
     #[must_use]
-    pub fn journal(&self) -> &[VoxelChange] {
+    pub const fn journal(&self) -> &VecDeque<VoxelChange> {
         &self.journal
     }
 
@@ -320,10 +365,33 @@ impl Chunk {
         self.dropped_journal_entries
     }
 
-    /// Drain the journal, e.g. after forwarding it to history or replication.
-    pub fn take_journal(&mut self) -> Vec<VoxelChange> {
+    /// Drain the change feed, e.g. after forwarding it to history or
+    /// replication.
+    ///
+    /// The gap the cap left comes back **with** the changes, and the counter is
+    /// reset by the same call that hands it over. That pairing is the point: a
+    /// drainer that never looked at `dropped_journal_entries` used to reset it
+    /// anyway, so the only record that the feed was incomplete disappeared into
+    /// the caller that did not read it. `DEBT-0004` calls that the partial
+    /// silence. Now the fact leaves with the data or not at all.
+    ///
+    /// Use [`Chunk::clear_journal`] where there is genuinely nothing to consume
+    /// - a chunk just generated or just read from a save.
+    pub fn take_journal(&mut self) -> ChangeFeed {
+        ChangeFeed {
+            changes: Vec::from(std::mem::take(&mut self.journal)),
+            dropped: core::mem::replace(&mut self.dropped_journal_entries, 0),
+        }
+    }
+
+    /// Discard the change feed without consuming it.
+    ///
+    /// For a chunk that was just generated or just read from a save: the
+    /// entries describe how it was built, not what happened to it, and nothing
+    /// downstream wants them.
+    pub fn clear_journal(&mut self) {
+        self.journal.clear();
         self.dropped_journal_entries = 0;
-        std::mem::take(&mut self.journal)
     }
 
     /// Collapse every section to its smallest representation.
@@ -358,10 +426,10 @@ impl Chunk {
 
     fn record(&mut self, change: VoxelChange) {
         if self.journal.len() >= MAX_JOURNAL_ENTRIES {
-            self.journal.remove(0);
+            self.journal.pop_front();
             self.dropped_journal_entries += 1;
         }
-        self.journal.push(change);
+        self.journal.push_back(change);
     }
 
     fn error(&self, message: &'static str) -> Error {
@@ -502,7 +570,7 @@ mod tests {
         let position = inside(0, 0, 2, 20, 2);
         chunk.set(position, STONE, WorldTime(1)).unwrap();
         chunk.mark_clean();
-        chunk.take_journal();
+        chunk.clear_journal();
 
         assert_eq!(chunk.set(position, STONE, WorldTime(2)).unwrap(), STONE);
         assert!(!chunk.is_dirty());
@@ -553,6 +621,68 @@ mod tests {
         assert!(chunk.journal().is_empty());
     }
 
+    /// `DEBT-0004`'s partial silence, as a test. The drain resets the gap
+    /// count, so if it did not hand it back, a consumer that forgot to look
+    /// first would destroy the only record that anything was discarded.
+    #[test]
+    fn draining_the_feed_hands_back_the_gap_it_leaves_behind() {
+        let mut chunk = chunk_at(0, 0);
+        let position = inside(0, 0, 2, 20, 2);
+        for tick in 0..(MAX_JOURNAL_ENTRIES as u64 + 7) {
+            let state = if tick % 2 == 0 { STONE } else { DIRT };
+            chunk.set(position, state, WorldTime(tick)).unwrap();
+        }
+        assert_eq!(chunk.dropped_journal_entries(), 7);
+
+        let feed = chunk.take_journal();
+        assert_eq!(feed.dropped, 7, "the gap leaves with the data");
+        assert!(!feed.is_complete());
+        assert_eq!(feed.len(), MAX_JOURNAL_ENTRIES);
+
+        // And the chunk starts clean, so the next drain does not re-report it.
+        assert_eq!(chunk.dropped_journal_entries(), 0);
+        let next = chunk.take_journal();
+        assert!(next.is_complete());
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn a_feed_can_be_empty_and_still_incomplete() {
+        // Every entry discarded and the survivors consumed: nothing to hand
+        // over, and the fact that something went missing still has to travel.
+        let mut chunk = chunk_at(0, 0);
+        let position = inside(0, 0, 2, 20, 2);
+        for tick in 0..(MAX_JOURNAL_ENTRIES as u64 + 3) {
+            let state = if tick % 2 == 0 { STONE } else { DIRT };
+            chunk.set(position, state, WorldTime(tick)).unwrap();
+        }
+        let dropped = chunk.dropped_journal_entries();
+        assert_eq!(dropped, 3);
+
+        let mut feed = chunk.take_journal();
+        feed.changes.clear();
+        assert!(feed.is_empty());
+        assert!(!feed.is_complete(), "empty is not the same as complete");
+    }
+
+    #[test]
+    fn clearing_the_feed_drops_the_gap_with_it() {
+        let mut chunk = chunk_at(0, 0);
+        let position = inside(0, 0, 2, 20, 2);
+        for tick in 0..(MAX_JOURNAL_ENTRIES as u64 + 5) {
+            let state = if tick % 2 == 0 { STONE } else { DIRT };
+            chunk.set(position, state, WorldTime(tick)).unwrap();
+        }
+        assert_eq!(chunk.dropped_journal_entries(), 5);
+
+        // `clear_journal` is for a chunk with nothing to consume, so it is
+        // allowed to forget - and saying so in a test is what keeps the two
+        // calls from being read as interchangeable.
+        chunk.clear_journal();
+        assert!(chunk.journal().is_empty());
+        assert_eq!(chunk.dropped_journal_entries(), 0);
+    }
+
     #[test]
     fn the_journal_is_bounded_and_reports_what_it_dropped() {
         let mut chunk = chunk_at(0, 0);
@@ -568,7 +698,7 @@ mod tests {
         assert_eq!(chunk.dropped_journal_entries(), 50);
         // The retained window is the most recent one.
         assert_eq!(
-            chunk.journal().last().unwrap().at,
+            chunk.journal().back().unwrap().at,
             WorldTime(MAX_JOURNAL_ENTRIES as u64 + 49)
         );
     }

@@ -21,6 +21,25 @@
 //!   answer honestly. That is what closes DEBT-0026: glass stops hiding what
 //!   is behind it, and the mesher needed no change at all — the trait method
 //!   had a default for exactly this day.
+//! * **And which pass it is drawn in**, which closes the other half,
+//!   DEBT-0035. `layer_of` is the second trait method with an `Opaque`
+//!   default, and [`layer_of_blend`] is where five blend modes collapse onto
+//!   three passes.
+//!
+//! # Two questions that look alike and are not
+//!
+//! `occludes` is keyed by **position**; `layer_at` is keyed by **surface**.
+//! That is deliberate. Occlusion is asked of an arbitrary neighbouring cell,
+//! which may be air or may not be loaded at all — only a position can name it.
+//! A layer is only ever asked of a surface that already exists, and keying it
+//! by surface is what makes the split free: greedy merging joins faces only
+//! when their surfaces are equal, so every merged rectangle belongs to exactly
+//! one pass before anything has to sort it.
+//!
+//! Occlusion between classes is also **asymmetric**, and both halves matter.
+//! Leaves in front of rock do not hide the rock — that is what the cutout class
+//! is for. The rock behind them does hide the leaf face pressed against it,
+//! because the rock is opaque. A test asserts both directions.
 //!
 //! # A chunk that is not resident is not empty
 //!
@@ -31,11 +50,12 @@
 //! does, never the other way round. Physics makes the same call for the same
 //! reason.
 
+use nexora_asset::material::BlendMode;
 use nexora_asset::registry::MaterialRegistry;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
 use nexora_foundation::spatial::BlockPos;
-use nexora_mesh::mesh::SurfaceId;
+use nexora_mesh::mesh::{RenderLayer, SurfaceId};
 use nexora_mesh::view::VoxelView;
 use nexora_world::voxel::AIR;
 use nexora_world::world::World;
@@ -60,7 +80,37 @@ pub const UNMAPPED_SURFACE: SurfaceId = SurfaceId(u32::MAX);
 pub struct SurfaceTable {
     surface: Vec<Option<SurfaceId>>,
     occludes: Vec<bool>,
+    /// Indexed by [`SurfaceId`], not by block state.
+    ///
+    /// The other two tables answer "what is at this cell", which is a question
+    /// about a block. This one answers "which pass does this surface belong
+    /// to", which is a question about a material — and two blocks sharing a
+    /// material must not be able to disagree about it.
+    layer: Vec<RenderLayer>,
     unmapped: Vec<Identifier>,
+}
+
+/// Which pass a blend mode is drawn in.
+///
+/// Five modes, three passes, and the collapse is derived rather than chosen:
+/// a surface that hides what is behind it needs no compositing and goes in the
+/// opaque pass; one that is fully present or fully absent per texel can be
+/// alpha-tested without sorting; everything left has to be blended, and
+/// blending has to happen last and in order.
+///
+/// That puts `Emissive` and `Translucent` in the transparent pass, which
+/// follows from [`BlendMode::occludes`] already saying they do not occlude. A
+/// surface you can see through is a surface that must be composited, whatever
+/// else it also does.
+#[must_use]
+pub const fn layer_of_blend(blend: BlendMode) -> RenderLayer {
+    match blend {
+        BlendMode::Opaque => RenderLayer::Opaque,
+        BlendMode::Cutout => RenderLayer::Cutout,
+        BlendMode::Transparent | BlendMode::Emissive | BlendMode::Translucent => {
+            RenderLayer::Transparent
+        }
+    }
 }
 
 impl SurfaceTable {
@@ -82,6 +132,11 @@ impl SurfaceTable {
         Self {
             surface,
             occludes,
+            // Empty on purpose: an untextured world carries no blend
+            // information, so every surface takes the trait's own default.
+            // Inventing layers here would be inventing the data the whole
+            // split waited for.
+            layer: Vec::new(),
             unmapped: Vec::new(),
         }
     }
@@ -101,6 +156,7 @@ impl SurfaceTable {
                 // An unresolved block occludes. The safe direction: a hole in
                 // the world is worse than an extra hidden face.
                 occludes: vec![true; count],
+                layer: Vec::new(),
                 unmapped: Vec::new(),
             },
         }
@@ -116,6 +172,22 @@ impl SurfaceTable {
     #[must_use]
     pub fn occludes_at(&self, state: u32) -> bool {
         self.occludes.get(state as usize).copied().unwrap_or(true)
+    }
+
+    /// Which pass a surface is drawn in.
+    ///
+    /// Defaults to [`RenderLayer::Opaque`] for anything the table does not
+    /// know, matching the trait's own default: an unresolved surface drawn in
+    /// the opaque pass is a surface in the wrong pass, while one drawn in the
+    /// transparent pass is a surface that may vanish behind the geometry in
+    /// front of it. The first is visible and wrong; the second looks like it
+    /// was never there.
+    #[must_use]
+    pub fn layer_at(&self, surface: SurfaceId) -> RenderLayer {
+        self.layer
+            .get(surface.0 as usize)
+            .copied()
+            .unwrap_or(RenderLayer::Opaque)
     }
 
     /// Every registered block that no material was assigned to.
@@ -166,6 +238,13 @@ impl SurfaceTableBuilder<'_> {
         }
         self.table.surface[index] = Some(SurfaceId(handle.0));
         self.table.occludes[index] = definition.blend().occludes();
+
+        // Keyed by the handle, because the layer belongs to the material.
+        let surface = handle.0 as usize;
+        if surface >= self.table.layer.len() {
+            self.table.layer.resize(surface + 1, RenderLayer::Opaque);
+        }
+        self.table.layer[surface] = layer_of_blend(definition.blend());
         Ok(self)
     }
 
@@ -240,6 +319,10 @@ impl VoxelView for WorldSurfaces<'_> {
             // until the neighbour loads — see the module documentation.
             Err(_) => true,
         }
+    }
+
+    fn layer_of(&self, surface: SurfaceId) -> RenderLayer {
+        self.table.layer_at(surface)
     }
 }
 
@@ -364,7 +447,7 @@ mod tests {
         let shared = table.build();
         assert!(shared.unmapped().is_empty(), "{:?}", shared.unmapped());
 
-        let mesh = mesh_region(&WorldSurfaces::new(&world, shared), extent);
+        let mesh = mesh_region(&WorldSurfaces::new(&world, shared), extent).flattened();
         let faces = top_faces(&mesh);
         assert_eq!(faces.len(), 1, "one material must merge to one rectangle");
         assert_eq!(faces[0].width * faces[0].height, 4);
@@ -386,7 +469,7 @@ mod tests {
             .unwrap();
         let split = table.build();
 
-        let mesh = mesh_region(&WorldSurfaces::new(&world, split), extent);
+        let mesh = mesh_region(&WorldSurfaces::new(&world, split), extent).flattened();
         assert_eq!(
             top_faces(&mesh).len(),
             4,
@@ -469,7 +552,7 @@ mod tests {
         assert!(!unmapped.contains(&"nexora:block/air".to_owned()));
 
         // And the unmapped block is still there to be seen.
-        let mesh = mesh_region(&WorldSurfaces::new(&world, table), extent);
+        let mesh = mesh_region(&WorldSurfaces::new(&world, table), extent).flattened();
         assert!(mesh
             .quads
             .iter()
@@ -576,5 +659,105 @@ mod tests {
             .unwrap();
         assert_eq!(table.surface_of(stone.0), Some(SurfaceId(rock.0)));
         assert_ne!(stone.0, rock.0, "the two registries disagree, as they may");
+    }
+
+    // --- render layers, through the real path (DEBT-0035) -------------------
+
+    #[test]
+    fn a_material_that_composites_sends_its_block_to_another_pass() {
+        // The end-to-end version of the mesh crate's unit test: a real world,
+        // a real registry, real blend modes, and the split coming out of the
+        // material rather than out of a test double.
+        let mut world = world();
+        // Placed rather than assumed: generated terrain decides what is at the
+        // origin, and a test that guesses is a test that passes by luck.
+        let (_, extent) = row(&mut world, &["stone", "dirt", "grass"]);
+
+        let materials = registry(&[
+            ("nexora:material/rock", BlendMode::Opaque),
+            ("nexora:material/leaves", BlendMode::Cutout),
+            ("nexora:material/glass", BlendMode::Transparent),
+        ]);
+        let mut table = SurfaceTable::resolved(&world, &materials);
+        table
+            .assign(&id("nexora:block/stone"), &id("nexora:material/rock"))
+            .unwrap();
+        table
+            .assign(&id("nexora:block/dirt"), &id("nexora:material/leaves"))
+            .unwrap();
+        table
+            .assign(&id("nexora:block/grass"), &id("nexora:material/glass"))
+            .unwrap();
+        let table = table.build();
+        assert!(table.unmapped().is_empty(), "{:?}", table.unmapped());
+
+        let mesh = mesh_region(&WorldSurfaces::new(&world, table), extent);
+
+        assert!(!mesh.opaque.is_empty(), "the stone was not drawn");
+        assert!(!mesh.cutout.is_empty(), "the leaves were not drawn");
+        assert!(!mesh.transparent.is_empty(), "the glass was not drawn");
+
+        // Nothing lost and nothing duplicated by the routing.
+        let flat = mesh.flattened();
+        assert_eq!(mesh.len(), flat.len());
+        assert_eq!(mesh.area(), flat.area());
+    }
+
+    #[test]
+    fn every_blend_mode_lands_in_the_pass_it_belongs_to() {
+        // Five modes, three passes. The collapse is derived, so it is worth
+        // pinning: a mode quietly moving pass is a rendering bug nobody can
+        // see in the code.
+        assert_eq!(layer_of_blend(BlendMode::Opaque), RenderLayer::Opaque);
+        assert_eq!(layer_of_blend(BlendMode::Cutout), RenderLayer::Cutout);
+        for blend in [
+            BlendMode::Transparent,
+            BlendMode::Emissive,
+            BlendMode::Translucent,
+        ] {
+            assert_eq!(
+                layer_of_blend(blend),
+                RenderLayer::Transparent,
+                "{} must be composited",
+                blend.as_str()
+            );
+        }
+        // And the mapping agrees with what occlusion already says: exactly the
+        // modes that hide what is behind them are the ones in the opaque pass.
+        for blend in BlendMode::ALL {
+            assert_eq!(
+                blend.occludes(),
+                layer_of_blend(blend) == RenderLayer::Opaque,
+                "{} disagrees with itself about being opaque",
+                blend.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn an_untextured_world_puts_everything_in_the_opaque_pass() {
+        // It carries no blend information, so the only honest answer is the
+        // default — not a guess at which blocks might be see-through.
+        let mut world = world();
+        let table = SurfaceTable::untextured(&world);
+        for state in 0..8 {
+            assert_eq!(table.layer_at(SurfaceId(state)), RenderLayer::Opaque);
+        }
+
+        let (_, extent) = row(&mut world, &["stone", "dirt"]);
+        let mesh = mesh_region(&WorldSurfaces::untextured(&world), extent);
+        assert!(mesh.cutout.is_empty() && mesh.transparent.is_empty());
+        assert_eq!(mesh.opaque, mesh.flattened());
+    }
+
+    #[test]
+    fn an_unmapped_surface_is_drawn_in_the_opaque_pass_rather_than_hidden() {
+        // The safe direction, and the reason it is safe: a surface in the
+        // wrong pass is visible and wrong, which somebody notices. One dropped
+        // into the transparent pass could vanish behind the geometry in front
+        // of it, which looks like it was never there.
+        let table = SurfaceTable::default();
+        assert_eq!(table.layer_at(UNMAPPED_SURFACE), RenderLayer::Opaque);
+        assert_eq!(table.layer_at(SurfaceId(9999)), RenderLayer::Opaque);
     }
 }

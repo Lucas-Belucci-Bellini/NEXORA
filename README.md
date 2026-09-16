@@ -38,7 +38,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 469 tests
+cargo test --workspace          # 990 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -53,12 +53,14 @@ world id           0x368cfbaaa04ab32c
 chunks generated   25
 non-air blocks     50818052
 voxel storage      722304 bytes
-save size          744954 bytes
+save size          116904 bytes
+region store       9 regions, 119482 bytes; one edit rewrote 1 for 18718 bytes
 physics bodies     9 (9 settled)
 physics substeps   600 (270 contacts)
 character drop     1010 cm
 streaming ticks    29 (95 generated, 120 evicted, 25 restored)
-chunks retained    25 (peak, edits that cannot be regenerated)
+chunks retained    15 (peak, edits that cannot be regenerated)
+retention spill    25 columns to 12 region files, 25 read back
 probes verified    76
 result             OK
 ```
@@ -68,9 +70,27 @@ doing its job: solid rock costs nothing to hold. The observer walks away from
 the edited region and back before the save, so those 76 verified probes are also
 proof that streaming evicted 120 columns without losing an edit.
 
+The region-store line is the same world written the other way round, one file
+per region ([ADR-0014](docs/adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md)):
+changing one block afterwards rewrote one of the nine files instead of all of
+them. The spill line is the other use of the same store: an evicted column that
+cannot be regenerated goes to its region file at the end of the tick that
+evicted it, so the walk's peak retention is one tick's evictions rather than
+every edit ever made — and the save comes out byte-identical either way.
+
 ```bash
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
 ```
+
+### Prebuilt binaries
+
+[`web/`](web) is a download page that reads the repository's releases at load
+time, and [`docs/RELEASING.md`](docs/RELEASING.md) describes the pipeline
+behind it: a version tag builds on Linux, Windows and macOS, **runs the
+binaries it is about to package on each platform**, and publishes the archives
+with a `SHA256SUMS` covering them. No release has been cut yet, so building
+from source is currently the only way to get it — which is the three commands
+above and no dependencies.
 
 ## Measuring it
 
@@ -95,7 +115,20 @@ behind `DEBT-0009` (scheduling one job per entity costs **~4,900× the simulatio
 it schedules**), and the one behind `DEBT-0011`: **49% of a physics step is the
 voxel lookup, not the solver** — measured by running the same 1,000 bodies
 against generated terrain and against a flat fixture, because a single combined
-number would have sent the optimisation work to the wrong half.
+number would have sent the optimisation work to the wrong half. That one has
+since been worked twice, and each pass corrected its own diagnosis. Keeping the
+last resolved section took the lookup from **49% to 38.6%** of a step (a
+40-metre raycast, almost nothing but lookup, got **40% faster**) and found two
+ordered-map descents on that path rather than one, together a third of the cost
+rather than the bulk of it. Removing the runtime division from the palette read
+took `voxel.get_paletted` **13.1 ns → 11.4 ns**, and found that two integer
+divisions were worth 1.7 ns rather than most of the read.
+
+The ruler itself had to be rebuilt in between. The terrain-against-flat pair
+stopped resolving anything once the depenetration scan was gone, so the lookup's
+share is now a **product of a count and a microbenchmark** — 1,000 cell
+questions per step, which is the same integer on every machine, times the cost
+of one — rather than the difference between two 140 µs numbers.
 
 ## Layout
 
@@ -117,6 +150,10 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
 engine/command       intent: definitions, validation, dispatch, quotas
+engine/asset         surface materials, texture maps, provenance, validation,
+                     the generator and pipeline contracts
+tools/texture-forge  the material generator -- a content tool, not an engine
+                     crate, so it lives outside engine/
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
 benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)
@@ -133,6 +170,7 @@ docs/adr/            architecture decision records
 | [`NEXORA ARCHITECTURE FREEZE CHECKLIST.md`](NEXORA%20ARCHITECTURE%20FREEZE%20CHECKLIST.md) | what is defined vs. what is built |
 | [`NEXORA DEVELOPMENT ROADMAP.md`](NEXORA%20DEVELOPMENT%20ROADMAP.md) | phase order |
 | [`NEXORA TECHNICAL DEBT REGISTER.md`](NEXORA%20TECHNICAL%20DEBT%20REGISTER.md) | shortcuts taken, with owners |
+| [`TEXTURE FORGE.md`](TEXTURE%20FORGE.md) | how materials and textures are made |
 | [`NEXORA DOCUMENTATION INDEX.md`](NEXORA%20DOCUMENTATION%20INDEX.md) | everything else |
 
 Every source file names the document whose contract it implements. If code and
@@ -171,7 +209,8 @@ for the completed benchmark.
 
 Measurement also opened `DEBT-0009` through `DEBT-0020`, each with a trigger
 point rather than a guess. Among them: the job system costs ~4,900× the work
-when used per entity, entity queries stop being free above ~10,000 entities, the
+when used per entity, spatial entity queries scanned the whole population
+(100,000 examined to return six — since fixed, `DEBT-0010` and ADR-0015), the
 voxel lookup is half of a physics step, and streaming generates chunks on the
 tick thread — where spending its own activation budget would cost 21.8 ms, more
 than a frame.

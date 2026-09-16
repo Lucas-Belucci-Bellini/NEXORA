@@ -76,7 +76,9 @@ pub mod world;
 
 pub use body::{BodyDescriptor, BodyId, BodyType, RigidBody, SleepState};
 pub use character::{CharacterController, GroundState, MoveIntent};
-pub use collision::{resolve, sweep_axis, AxisSweep, Contact, Resolution};
+pub use collision::{
+    cell_span, resolve, resolve_from, sweep_axis, AxisSweep, Contact, Resolution, StartState,
+};
 pub use gravity::GravityField;
 pub use material::{MaterialId, MaterialTable, PhysicsMaterial};
 pub use math::{Aabb, Axis, Vec3};

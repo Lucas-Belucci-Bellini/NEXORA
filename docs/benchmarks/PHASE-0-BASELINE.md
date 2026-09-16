@@ -382,6 +382,563 @@ The pair of measurements is the point. A single "physics costs 294 ns per body"
 number would have been attributed to the solver by default, and the work would
 have gone to the wrong half.
 
+### 10b. The fix bought a third of it, and the diagnosis needed correcting
+
+Finding 10 named the cause: "walks a `BTreeMap` of chunk columns and then a
+palette-indexed section, once per cell per axis per body, with no caching". Two
+things about that turned out to be wrong, and the second is the useful one.
+
+**There are two ordered maps on the path, not one.** `World::get_block` descends
+`World::chunks` for the column, and then `Chunk::get` descends `Chunk::sections`
+for the section. Finding 10 counted the first and read the second as part of
+"the palette-indexed section". They are separate descents and both are per-cell.
+`WorldVoxels` now keeps the last resolved *section* — one entry, not a map —
+which removes both from every repeat question, and a repeat is what almost every
+question is: a body is roughly 0.6 × 1.8 × 0.6 against sections of 32³.
+
+**And the descents were about a third of the lookup, not the bulk of it.**
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `physics.raycast_40m` | 1.90 µs | **1.14 µs** | −40.0% |
+| `physics.depenetration_check` | 123.6 ns | **78.5 ns** | −36.5% |
+| `physics.character_step` | 743.2 ns | **545.4 ns** | −26.6% |
+| `physics.box_sweep` | 289.1 ns | **219.0 ns** | −24.3% |
+| `physics.thousand_bodies_step` | 209.8 µs | **174.3 µs** | −16.9% |
+| — the lookup half of it | 102.7 µs | **67.2 µs** | **−34.6%** |
+| `physics.thousand_bodies_step_flat` | 107.1 µs | 107.1 µs | — |
+
+The last row is the control and it is the reason the rest can be attributed at
+all: the flat fixture does not go through `WorldVoxels`, and it did not move. A
+machine that had simply got faster would have moved it too.
+
+The ordering across the other rows is the second check. `raycast_40m` is a walk
+of forty metres of cells and almost nothing else, and it gains the most.
+`thousand_bodies_step` is half solver, and it gains the least. Nothing else
+would produce that gradient in that order.
+
+Two changes, measured separately: keeping the section is most of it (the lookup
+falls to **77.1 µs** on its own), and `ChunkShape::split_of` — which returns the
+section address and the section-local offset from one pass, because
+`section_of` takes the quotient and `local_of` the remainder of the same three
+divisions — takes it the rest of the way to 67.2 µs.
+
+Medians over five to seven runs. `physics.thousand_bodies_step` carries the
+highest variance in the suite (up to 30% relative σ on a loaded run), which is
+why the argument rests on `raycast_40m`, `depenetration_check` and
+`box_sweep`, all of which sit under 3%.
+
+**`DEBT-0011` stays open at a smaller number.** The lookup was 49% of a physics
+step and is now **38.6%** — still the larger half of what is left to win, and
+still not the solver. What remains is the palette read and the address
+arithmetic, neither of which a cache addresses; `voxel.get_paletted` at 6.9 ns
+and `spatial.index_of` at 3.7 ns are what the next attempt would have to move.
+
+`DEBT-0012` moved without being worked on. Its trigger read "junto com
+DEBT-0011", and `physics.depenetration_check` fell 36.5% because the
+depenetration scan reads the world through the same view. The debt is about the
+scan happening at all, so it stays open — but it now costs a third less while
+it waits.
+
+### 10c. The depenetration scan stops running, and the pair that measured 10b stops working
+
+`DEBT-0012` said the check for having started inside terrain costs ~42% of a
+sweep and runs for every body every step, down a path that almost never fires.
+It now runs only when it can tell the reader something new: when the body has
+moved into different cells, or the source says it changed.
+
+**The figure that does not depend on this machine.** A settled body makes two
+world reads per step; one of them is that check. Over ten steps, against a
+source that names a revision and one that does not:
+
+| ten settled steps | cells asked |
+| --- | ---: |
+| source names a revision | **10** |
+| source will not say | **20** |
+
+Exactly half, asserted as an equality in `a_resting_body_stops_being_asked_
+whether_it_started_inside_terrain`. Counting is the only honest way to state
+this: a timing test proves it on one machine and nothing on another.
+
+**And the timing, measured in interleaved pairs on one sitting:**
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `physics.thousand_bodies_step` | 137.3 µs | **84.6 µs** | −38.4% |
+| `physics.character_step` | 386.7 ns | **343.6 ns** | −11.1% |
+| `physics.thousand_bodies_step_flat` | 82.8 µs | 82.2 µs | −0.7% |
+| `physics.depenetration_check` | 56.1 ns | 55.2 ns | −1.6% |
+
+Two controls this time, and both had to hold still. The flat fixture names no
+revision, so it never skips — it did not move. `physics.depenetration_check`
+calls `depenetrate` directly and never sees the skip at all — it did not move
+either, which says the primitive is not faster; the calls to it stopped
+happening.
+
+**These are not on 10b's scale.** The same code that measured 174.3 µs there
+measures 137.3 µs as the "before" here, on a machine in a different state hours
+later. That is why the before column was re-measured by stashing rather than
+quoted: a 21% drift would have been reported as a 21% improvement.
+
+**A control caught a regression in the first attempt.** The cell span was
+computed before checking whether the source names a revision, so a source that
+had opted out paid for machinery it could not use — `thousand_bodies_step_flat`
+went *up* 17%. The span is now computed only once both halves of the proof
+exist.
+
+**The cost of the fix is that 10b's measurement no longer works.** The
+terrain/flat pair isolated the voxel lookup because the two rows differed in
+exactly one thing: where terrain came from. They now differ in two — the
+terrain row skips the depenetration scan and the flat row does not, because
+`FlatGround` names no revision. So "38.6% of a physics step is the lookup"
+cannot be re-derived from this pair, and any number taken from it now would be
+measuring both changes at once. Restoring it needs a flat fixture that names a
+constant revision, which is deliberately **not** done here: `FlatGround` is
+constructed inline and two of them with different floors would report the same
+constant, which is the one way a revision can lie. Recorded as **DEBT-0037**.
+
+### 10d. The ruler is rebuilt out of two parts, and one of them never drifts (2026-09-14)
+
+**Measured on a different, noisier box than 10a-10c.** Every number in this
+section was taken here, and none of it is comparable to the tables above: the
+same unchanged code that measured `thousand_bodies_step` at 84.6 µs in 10c
+measures ~140 µs here. That is the machine, not a regression, which is exactly
+why nothing below is quoted across.
+
+**DEBT-0037 asked for a flat fixture that names a revision. That was the easy
+half, and on its own it does not work.** `StillFloor` now gives the flat row a
+revision, so the pair differs in one thing again, and the A/B says so:
+
+| flat fixture | `thousand_bodies_step_flat` |
+| --- | ---: |
+| `FlatGround`, no revision | 145.34 µs |
+| `StillFloor`, revision | 142.79 µs |
+
+1.8%, against a run-to-run spread of 10–23% on this box. **The subtraction is
+not a measurement here, it is noise.** And it was always going to be: after
+DEBT-0012 a settled body makes one world read per step instead of two, so what
+the pair has to resolve is now a fifth of a step hiding inside two numbers of
+140 µs each.
+
+**So the pair was replaced by a product rather than a difference.** Two
+measurements, each resolvable on its own:
+
+| | value | spread |
+| --- | ---: | ---: |
+| `physics.world_reads_per_step` | **1 000** | — |
+| `physics.voxel_lookup` | **25.9 ns** | 5.8% |
+
+`1 000 × 25.9 ns = 25.9 µs` of a `141.16 µs` step: **18%**. The first row is a
+count — one cell question per settled body per step, the same integer on every
+machine, and independent confirmation that DEBT-0012's skip is live. The second
+is a 26 ns microbenchmark rather than a 140 µs one, which is the whole point:
+it can be re-measured cheaply and it is the only half that needs a quiet box.
+
+**How quiet is not a detail.** A second run of the same binary read
+`physics.voxel_lookup` at **38.2 ns with a 26% spread**, putting the share at
+27% instead of 18%. The count did not move by one. Reported as a range, 18–27%,
+because choosing the run that reads better is how a measurement becomes an
+advertisement.
+
+**And 38.6% is not what this contradicts.** That figure was taken while the
+depenetration scan still ran, when a settled body made two reads a step instead
+of one. Halving the reads was supposed to roughly halve the share, and it did.
+
+### 10e. The paletted read was one division, not two, and it was worth 13%
+
+**`voxel.get_paletted`: 13.1 ns → 11.4 ns.** What is left of DEBT-0011 after
+10b is the palette read and the address arithmetic, and the palette read had a
+divisor no compiler could see: cells pack `64 / bits` to a word, and
+`64 / 12` is five. Both the word and the offset inside it came from dividing by
+that.
+
+The twelve possible widths are known at compile time, so each one's layout is
+now a table entry: the quotient is a multiply and a shift against
+`ceil(2^32 / per_word)`, and the remainder falls out of the quotient. The
+identity is exact for every index a section can hold — `MAX_SECTION_EXTENT`
+cubed is 2^24, and the error bound `(N + d - 1) · e < 2^32` clears it by two
+orders of magnitude — and a test walks the last index of every word near the
+top of the range, which is where an approximate reciprocal breaks first.
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `voxel.get_paletted` | 13.1 ns | **11.4 ns** | −13% |
+| `physics.voxel_lookup` | 28.3 ns | **25.9 ns** | −8.5% |
+| `voxel.get_uniform` | 5.2 ns | 5.3 ns | — |
+| `spatial.index_of` | 6.3 ns | 6.3 ns | — |
+
+**The last two rows are the controls and they held still.** Uniform storage
+never calls the packed read, and `index_of` was not touched; a machine that had
+simply got faster would have moved both. `voxel.get_paletted` read 11.4 ns on
+two separate runs, against a 3–4% spread.
+
+**13% is less than a division costs, and that is the finding.** The guess
+behind this change was that two integer divisions were most of a 13 ns read.
+They are worth 1.7 ns. The likely reason is that there were never two: x86-64's
+`div` yields the quotient and the remainder from one instruction, so the
+compiler had already fused the pair, and an out-of-order core overlaps most of
+what is left with the surrounding work. This is reasoning, not measurement —
+what was measured is 1.7 ns.
+
+**DEBT-0011 stays open at the smaller number.** The address arithmetic —
+`split_of` at the top of every lookup, three divisions by runtime section
+extents — is now the largest single piece left, and it has the same shape: a
+divisor fixed for a world's lifetime that the compiler cannot see. Unlike the
+palette width it is not drawn from twelve values, so a table does not close it.
+
+### 10f. A proof needs to say who made it, and "controls held still" is not enough (2026-09-14)
+
+**The skip from 10c believed a number with no owner.** A body remembers the
+cells it was proven clear of solids in, keyed on the source's revision. A
+revision is a `u64`: `World` counts its edits from zero, any other source that
+opts in starts somewhere too, and two of them agree on the number while
+describing different terrain.
+
+**The obvious identity does not work, and that was checked rather than
+assumed.** A source built on the stack for one step and a *different* source
+built the same way for the next occupy the same address —
+`two_sources_at_one_address_do_not_share_a_proof` guarantees it by reusing one
+variable, and both grounds report revision 1. Address plus revision would have
+matched, and the body would have been left standing inside a block.
+
+What replaced it is a **session**: `PhysicsWorld::against(&source)` returns a
+`Stepper` that borrows the source for as long as the proof can be consulted, so
+every substep it runs is answered by the same live object. The borrow checker
+says so; nothing is compared. Opening a session mints a number never used
+before, and the proof records it.
+
+| ten settled steps | cells asked |
+| --- | ---: |
+| inside one session | **10** |
+| a session per step | **20** |
+
+`step_once` and `advance` open a session for the single call, so the safe
+default costs nothing to know: they are correct and they never skip. Holding the
+optimisation is what now takes holding the session, which the headless slice and
+the benchmark both do. The slice's save is **byte-identical** to the one from
+before the change.
+
+**And the test can fail.** With `proof.session == session` removed it reports
+"the check was skipped on the strength of a proof the old source made".
+
+### 10g. The palette read moved 30% in a commit that did not touch it
+
+**This corrects 10e's precision, not its direction.** 10e reported
+`voxel.get_paletted` at 13.1 ns → 11.4 ns, −13%, with `voxel.get_uniform` and
+`spatial.index_of` held still as controls. One commit later, having changed
+`engine/physics` and `engine/benchmark` and **not one line of `engine/world`**
+(checked with `git diff --name-only`), the same source reads **7.8 ns and 8.2 ns
+across two runs** — and the same two controls are still still, at 6.0 and 5.1 ns.
+
+The release profile is `lto = "thin"` with `codegen-units = 1`. Changing any
+crate in the workspace relinks the whole binary and moves `Section::get`; at
+under 10 ns, alignment and inlining decisions are worth tens of percent.
+
+**So the method has a hole in it.** "Move one thing and check the controls did
+not move" is necessary and not sufficient when the change itself relinks the
+binary — the controls can hold still while an untouched kernel moves 30%. What
+10e's measurement supports is the direction and the order of magnitude: the
+division came out, and the read got somewhere between ~13% and ~40% faster on
+this box. Not a single figure. Recorded as **DEBT-0039**, along with the fix:
+build the same source twice with a neutral change in between and publish the
+spread between builds, not only within one.
+
+### 10h. The save stops writing packed words raw (2026-09-14)
+
+**744,954 → 116,904 bytes for the slice's world: 6.4×.** *(Corrected on
+2026-09-15. The figure first published here paired 744,954, which is the slice
+at its default seed, with 117,908, which is the determinism smoke's slice at
+seed 987654321. Both numbers were right and the pair was not. At the default
+seed the before and after are 744,954 and 116,904; at seed 987654321 the after
+is 117,908. The ratio survives either way, which is why it went unnoticed.)*
+`DEBT-0003` had the
+container writing every section exactly as handed to it, which for the chunk
+section means the palette-packed words with no further coding.
+
+The codec was already written and already measured — `DEBT-0034` took it to
+1.0233× of zlib -9 — and it was sitting in `tools/texture-forge`, where only the
+PNG encoder could reach it. Promoting it to `nexora_foundation::deflate` added
+**no dependency edge at all**: persistence and the texture forge both already
+depended on foundation. All twelve generated PNGs are byte-identical across the
+move, checked by hash rather than by argument.
+
+| | bytes |
+| --- | ---: |
+| slice save, format 1 (raw sections) | 744,954 |
+| slice save, format 2 (coded sections) | **116,904** |
+
+**Compression is kept only when it wins.** High-entropy bytes deflate to
+slightly more than they started with; writing that would make the format worse
+at exactly the inputs it is already worst at. `Coding::Stored` is not a failure
+path — there is no failure path — it is the answer when compressing did not pay.
+
+**Format 1 stays readable.** `MIN_SUPPORTED_SAVE_FORMAT` was deliberately not
+raised: one branch in the decoder, against throwing away every world written
+before the change. Verified against a real format-1 file written by the previous
+build, not only against a hand-built frame.
+
+**A failing test found something the change had missed.** The first damage test
+flipped "a byte in the middle" and hit the coding byte rather than the deflate
+stream — caught, but by the coding range check rather than by the checksum. That
+exposed the new frame fields sitting *outside* the section checksum, whose own
+comment already explains why the name is inside it: a flipped bit in an
+unchecksummed field does not look like damage, it looks like a different and
+wrong instruction. A coding byte that flips turns a deflate stream into a raw
+payload. Coding and length are inside `frame_crc` now, with a test for each.
+
+### 10i. A region store pays for the regions that moved (2026-09-15)
+
+**A save after one block changed: 12.8–13.2 ms → 2.9 ms, and 40.8 KiB →
+4.7 KiB.** `DEBT-0002` had every save rewriting the whole world however little
+of it moved — encode every column, deflate every byte, write the file, then read
+it back and decode it to verify (ADR-0004's guarantee, priced as `DEBT-0006`).
+
+`nexora_world::region::RegionStore` writes the same world as a directory, one
+`SaveContainer` per region. Decisions in
+[ADR-0014](../adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md).
+
+| benchmark world, 3×3 columns | one container | region store |
+| --- | ---: | ---: |
+| save after one block changed | 12.76 / 13.16 ms | **2.91 / 2.87 ms** |
+| bytes written for that save | 40.8 KiB | **4.7 KiB** |
+| save of the whole world | 12.76 / 13.16 ms | 14.95 / 14.91 ms |
+| bytes for the whole world | 40.8 KiB | 41.7 KiB |
+
+Two runs of each, and **`save.write_atomic_disk` is the control**: 13.19 ms
+before the change, 12.76 and 13.16 ms after. It did not move, which is what
+makes the rest attributable — nothing here touches the container path.
+
+**The figure that does not depend on the machine is a count.**
+`save.regions_written_per_edit` is **1** of 4, on any box and in any build. It
+is also the independent confirmation that per-section dirty tracking, which the
+chunk lifecycle has recorded since it was built and no save had ever read, is
+now read.
+
+**Two columns per region, not the default 32.** At the engine default a 3×3
+world is one region and the measurement could not tell skipping from writing.
+The extent is a parameter of the store, and the mechanism is what is under test.
+
+**The price, measured rather than omitted: a full write costs 13–17% more**, and
+the total grows 2.2%. Five files instead of one is five sets of framing, five
+`fsync`s, five read-back verifications, and five deflate streams that cannot
+share a dictionary; the palette is also written once per region, deliberately,
+so that a region file can be read with nothing else present. A full write is the
+case this arrangement is not for.
+
+**Splitting the section inside the same container would have bought nothing.**
+The container encodes as a unit: every section deflates on every `encode`, and
+the whole file is written and verified. The cost follows the file, so the
+regions had to be files — and the alternative would have been a structure whose
+benefit arrives in some later change.
+
+**What this does not do yet.** Nothing in the engine saves through it. The slice
+writes the single container and runs the store beside it as verification, which
+is where the nine-region line in its report comes from. `DEBT-0002` is reduced,
+not closed, and closing it waits on `DEBT-0020` — the evicted column going to
+its region file instead of to a `BTreeMap` in memory.
+
+### 10j. Retention can cost no memory, and the price is the file (2026-09-15)
+
+**20.0 KiB → 0 B per evicted edited column, at 184.7 ns → 3.08 ms a round
+trip.** `DEBT-0020` measured retention at 20.0 KiB per column, growing with how
+much the world was edited and dying with the process. `RetainedChunks` can now
+be backed by a region store ([ADR-0014](../adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md)).
+
+| | median |
+| --- | ---: |
+| `streaming.retained_bytes_per_chunk` (**control**, unchanged) | 20.0 KiB |
+| `streaming.retained_bytes_after_flush` | **0 B** |
+| `streaming.chunk_retained_cycle` (held in memory) | 184.7 ns |
+| `streaming.chunk_flushed_cycle` (through a region file) | **3.08 ms** |
+| `streaming.region_writes_per_eight_columns` | **4** |
+
+Every pre-existing streaming row held still across the change —
+`idle_tick_r3` 3.64 µs, `idle_tick_r12` 121.29 µs, `walk_one_chunk` 7.39 µs,
+`chunk_generate_cycle` 1.30 ms, `retained_bytes_per_chunk` 20.0 KiB — which is
+what makes the two new rows attributable.
+
+**16,700× is the honest number, and it is not the one that decides this.** The
+last row is: the cost is the **file**, not the column. Eight columns falling in
+four regions are four writes, not eight — a count, the same on every machine.
+`chunk_flushed_cycle` is the pathological shape, one column flushed and
+immediately read back; a per-tick flush amortises over everything that tick
+evicted.
+
+**Eviction does not write; a flush does.** The backend's `persist` still hands
+the chunk to memory, because eviction runs inside the streaming budget and a
+file write does not belong there. `flush_to_store` runs at the end of the tick.
+The bound on memory becomes *what was evicted since the last flush*.
+
+Measured in the slice, which is the only place the real streaming loop runs:
+peak retention **25 → 15** columns, 25 columns spilled to 12 region files and
+25 read back, and the **save byte-identical at 116,904 bytes** either way. The
+determinism smoke is still identical at one and eight threads, region stores
+included.
+
+**The default does not change, and that is the finding.** `RetainedChunks::new`
+is untouched. At Phase 0 scale 25 edited columns are 500 KiB and 3 ms a column
+is not worth paying; `DEBT-0020`'s own trigger is ~1,000 retained columns or the
+first dedicated server, and neither has happened. The mechanism is built and
+measured so that the switch is a decision rather than a project.
+
+### 10k. Measuring a debt about silence found one about cost (2026-09-16)
+
+**`DEBT-0004` is about a change feed going quietly incomplete. Measuring it
+first turned up that enforcing the cap cost 49.95 µs per voxel write.**
+
+The feed kept the newest 4,096 changes and dropped the oldest with
+`Vec::remove(0)` — which moves the other 4,095 entries, about 190 KB, on every
+write past the cap. Paid by exactly the column being edited hardest, because
+that is the one that reaches the cap.
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `chunk.change_feed_at_cap` | 49.95 µs | **42.0 ns** | −99.9% |
+| `chunk.change_feed_append` | 40.7 ns | 40.9 ns | — |
+| `voxel.get_paletted` | 6.6 ns | 6.5 ns | — |
+| `voxel.get_uniform` | 3.2 ns | 3.2 ns | — |
+| `voxel.set_existing_state` | 13.5 ns | 14.1 ns | — |
+| `voxel.compact_section` | 164.34 µs | 168.84 µs | — |
+
+**1,190× is not the finding. The finding is that the two top rows are now the
+same number.** A `VecDeque` discards from the front in constant time, so a write
+that also discards costs what a write costs — 42.0 against 40.9 ns. The cap
+stopped being something the hot path pays for, rather than becoming cheaper.
+
+The four rows below are the controls, and they held. The second row is the
+sharper one: the **append** path did not change, which is what makes the whole
+difference attributable to the discard and nothing else.
+
+**This one is proved by the benchmark and not by a test, and that is not a gap
+in the testing.** Swapping the container changes no behaviour: the correctness
+tests — the cap holds at 4,096, the retained window is the most recent one, the
+drop count is right — pass identically before and after. A test that could tell
+the two apart would be a test of `VecDeque`.
+
+**The silence the entry is actually about closed separately, and by the type.**
+`Chunk::take_journal` returned the changes and *reset* the drop count, so a
+consumer that never read `dropped_journal_entries` destroyed the only record
+that entries had gone missing. It now returns a `#[must_use] ChangeFeed` holding
+the changes and the gap together. Compiling that change pointed at the two call
+sites that were discarding the return in silence; both meant "this chunk was
+just built, there is nothing to consume" and now say so with `clear_journal`.
+
+`World::change_feed_gaps` sums the gaps across resident chunks and the slice
+fails if any is non-zero. At 76 edits across 25 columns against a 4,096 cap that
+cannot trip today; what changed is that the signal is read at all.
+
+**A gap here is not a lost block.** `World::set_block` writes the save journal
+(ADR-0011) before it touches the chunk, so durability never depended on this
+feed. A gap costs history and replication.
+
+**And the feed still has no consumer.** `take_journal` is called nowhere in the
+engine. The entry's own remediation — drain per tick into the History System —
+waits on Phase 11, and building a consumer now would be working ahead of the
+evidence. What this change buys is that the cap is free and the gap is
+un-ignorable by the time one exists.
+
+### 10l. An index made a query 1,253× faster and the tick 4× slower (2026-09-16)
+
+**`DEBT-0010` said entity queries were a linear scan, and its remediation said
+to measure the scan again before keeping anything. Measured first, at three
+population sizes, the scan behaved almost exactly as the entry extrapolated —
+and one row did not.**
+
+| query, scan only | 1,000 | 10,000 | 100,000 | per entity |
+| --- | ---: | ---: | ---: | ---: |
+| `within_radius(16)` | 10.9 µs | 102.7 µs | 979.7 µs | 9.8–10.9 ns |
+| `in_chunk` | 17.3 µs | 168.0 µs | 1,655.4 µs | 16.6–17.3 ns |
+| `by_type` | 15.7 µs | 182.7 µs | **4,069.0 µs** | 15.7 → **40.7** ns |
+
+The entry's "~19 ns per entity examined" holds for the first two rows across two
+orders of magnitude. **The third row does not**, and neither does ADR-0006's
+matching note that a type query "will not hold at 100,000": it costs 2.6× more
+per entity at 100,000 than at 1,000, because it matches everything and the cost
+is dominated by building a 100,000-element result rather than by examining
+anything. That row is not a scan that wants an index. It is a query whose answer
+is the population, and no index makes an answer smaller.
+
+**What the radius row says instead is the whole case for indexing**: 100,000
+entities examined to return **six**.
+
+#### After: a loose grid, 16-block cells, maintained by the store
+
+| | scan | index | |
+| --- | ---: | ---: | ---: |
+| `within_radius(16)`, 1,000 spread | 10.9 µs | **430 ns** | 25× |
+| `within_radius(16)`, 10,000 spread | 102.7 µs | **654 ns** | 157× |
+| `within_radius(16)`, 100,000 spread | 979.7 µs | **782 ns** | **1,253×** |
+| `in_chunk`, 100,000 spread | 1,655.4 µs | **625 ns** | **2,647×** |
+| `by_type`, 100,000 | 4,069.0 µs | 4,196.5 µs | — (still a scan) |
+
+The last row is the control, and it is the one that had to not move: the
+non-spatial queries were left alone deliberately, and they were.
+
+**The number that is not from this machine is `entity.query_radius_candidates_100k`
+= 41.** Forty-one entities examined, of 100,000, to answer a 16-block radius
+query. It is a count, so it is the same in any build on any box, and it is what
+the three orders of magnitude above are made of. The time went from growing with
+the population to being flat in it — 430, 654, 782 ns as the population went
+×100.
+
+#### What it cost, which is not nothing
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `entity.step_1000` | 2.07–2.11 µs | **7.2–8.7 µs** | ~4× |
+| `entity.step_1000_crossing_cells` | — | 170.9 µs | new row |
+| `entity.spawn` | 150–160 ns | 168–222 ns | noisy either way |
+| `entity.spawn_despawn_cycle` | 119–175 ns | 176–186 ns | |
+| `entity.query_radius_1000` (dense fixture) | 15.1–15.5 µs | 13.5–14.9 µs | ~1.1× |
+
+Three readings before, five after; the spread is between runs, not within them
+(each run's own relative stddev is 2–6%).
+
+**Half of the step regression was `f64::floor`.** Placing a position in a cell is
+`floor(x) as i64 >> 4` twice, and the x86-64 baseline has no `roundsd` — that is
+SSE4.1, which the default target does not assume — so `floor` is a call into
+libm. Measured over 1,000 placements: **4.94 ns** each via `floor`, **1.54 ns**
+via a truncating cast and a comparison that corrects the one case truncation
+gets wrong. `step_1000` went 10.57 → 7.27 µs on that change alone. The remaining
+~6.5 ns per entity per tick is the placement, the comparison against the stored
+cell, and the second data stream it reads.
+
+Two smaller things that are worth writing down because they were guesses that
+measurement settled. Hoisting the repeated read of the cell column changed
+`step_1000` by 0.04 µs — the compiler was already doing it; the change was kept
+for legibility and is not claimed as a saving. And the naive `truncated - 1`
+fixup wraps `i64::MIN` to `i64::MAX`, filing an entity at the opposite end of
+the world; `saturating_sub` costs nothing measurable and a test covers it.
+
+#### The awkward part, stated plainly
+
+**At the benchmark plan's own 1,000-entity stage, this index is a net loss of
+about 6.5 µs per tick.** The plan's fixture packs 1,000 entities into
+64 × 16 × 37 blocks — about twelve cells — so a 16-block radius query there asks
+about most of the population and there is nothing to exclude. `query_radius_1000`
+improved 1.1×, inside the run-to-run spread, while `step_1000` got 6.5 µs worse.
+
+That fixture was deliberately not changed. Rewriting it would have made every
+1,000-entity row in this document incomparable with every run before today, for
+the sake of making one change look better. The new rows ask the same questions
+of a population spread the way a world spreads one, and both sets are published.
+
+6.5 µs is 0.013% of a 50 ms tick, and it is bounded: the worst case, where every
+one of 1,000 entities changes cell on every tick, is 170.9 µs, and no entity
+moving at a plausible speed does that. The decision to keep the index always on
+rather than behind a switch is ADR-0015, and it turns on staleness rather than
+on these numbers: an index the store maintains only sometimes is an index a
+query cannot trust.
+
+#### One thing the guard does that is not about speed
+
+`Query` declines the index when the rectangle covers more cells than the store
+holds entities. That reads like a performance heuristic and is not one. A finite
+radius of `1e300` spans about 1.3 × 10³⁶ cells, and walking them does not
+finish. Removing the guard does not make that query slow; it makes it hang —
+which is also why the test for it asserts the *decision* rather than the answer.
+A test that hangs reports nothing.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |
@@ -897,8 +1454,8 @@ in exactly one thing — where the voxels come from:
 `mesh.cull_only_16` confirms it from the other direction: strip merging out
 entirely and you save about 3%.
 
-This is [finding 10](#) again — 49% of a physics step is the voxel lookup — and
-here it is far more extreme. Two independent measurements now point at the same
+This is [finding 10](#) again — 49% of a physics step was the voxel lookup, 38.6%
+of one after finding 10b — and here it is far more extreme. Two independent measurements now point at the same
 place, which is worth more than either alone.
 
 **The consequence is architectural, not merely an optimisation note.** A region
@@ -906,6 +1463,32 @@ snapshotted into a dense array can be meshed on a worker thread *without
 touching the world at all*. So the fix for meshing speed and the mechanism that
 makes RENDER-12's async meshing **safe** are the same change. `DEBT-0029` and
 `DEBT-0027` are one piece of work wearing two labels.
+
+### 22b. What the snapshot actually costs, once it is real (2026-09-13)
+
+The measurement above is a **diagnostic**: it excludes the cost of *building*
+the snapshot, which is itself a pass of world reads. It answers "how much of
+meshing is lookup", not "is the snapshot worth it". Those are different
+questions and the second one decides the work, so `DEBT-0029` added the
+measurement that answers it:
+
+| measurement | median |
+| --- | ---: |
+| `mesh.region_16` (read from the world) | **3.32 ms** |
+| `mesh.region_16_with_snapshot` (snapshot **built**, then meshed) | **1.22 ms** |
+| `mesh.region_16_from_snapshot` (snapshot already held) | **296 µs** |
+
+Two different numbers, and quoting one for the other would be wrong:
+
+* **First mesh of a region: 2.7×.** Building the snapshot costs 0.92 ms — 76%
+  of the with-snapshot time — because it is the pass that pays the world reads.
+* **Re-mesh while the snapshot is held: 11.2×.** That is the headline figure
+  from finding 22, and it applies only when the voxels have not changed.
+
+So the snapshot pays for itself immediately, and pays far more when a region is
+meshed again — a moved camera, a changed LOD tier, a second pass — without the
+voxels having changed underneath. It is worth being precise about which is
+which: **11.2× is the re-mesh figure, not the speedup a single mesh gets.**
 
 `mesh.region_32` at **26.12 ms** is the other half of why: that is more than a
 60 Hz frame, for one section, on the tick thread.

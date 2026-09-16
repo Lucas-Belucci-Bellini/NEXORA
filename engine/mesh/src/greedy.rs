@@ -38,16 +38,19 @@
 
 use nexora_foundation::spatial::{Axis, BlockPos};
 
-use crate::mesh::{ChunkMesh, Facing, Quad, SurfaceId};
+use crate::mesh::{Facing, LayeredMesh, Quad, SurfaceId};
 use crate::view::{Extent, VoxelView};
 
-/// Build the surface of `extent` as seen through `view`.
+/// Build the surface of `extent` as seen through `view`, split by render layer.
 ///
 /// Reads one cell beyond the region on every side, so faces on the boundary are
 /// culled against their real neighbours rather than against nothing.
+///
+/// Each merged rectangle is routed to its layer as it is emitted — see
+/// [`LayeredMesh`] for why that costs nothing and needs no second sweep.
 #[must_use]
-pub fn mesh_region<V: VoxelView + ?Sized>(view: &V, extent: Extent) -> ChunkMesh {
-    let mut mesh = ChunkMesh::new();
+pub fn mesh_region<V: VoxelView + ?Sized>(view: &V, extent: Extent) -> LayeredMesh {
+    let mut mesh = LayeredMesh::new();
     for axis in Axis::ALL {
         sweep_axis(view, extent, axis, &mut mesh);
     }
@@ -55,7 +58,7 @@ pub fn mesh_region<V: VoxelView + ?Sized>(view: &V, extent: Extent) -> ChunkMesh
 }
 
 /// Sweep every plane perpendicular to `axis`.
-fn sweep_axis<V: VoxelView + ?Sized>(view: &V, extent: Extent, axis: Axis, mesh: &mut ChunkMesh) {
+fn sweep_axis<V: VoxelView + ?Sized>(view: &V, extent: Extent, axis: Axis, mesh: &mut LayeredMesh) {
     let [first, second] = axis.others();
     let depth = extent.size[axis.index()];
     let width = extent.size[first.index()] as usize;
@@ -96,7 +99,7 @@ fn sweep_axis<V: VoxelView + ?Sized>(view: &V, extent: Extent, axis: Axis, mesh:
         }
 
         merge_mask(&mut positive, width, height, |u, v, w, h, surface| {
-            mesh.quads.push(Quad {
+            mesh.layer_mut(view.layer_of(surface)).quads.push(Quad {
                 origin: world_of(extent, axis, plane as i64 - 1, first, u, second, v),
                 axis,
                 facing: Facing::Positive,
@@ -106,7 +109,7 @@ fn sweep_axis<V: VoxelView + ?Sized>(view: &V, extent: Extent, axis: Axis, mesh:
             });
         });
         merge_mask(&mut negative, width, height, |u, v, w, h, surface| {
-            mesh.quads.push(Quad {
+            mesh.layer_mut(view.layer_of(surface)).quads.push(Quad {
                 origin: world_of(extent, axis, plane as i64, first, u, second, v),
                 axis,
                 facing: Facing::Negative,
@@ -229,6 +232,7 @@ pub fn unmerged_face_count<V: VoxelView + ?Sized>(view: &V, extent: Extent) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh::RenderLayer;
 
     const STONE: SurfaceId = SurfaceId(1);
     const DIRT: SurfaceId = SurfaceId(2);
@@ -380,7 +384,7 @@ mod tests {
         }
 
         let extent = Extent::new(BlockPos::new(0, 0, 0), [8, 1, 1]).expect("valid");
-        let mesh = mesh_region(&TwoTone, extent);
+        let mesh = mesh_region(&TwoTone, extent).flattened();
         let top: Vec<&Quad> = mesh
             .quads
             .iter()
@@ -400,8 +404,8 @@ mod tests {
         // would look like a grid of boxes.
         let view = solid([0, 0, 0], [7, 7, 15]);
 
-        let near = mesh_region(&view, region([0, 0, 0], 8));
-        let far = mesh_region(&view, region([0, 0, 8], 8));
+        let near = mesh_region(&view, region([0, 0, 0], 8)).flattened();
+        let far = mesh_region(&view, region([0, 0, 8], 8)).flattened();
 
         let seam_faces = near
             .quads
@@ -478,7 +482,7 @@ mod tests {
             max: [5, 5, 5],
         };
         let extent = region([0, 0, 0], 6);
-        let mesh = mesh_region(&view, extent);
+        let mesh = mesh_region(&view, extent).flattened();
         assert!(!mesh.is_empty());
 
         for quad in &mesh.quads {
@@ -497,5 +501,150 @@ mod tests {
         let mesh = mesh_region(&view, region([0, 0, 0], 16));
         assert_eq!(mesh.vertex_count(), mesh.len() as u64 * 4);
         assert_eq!(mesh.vertex_count(), 24, "six rectangles, four corners each");
+    }
+
+    // --- render layers (RENDER-10) ------------------------------------------
+
+    /// A view where the surface id decides the layer: 1 opaque, 2 cutout,
+    /// 3 transparent. Anything non-opaque also stops occluding, which is what
+    /// makes it visible at all.
+    struct Layered {
+        cells: Vec<(BlockPos, SurfaceId)>,
+    }
+
+    impl Layered {
+        fn layer_for(surface: SurfaceId) -> RenderLayer {
+            match surface.0 {
+                2 => RenderLayer::Cutout,
+                3 => RenderLayer::Transparent,
+                _ => RenderLayer::Opaque,
+            }
+        }
+    }
+
+    impl VoxelView for Layered {
+        fn surface_at(&self, position: BlockPos) -> Option<SurfaceId> {
+            self.cells
+                .iter()
+                .find(|(at, _)| *at == position)
+                .map(|(_, surface)| *surface)
+        }
+        fn occludes(&self, position: BlockPos) -> bool {
+            self.surface_at(position)
+                .is_some_and(|surface| Self::layer_for(surface) == RenderLayer::Opaque)
+        }
+        fn layer_of(&self, surface: SurfaceId) -> RenderLayer {
+            Self::layer_for(surface)
+        }
+    }
+
+    #[test]
+    fn the_default_layer_puts_everything_in_the_opaque_pass() {
+        // The posture `occludes` already takes: a view that says nothing gets
+        // the answer today's data supports, and the other two passes are empty
+        // rather than speculative.
+        let mesh = mesh_region(&solid([0, 0, 0], [3, 3, 3]), region([0, 0, 0], 4));
+        assert!(!mesh.opaque.is_empty());
+        assert!(mesh.cutout.is_empty());
+        assert!(mesh.transparent.is_empty());
+        assert_eq!(mesh.len(), mesh.opaque.len());
+    }
+
+    #[test]
+    fn every_face_lands_in_exactly_one_layer() {
+        // The invariant the split must not break. Routing a rectangle changes
+        // which mesh holds it, never how much surface exists — so the layers
+        // together must equal what a single mesh would have held, with nothing
+        // lost and nothing counted twice.
+        let view = Layered {
+            cells: vec![
+                (BlockPos::new(0, 0, 0), SurfaceId(1)),
+                (BlockPos::new(1, 0, 0), SurfaceId(2)),
+                (BlockPos::new(2, 0, 0), SurfaceId(3)),
+                (BlockPos::new(0, 1, 0), SurfaceId(1)),
+                (BlockPos::new(1, 1, 0), SurfaceId(3)),
+            ],
+        };
+        let mesh = mesh_region(&view, region([0, 0, 0], 4));
+        let flat = mesh.flattened();
+
+        assert_eq!(mesh.len(), flat.len(), "a rectangle went missing or twice");
+        assert_eq!(mesh.area(), flat.area());
+        assert_eq!(mesh.vertex_count(), flat.vertex_count());
+
+        // And each layer holds only surfaces that belong to it.
+        for (layer, each) in mesh.iter() {
+            for quad in &each.quads {
+                assert_eq!(
+                    Layered::layer_for(quad.surface),
+                    layer,
+                    "{:?} is in the {} pass",
+                    quad.surface,
+                    layer.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_cutout_block_is_drawn_and_does_not_hide_the_stone_behind_it() {
+        // The trigger this work waited for. Leaves in front of rock: the
+        // leaves go to the cutout pass, and the rock still emits the face the
+        // leaves are standing in front of, because cutout does not occlude.
+        let view = Layered {
+            cells: vec![
+                (BlockPos::new(0, 0, 0), SurfaceId(1)),
+                (BlockPos::new(1, 0, 0), SurfaceId(2)),
+            ],
+        };
+        let mesh = mesh_region(&view, region([0, 0, 0], 4));
+
+        assert!(!mesh.cutout.is_empty(), "the leaves were not drawn");
+        assert!(mesh.transparent.is_empty());
+
+        // Occlusion is asymmetric across the shared plane, and both halves
+        // matter. The stone keeps all six faces, because a cutout neighbour
+        // does not hide anything — that is the whole point of the class. The
+        // leaves keep five: the stone behind them *is* opaque, so the leaf
+        // face pressed against it is hidden and correctly culled. Asserting
+        // six for both, as a first draft of this test did, would have demanded
+        // a face nobody can see.
+        assert_eq!(mesh.opaque.area(), 6, "the stone lost a face to the leaves");
+        assert_eq!(
+            mesh.cutout.area(),
+            5,
+            "the leaf face against the stone should be culled"
+        );
+    }
+
+    #[test]
+    fn two_surfaces_in_different_layers_never_merge_into_one_rectangle() {
+        // Greedy merging only joins equal surfaces, so this holds already —
+        // but it is the property the whole design leans on, and a change to
+        // the merge predicate that broke it would otherwise be silent.
+        let mut cells = Vec::new();
+        for x in 0..4 {
+            cells.push((
+                BlockPos::new(x, 0, 0),
+                if x < 2 { SurfaceId(1) } else { SurfaceId(3) },
+            ));
+        }
+        let mesh = mesh_region(&Layered { cells }, region([0, 0, 0], 4));
+
+        for quad in &mesh.flattened().quads {
+            assert!(quad.width <= 2 && quad.height <= 2, "{quad:?} spans layers");
+        }
+        assert!(!mesh.opaque.is_empty());
+        assert!(!mesh.transparent.is_empty());
+    }
+
+    #[test]
+    fn splitting_does_not_change_the_geometry_a_single_pass_would_produce() {
+        // Against the real terrain shape: a view whose surfaces are all opaque
+        // must produce, in its opaque layer, exactly the mesh the unsplit
+        // mesher produced — same rectangles, same order.
+        let view = solid([0, 0, 0], [5, 5, 5]);
+        let mesh = mesh_region(&view, region([0, 0, 0], 6));
+        assert_eq!(mesh.opaque, mesh.flattened());
     }
 }

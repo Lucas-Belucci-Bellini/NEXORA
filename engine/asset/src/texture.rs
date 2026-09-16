@@ -209,6 +209,70 @@ impl MapRole {
     }
 }
 
+/// A rendered look at a material, for a person to judge it by.
+///
+/// Deliberately **not** a [`TextureMap`]. A map has a [`MapRole`] because
+/// something samples it: the renderer asks for the normal map and gets normals.
+/// Nothing samples a preview. It is a picture *of* the surface rather than a
+/// channel *of* it, and giving it a role would put it in `MapRole::ALL`, where
+/// every walk over a material's maps would then have to remember to skip it.
+///
+/// Always three channels, eight bits, sRGB: it is looked at, not computed with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    resolution: Resolution,
+    pixels: Vec<u8>,
+}
+
+impl Preview {
+    /// Channels a preview always has.
+    pub const LAYOUT: ChannelLayout = ChannelLayout::Rgb;
+
+    /// Wrap rendered pixels, checking they are the size they claim to be.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the buffer length does not match the resolution
+    /// at three bytes per pixel, or when it would exceed [`MAX_MAP_BYTES`].
+    pub fn new(resolution: Resolution, pixels: Vec<u8>) -> Result<Self> {
+        let expected = resolution
+            .texels()
+            .checked_mul(u64::from(Self::LAYOUT.count()))
+            .ok_or_else(|| invalid("preview size overflows"))?;
+        if expected > MAX_MAP_BYTES {
+            return Err(invalid("preview exceeds the per-map byte limit")
+                .with_context("bytes", expected.to_string())
+                .with_context("limit", MAX_MAP_BYTES.to_string()));
+        }
+        if pixels.len() as u64 != expected {
+            return Err(
+                invalid("preview buffer is not the size its resolution implies")
+                    .with_context("expected", expected.to_string())
+                    .with_context("found", pixels.len().to_string()),
+            );
+        }
+        Ok(Self { resolution, pixels })
+    }
+
+    /// How large the rendered image is.
+    #[must_use]
+    pub const fn resolution(&self) -> Resolution {
+        self.resolution
+    }
+
+    /// The rendered pixels, three bytes per texel.
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// How many bytes of pixel data it holds.
+    #[must_use]
+    pub fn byte_len(&self) -> usize {
+        self.pixels.len()
+    }
+}
+
 /// Where one map stands within a material.
 ///
 /// The five values the brief asks to be reportable. They answer two questions
@@ -692,5 +756,27 @@ mod tests {
         assert!(ChannelLayout::Rgba.has_alpha());
         assert!(!ChannelLayout::Rgb.has_alpha());
         assert_eq!(ChannelLayout::Rgb.count(), 3);
+    }
+
+    #[test]
+    fn a_preview_checks_its_buffer_against_its_resolution() {
+        let edge = Resolution::square(8).unwrap();
+        let preview = Preview::new(edge, vec![7; 8 * 8 * 3]).expect("three channels, eight bits");
+        assert_eq!(preview.resolution(), edge);
+        assert_eq!(preview.byte_len(), 8 * 8 * 3);
+        assert_eq!(preview.pixels().len(), 8 * 8 * 3);
+
+        // A buffer that is nearly right is the bug that shows up as a
+        // diagonally sheared image, so it is refused rather than accepted.
+        assert!(Preview::new(edge, vec![7; 8 * 8 * 3 - 1]).is_err());
+        assert!(Preview::new(edge, vec![7; 8 * 8 * 4]).is_err());
+    }
+
+    #[test]
+    fn a_preview_is_always_three_channels() {
+        // It is looked at, not computed with: no alpha to composite, no fourth
+        // channel for anything to misread.
+        assert_eq!(Preview::LAYOUT, ChannelLayout::Rgb);
+        assert_eq!(Preview::LAYOUT.count(), 3);
     }
 }
