@@ -215,11 +215,19 @@ pub(crate) fn encode_chunks_of(world: &World, coords: &[ChunkCoord]) -> Vec<u8> 
     // column would declare more chunks than the section carries, which the
     // reader would meet as a truncated stream rather than as a missing chunk.
     let present: Vec<&Chunk> = coords.iter().filter_map(|&c| world.chunk(c)).collect();
+    encode_chunks_from(&present)
+}
 
+/// Encode chunks that are held directly, rather than looked up in a world.
+///
+/// A region file being merged holds columns the world does not: they were
+/// evicted, which is why they are on disk. Both encoders are this one, so the
+/// two paths cannot drift into two formats.
+pub(crate) fn encode_chunks_from(chunks: &[&Chunk]) -> Vec<u8> {
     let mut out = Writer::new();
-    out.u32(present.len() as u32);
+    out.u32(chunks.len() as u32);
 
-    for chunk in present {
+    for &chunk in chunks {
         out.i64(chunk.coord().x);
         out.i64(chunk.coord().z);
 

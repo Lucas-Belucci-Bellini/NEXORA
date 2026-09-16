@@ -147,12 +147,31 @@ fn the_streaming_stage_evicts_and_restores_without_losing_an_edit() {
         report.streaming_generated > 0,
         "the walk never left the region the slice had already generated"
     );
-    // The slice edits every column it generated, so retention holds all of
+    // The slice edits every column it generated, so retention takes all of
     // them and nothing else: the chunks the walk generated along the way are
     // regenerable and are dropped rather than kept.
     assert_eq!(
-        report.streaming_retained_peak, report.chunks_generated,
-        "retention should hold exactly the edited columns"
+        report.streaming_spilled, report.chunks_generated,
+        "retention should take exactly the edited columns"
+    );
+    // And `DEBT-0020`: it never holds them all at once, because each tick's
+    // evictions go to their region files at the end of that tick. The peak is
+    // bounded by one tick's eviction budget, not by how much was edited.
+    assert!(
+        report.streaming_retained_peak > 0,
+        "nothing was ever held, so the spill was never exercised"
+    );
+    assert!(
+        report.streaming_retained_peak < report.chunks_generated,
+        "memory held every edited column at once, which is what spilling is for"
+    );
+    assert_eq!(
+        report.streaming_read_back, report.streaming_restored,
+        "every column that came back came back off disk"
+    );
+    assert!(
+        report.streaming_region_writes < report.streaming_spilled,
+        "columns sharing a region should cost one write between them"
     );
     assert!(
         report.streaming_generated as usize > report.chunks_generated,

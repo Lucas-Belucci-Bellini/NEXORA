@@ -28,6 +28,21 @@
 //!
 //! [`RetainedChunks::flush_into`] is the answer, and it must be called before
 //! any save. There is a test that saves without it and proves the edit is gone.
+//!
+//! ## Where retained chunks can live instead of memory
+//!
+//! Holding them in a `BTreeMap` bounds the growth by *how much was edited*
+//! rather than by how far the world was explored, which is the right shape —
+//! and it is still memory, and it still dies with the process. `DEBT-0020`
+//! measured it at **20.0 KiB per edited column**.
+//!
+//! [`RetainedChunks::backed_by`] attaches a [`RegionStore`] (ADR-0014).
+//! Eviction still hands the chunk here, because eviction runs inside the
+//! streaming budget and a file write does not belong there; what changes is
+//! that [`RetainedChunks::flush_to_store`] writes the held columns into their
+//! region files and drops them, and [`ResidencyBackend::activate`] reads a
+//! column back from disk when memory no longer has it. Memory is then bounded
+//! by *what was evicted since the last flush*, not by everything ever edited.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,7 +53,21 @@ use nexora_streaming::lod::Lod;
 use nexora_streaming::target::StreamTarget;
 use nexora_world::chunk::Chunk;
 use nexora_world::recovery::PendingEdits;
+use nexora_world::region::RegionStore;
 use nexora_world::world::World;
+
+/// What one flush to the region store moved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlushReport {
+    /// Columns written out and dropped from memory.
+    pub columns: usize,
+    /// Region files touched. Columns that share a region cost one write
+    /// between them, which is what makes a per-tick flush affordable: the
+    /// expensive part is the file, not the column.
+    pub regions: usize,
+    /// Bytes written across those files.
+    pub bytes: u64,
+}
 
 /// Chunks that were evicted but whose content cannot be regenerated.
 ///
@@ -51,15 +80,86 @@ pub struct RetainedChunks {
     /// evicted again looks clean, and dropping it would lose the edit a second
     /// time, so the fact that it was *ever* edited has to outlive its dirty bit.
     edited: BTreeSet<ChunkCoord>,
+    /// Where held columns go when they are flushed, if anywhere.
+    store: Option<RegionStore>,
     generated: u64,
     restored: u64,
+    flushed: u64,
+    read_back: u64,
 }
 
 impl RetainedChunks {
-    /// An empty store.
+    /// An empty store, holding evicted columns in memory only.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty store whose held columns can be flushed to region files.
+    ///
+    /// The store is where a flushed column lives and where
+    /// [`ResidencyBackend::activate`] looks for it when memory does not have
+    /// it. Attaching one changes nothing until [`Self::flush_to_store`] is
+    /// called: eviction runs inside the streaming budget, and a file write does
+    /// not belong there.
+    #[must_use]
+    pub fn backed_by(store: RegionStore) -> Self {
+        Self {
+            store: Some(store),
+            ..Self::default()
+        }
+    }
+
+    /// The region store backing this one, if any.
+    #[must_use]
+    pub const fn store(&self) -> Option<&RegionStore> {
+        self.store.as_ref()
+    }
+
+    /// Columns written out to region files and dropped from memory.
+    #[must_use]
+    pub const fn flushed(&self) -> u64 {
+        self.flushed
+    }
+
+    /// Columns brought back from a region file rather than from memory.
+    #[must_use]
+    pub const fn read_back(&self) -> u64 {
+        self.read_back
+    }
+
+    /// Write every held column into its region file and drop it from memory.
+    ///
+    /// Without a store attached this is a no-op reporting nothing, so a caller
+    /// can flush unconditionally.
+    ///
+    /// The columns are dropped **only after** the files are written and
+    /// verified: a failed write leaves them held, which is recoverable, where
+    /// dropping first would lose the edit outright. `world` supplies the
+    /// identifier palette the region files are written with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a region file cannot be read, written or verified.
+    pub fn flush_to_store(&mut self, world: &World) -> Result<FlushReport> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(FlushReport::default());
+        };
+        if self.held.is_empty() {
+            return Ok(FlushReport::default());
+        }
+
+        let columns: Vec<Chunk> = self.held.values().cloned().collect();
+        let count = columns.len();
+        let written = store.store_columns(world, columns)?;
+
+        self.held.clear();
+        self.flushed += count as u64;
+        Ok(FlushReport {
+            columns: count,
+            regions: written.written.len(),
+            bytes: written.bytes,
+        })
     }
 
     /// How many chunks are held.
@@ -98,16 +198,47 @@ impl RetainedChunks {
         self.held.values().map(Chunk::storage_bytes).sum()
     }
 
-    /// Put every retained chunk back into the world.
+    /// Put every retained chunk back into the world, wherever it is held.
     ///
-    /// **Call this before saving.** A save written while chunks are retained is
-    /// missing their edits. Returns how many chunks were returned.
-    pub fn flush_into(&mut self, world: &mut World) -> usize {
-        let count = self.held.len();
+    /// **Call this before a single-container save.** A save written while
+    /// chunks are retained is missing their edits. Returns how many chunks were
+    /// returned.
+    ///
+    /// With a store attached this also reads back the columns
+    /// [`Self::flush_to_store`] wrote out, because "every retained chunk" has
+    /// to keep meaning that — otherwise a flush would quietly empty the set
+    /// this call looks at, and the save would be wrong in exactly the way the
+    /// call exists to prevent. A caller whose save *is* the region store does
+    /// not call this at all: those columns are already in their region files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a region file cannot be read or fails
+    /// verification.
+    pub fn flush_into(&mut self, world: &mut World) -> Result<usize> {
+        let mut count = self.held.len();
         for (_, chunk) in core::mem::take(&mut self.held) {
             world.insert_chunk(chunk);
         }
-        count
+
+        if let Some(store) = self.store.as_ref() {
+            // Only columns that were evicted are in `edited`, and one that has
+            // since been activated is resident again and needs nothing.
+            let absent: Vec<ChunkCoord> = self
+                .edited
+                .iter()
+                .copied()
+                .filter(|coord| world.chunk(*coord).is_none())
+                .collect();
+            for coord in absent {
+                if let Some(chunk) = store.read_column(world, coord)? {
+                    world.insert_chunk(chunk);
+                    self.read_back += 1;
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -193,6 +324,10 @@ impl ResidencyBackend for WorldResidency<'_> {
         if let Some(chunk) = self.retained.held.remove(&coord) {
             self.world.insert_chunk(chunk);
             self.retained.restored += 1;
+        } else if let Some(chunk) = self.read_back(coord)? {
+            self.world.insert_chunk(chunk);
+            self.retained.restored += 1;
+            self.retained.read_back += 1;
         } else {
             self.world.load_or_generate(coord)?;
             self.retained.generated += 1;
@@ -240,6 +375,22 @@ impl ResidencyBackend for WorldResidency<'_> {
 }
 
 impl WorldResidency<'_> {
+    /// Look for a flushed column in the region store.
+    ///
+    /// Only columns known to have been edited are ever stored, so the `edited`
+    /// set is what decides whether to touch the disk at all. Without that gate
+    /// every generated column would cost a file read to learn that the store
+    /// has nothing for it.
+    fn read_back(&self, coord: ChunkCoord) -> Result<Option<Chunk>> {
+        let Some(store) = self.retained.store.as_ref() else {
+            return Ok(None);
+        };
+        if !self.retained.edited.contains(&coord) {
+            return Ok(None);
+        }
+        store.read_column(self.world, coord)
+    }
+
     fn bytes_of(&self, coord: ChunkCoord) -> u64 {
         self.world
             .chunk(coord)
@@ -548,7 +699,7 @@ mod tests {
         backend.persist(target(0, 0)).expect("persisted");
         backend.evict(target(0, 0)).expect("evicted");
 
-        assert_eq!(retained.flush_into(&mut world), 1);
+        assert_eq!(retained.flush_into(&mut world).expect("flushed"), 1);
         assert!(retained.is_empty());
 
         let container = persist::save(&world).expect("saved");
@@ -604,5 +755,252 @@ mod tests {
         assert_eq!(world.get_block(edited).expect("resident"), block);
         assert_eq!(retained.restored(), 1);
         assert!(retained.is_empty(), "the restored chunk is still held");
+    }
+
+    /// A scratch directory that cleans itself up.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let base = std::env::temp_dir().join(format!(
+                "nexora-residency-{label}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).expect("create scratch directory");
+            Self(base)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Two columns per region: at the engine default of 32 every column in
+    /// these tests shares one region, and a flush could not be told from a
+    /// whole-world write.
+    fn small_store(dir: &TempDir) -> RegionStore {
+        RegionStore::with_shape(
+            &dir.0,
+            nexora_foundation::spatial::RegionShape::new(2).expect("two columns per region"),
+        )
+    }
+
+    /// Evict one edited column, with the given retention.
+    fn evict_one_edited(
+        world: &mut World,
+        retained: &mut RetainedChunks,
+    ) -> (ChunkCoord, BlockPos) {
+        let coord = ChunkCoord::new(3, 0);
+        world.load_or_generate(coord).expect("generate");
+        let position = world
+            .descriptor()
+            .shape
+            .section_origin(nexora_foundation::spatial::SectionCoord::new(3, 2, 0))
+            .expect("in range");
+        let block = stone(world);
+        world.set_block(position, block).expect("edit");
+
+        let mut backend = WorldResidency::new(world, retained);
+        backend.persist(target(3, 0)).expect("persisted");
+        (coord, position)
+    }
+
+    #[test]
+    fn a_flushed_column_leaves_memory_and_comes_back_from_its_region_file() {
+        let dir = TempDir::new("flush");
+        let mut world = world();
+        let mut retained = RetainedChunks::backed_by(small_store(&dir));
+        let (coord, position) = evict_one_edited(&mut world, &mut retained);
+        let block = stone(&world);
+
+        assert_eq!(retained.len(), 1, "eviction holds it in memory first");
+        assert_eq!(retained.flush_to_store(&world).expect("flushed").columns, 1);
+        assert!(
+            retained.is_empty(),
+            "a flushed column is no longer costing memory"
+        );
+        assert_eq!(retained.storage_bytes(), 0);
+        assert_eq!(retained.flushed(), 1);
+
+        // It has to come back from disk, because memory does not have it.
+        let mut backend = WorldResidency::new(&mut world, &mut retained);
+        backend
+            .activate(target(3, 0), Lod::Full)
+            .expect("activated");
+        assert_eq!(retained.read_back(), 1, "it was read, not regenerated");
+        assert_eq!(retained.generated(), 0);
+        assert_eq!(world.get_block(position).expect("resident"), block);
+        assert_eq!(world.chunk(coord).map(Chunk::is_dirty), Some(false));
+    }
+
+    /// The whole point of `DEBT-0020`: the held bytes stop growing.
+    #[test]
+    fn flushing_bounds_retention_by_what_was_evicted_since_the_last_flush() {
+        let dir = TempDir::new("bounded");
+        let mut world = world();
+        let mut retained = RetainedChunks::backed_by(small_store(&dir));
+        let block = stone(&world);
+
+        let mut peak_without_flush = 0;
+        for x in 0..6i64 {
+            let coord = ChunkCoord::new(x, 7);
+            world.load_or_generate(coord).expect("generate");
+            let position = world
+                .descriptor()
+                .shape
+                .section_origin(nexora_foundation::spatial::SectionCoord::new(x, 2, 7))
+                .expect("in range");
+            world.set_block(position, block).expect("edit");
+
+            let mut backend = WorldResidency::new(&mut world, &mut retained);
+            backend
+                .persist(StreamTarget::Chunk(coord))
+                .expect("persisted");
+            peak_without_flush = peak_without_flush.max(retained.len());
+            retained.flush_to_store(&world).expect("flushed");
+            assert_eq!(
+                retained.len(),
+                0,
+                "nothing accumulates across evictions once each is flushed"
+            );
+        }
+
+        assert_eq!(peak_without_flush, 1, "one column held at a time");
+        assert_eq!(retained.flushed(), 6);
+        assert_eq!(
+            retained.edited_count(),
+            6,
+            "the fact of the edit still lives here"
+        );
+
+        // Every one of them is readable again, from three different regions.
+        for x in 0..6i64 {
+            let mut backend = WorldResidency::new(&mut world, &mut retained);
+            backend
+                .activate(StreamTarget::Chunk(ChunkCoord::new(x, 7)), Lod::Full)
+                .expect("activated");
+        }
+        assert_eq!(retained.read_back(), 6);
+        assert_eq!(retained.generated(), 0, "not one of them was regenerated");
+    }
+
+    /// `flush_into` has to keep meaning "every retained chunk", or a flush
+    /// silently empties the set it looks at and the container save goes out
+    /// missing the edits — the exact trap this module was built to close.
+    #[test]
+    fn flush_into_brings_back_the_columns_that_went_to_disk() {
+        let dir = TempDir::new("flushback");
+        let mut world = world();
+        let mut retained = RetainedChunks::backed_by(small_store(&dir));
+        let (coord, position) = evict_one_edited(&mut world, &mut retained);
+        let block = stone(&world);
+
+        retained.flush_to_store(&world).expect("flushed");
+        assert!(retained.is_empty());
+        assert!(
+            world.chunk(coord).is_none(),
+            "the column is not in the world"
+        );
+
+        assert_eq!(
+            retained.flush_into(&mut world).expect("flushed in"),
+            1,
+            "a column on disk is still a retained column"
+        );
+        assert_eq!(world.get_block(position).expect("resident"), block);
+
+        // And the container save now carries it, which is the thing that was
+        // at stake.
+        let container = persist::save(&world).expect("saved");
+        let reloaded = persist::load(&container).expect("loaded");
+        assert_eq!(reloaded.get_block(position).expect("resident"), block);
+    }
+
+    #[test]
+    fn a_column_that_was_never_edited_is_regenerated_rather_than_looked_for() {
+        let dir = TempDir::new("nolookup");
+        let store = small_store(&dir);
+        let mut world = world();
+
+        // The store is written whole first, so the column really is on disk:
+        // the choice under test is to regenerate it anyway, not an absence of
+        // anything to find. Generation is deterministic, so both answers are
+        // the same bytes and the cheaper one wins.
+        world
+            .load_or_generate(ChunkCoord::new(9, 9))
+            .expect("generate");
+        store.write_all(&mut world).expect("write");
+        world.unload_chunk(ChunkCoord::new(9, 9)).expect("resident");
+        assert!(store
+            .read_column(&world, ChunkCoord::new(9, 9))
+            .expect("read")
+            .is_some());
+
+        let mut retained = RetainedChunks::backed_by(store);
+        let mut backend = WorldResidency::new(&mut world, &mut retained);
+        backend
+            .activate(target(9, 9), Lod::Full)
+            .expect("activated");
+        assert_eq!(retained.generated(), 1);
+        assert_eq!(
+            retained.read_back(),
+            0,
+            "an unedited column is regenerated, not read from disk"
+        );
+    }
+
+    /// What makes a per-tick flush affordable: the expensive thing is the
+    /// region file, and columns that share one are written together. A count,
+    /// so it reads the same on every machine.
+    #[test]
+    fn columns_sharing_a_region_cost_one_write_between_them() {
+        let dir = TempDir::new("batched");
+        let mut world = world();
+        let mut retained = RetainedChunks::backed_by(small_store(&dir));
+        let block = stone(&world);
+
+        // Eight columns, two per region on each axis: x in 0..8 at z = 5 falls
+        // into regions (0,2), (1,2), (2,2) and (3,2).
+        for x in 0..8i64 {
+            let coord = ChunkCoord::new(x, 5);
+            world.load_or_generate(coord).expect("generate");
+            let position = world
+                .descriptor()
+                .shape
+                .section_origin(nexora_foundation::spatial::SectionCoord::new(x, 2, 5))
+                .expect("in range");
+            world.set_block(position, block).expect("edit");
+            let mut backend = WorldResidency::new(&mut world, &mut retained);
+            backend
+                .persist(StreamTarget::Chunk(coord))
+                .expect("persisted");
+        }
+
+        let report = retained.flush_to_store(&world).expect("flushed");
+        assert_eq!(report.columns, 8);
+        assert_eq!(
+            report.regions, 4,
+            "eight columns, two to a region, is four writes and not eight"
+        );
+        assert!(report.bytes > 0);
+    }
+
+    #[test]
+    fn without_a_store_a_flush_is_a_no_op_and_nothing_changes() {
+        let mut world = world();
+        let mut retained = RetainedChunks::new();
+        evict_one_edited(&mut world, &mut retained);
+
+        assert_eq!(
+            retained.flush_to_store(&world).expect("no store"),
+            FlushReport::default()
+        );
+        assert_eq!(retained.len(), 1, "memory is still the only place it lives");
+        assert_eq!(retained.flushed(), 0);
+        assert!(retained.store().is_none());
     }
 }

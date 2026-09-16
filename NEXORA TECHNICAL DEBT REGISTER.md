@@ -121,9 +121,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **STATUS:** OPEN (reduzido) — o mecanismo existe e está medido, mas
   **nada no motor ainda salva por ele**: o slice escreve o contêiner único e o
   `RegionStore` roda ao lado como verificação. Fechar exige escolher o
-  `RegionStore` como o formato de save do runtime, o que por sua vez espera o
-  `DEBT-0020` (a coluna despejada ir para o arquivo de região em vez do
-  `BTreeMap` em memória). No extent padrão de 32 colunas, todo mundo deste
+  `RegionStore` como o formato de save do runtime. O `DEBT-0020` — a coluna
+  despejada ir para o arquivo de região em vez do `BTreeMap` — foi remediado em
+  seguida e é **opt-in**; enquanto o padrão for a memória e o save for o
+  contêiner único, o store continua sendo um destino que o motor sabe escrever
+  e não o lugar de onde ele lê. No extent padrão de 32 colunas, todo mundo deste
   repositório cabe numa região só — a economia é real a partir da escala em que
   um mundo passa de uma região, e não antes.
 
@@ -843,13 +845,55 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** retenção passar de ~1.000 colunas, ou o primeiro servidor
   dedicado.
 - **TARGET STAGE:** Phase 3 (Persistence + Simulation)
-- **NOTA (2026-09-15):** o destino já existe. `RegionStore::read_region` lê uma
-  região sozinha — o arquivo carrega a própria paleta justamente para isso
-  (ADR-0014) — e `write_dirty` escreve só as regiões que mudaram. O que falta é
-  o lado do `residency`: `persist` escrever a coluna despejada na região e
-  `activate` lê-la de volta, em vez do `BTreeMap`. O bloqueio deixou de ser
-  "não há para onde escrever".
-- **STATUS:** OPEN (medido)
+- **RESOLUÇÃO (2026-09-15):** `RetainedChunks::backed_by(RegionStore)` existe, e
+  faz o que esta entrada pediu — com uma diferença deliberada em *quando*.
+
+  **A memória: 20,0 KiB → 0 B por coluna despejada.** `RegionStore::store_columns`
+  funde as colunas nos arquivos de região sem derrubar as que já estavam lá, e
+  `RegionStore::read_column` traz uma de volta. Medido:
+
+  | | |
+  | --- | ---: |
+  | `streaming.retained_bytes_per_chunk` (controle, não mudou) | **20,0 KiB** |
+  | `streaming.retained_bytes_after_flush` | **0 B** |
+  | `streaming.chunk_retained_cycle` (memória) | 184,7 ns |
+  | `streaming.chunk_flushed_cycle` (disco) | **3,08 ms** |
+  | `streaming.region_writes_per_eight_columns` | **4** |
+
+  **O preço é 16.700×, e é por isso que a decisão não é "sempre disco".** O que
+  torna um flush por tick viável não é o número de nanossegundos: é que o custo
+  é o **arquivo**, não a coluna. Oito colunas que caem em quatro regiões são
+  quatro escritas, não oito — uma contagem, igual em qualquer máquina.
+
+  **Despejar não escreve; o flush escreve.** O `persist` do backend continua
+  entregando o chunk para a memória, porque o despejo roda dentro do orçamento
+  de streaming e escrita de arquivo não cabe ali. `flush_to_store` é chamado no
+  fim do tick, escreve o que aquele tick despejou e solta. O limite da memória
+  passa a ser **o que foi despejado desde o último flush**, não tudo o que já
+  foi editado.
+
+  **`flush_into` continua significando "todo chunk retido".** Com um store
+  anexado ele também lê de volta o que foi para o disco — senão um flush
+  esvaziaria em silêncio justamente o conjunto que aquela chamada olha, e o save
+  em contêiner sairia sem as edições, que é exatamente a armadilha que o módulo
+  existe para fechar. Quem salva **pelo store** não chama `flush_into`: aquelas
+  colunas já estão nos arquivos de região.
+
+  **Coluna nunca editada é regerada, não procurada.** Geração é determinística,
+  então as duas respostas são os mesmos bytes e a barata ganha; há teste com a
+  coluna presente no arquivo provando que mesmo assim ela é regerada.
+
+  **No slice:** o pico de retenção caiu de **25 para 15** colunas (um orçamento
+  de despejo, não o mundo editado inteiro), 25 colunas foram para 12 arquivos de
+  região e 25 voltaram de lá — e o **save saiu byte-idêntico**, 116.904 bytes,
+  com ou sem o spill. O smoke de determinismo continua idêntico a 1 e 8 threads.
+- **STATUS:** OPEN (remediado, **opt-in**) — `RetainedChunks::new()` não mudou e
+  continua sendo o padrão. O gatilho desta entrada (~1.000 colunas retidas, ou o
+  primeiro servidor dedicado) **não disparou**: na escala da Phase 0, 25 colunas
+  são 500 KiB e 3 ms por coluna é caro demais para pagar por isso. O mecanismo
+  está pronto e medido; ligá-lo por padrão é a decisão que espera o gatilho.
+  A `edited` ainda é memória e ainda não sobrevive ao processo — o que sobrevive
+  agora é o **dado**, que era o custo que crescia.
 
 ### DEBT-0021 — Command System parou em CMD-4; CMD-5 a CMD-15 não existem
 

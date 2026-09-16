@@ -35,6 +35,7 @@
 //!    first would leave the clock ahead of the regions, and no replay repairs
 //!    that.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -280,6 +281,77 @@ impl RegionStore {
             world.descriptor().shape,
             &remap,
         )
+    }
+
+    /// Read one column out of its region file, if the file holds it.
+    ///
+    /// `None` means the store has nothing for that column — either the region
+    /// has no file, or the file has other columns but not this one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region file exists but fails verification, or
+    /// names block content this build does not register.
+    pub fn read_column(&self, world: &World, coord: ChunkCoord) -> Result<Option<Chunk>> {
+        let region = self.shape.region_of(coord);
+        Ok(self
+            .read_region(world, region)?
+            .into_iter()
+            .find(|chunk| chunk.coord() == coord))
+    }
+
+    /// Merge columns into their region files, keeping every stored column the
+    /// call does not name.
+    ///
+    /// This is the write a streaming eviction needs: the column leaving memory
+    /// is not in the world any more, and the region file it belongs to holds
+    /// columns that are not in the world either. Writing the region from the
+    /// resident set would drop them, so the file is read, overlaid and written
+    /// back — which is also why this is one read-modify-write per region and
+    /// not per column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored region cannot be read, when a block state
+    /// has no registered identifier, or when a file cannot be written.
+    pub fn store_columns(&self, world: &World, columns: Vec<Chunk>) -> Result<WriteReport> {
+        self.check_recorded_shape()?;
+
+        let mut by_region: BTreeMap<RegionCoord, BTreeMap<ChunkCoord, Chunk>> = BTreeMap::new();
+        for chunk in columns {
+            by_region
+                .entry(self.shape.region_of(chunk.coord()))
+                .or_default()
+                .insert(chunk.coord(), chunk);
+        }
+
+        let mut report = WriteReport::default();
+        for (region, mut merged) in by_region {
+            // Existing first, incoming second: a column named by the caller
+            // replaces the stored one rather than being discarded by it.
+            for stored in self.read_region(world, region)? {
+                merged.entry(stored.coord()).or_insert(stored);
+            }
+
+            let held: Vec<&Chunk> = merged.values().collect();
+            let mut container = SaveContainer::new();
+            container.put(
+                persist::section_id(SECTION_BLOCK_PALETTE)?,
+                persist::encode_palette(world)?,
+            );
+            container.put(
+                persist::section_id(SECTION_CHUNKS)?,
+                persist::encode_chunks_from(&held),
+            );
+
+            let path = self.region_path(region);
+            container.write_atomic(&path)?;
+            report.bytes += fs::metadata(&path)
+                .map_err(|cause| io_error("size region", &path, &cause))?
+                .len();
+            report.written.push(region);
+        }
+        Ok(report)
     }
 
     /// Every region this store has a file for, in ascending order.
@@ -815,6 +887,115 @@ mod tests {
                 "round trip through {stem}"
             );
         }
+    }
+
+    #[test]
+    fn a_stored_column_merges_into_its_region_without_displacing_the_others() {
+        let dir = TempDir::new("merge");
+        let store = RegionStore::with_shape(&dir.0, small_regions());
+        let mut world = built_world(12);
+        store.write_all(&mut world).expect("write");
+
+        // The column leaves the world entirely, the way an eviction takes it,
+        // and is written back on its own.
+        let evicted = ChunkCoord::new(0, 0);
+        let mut carried = world.unload_chunk(evicted).expect("resident");
+        let stone = block(&world, "nexora:block/stone");
+        carried
+            .set(BlockPos::new(3, 90, 3), stone, world.clock().now())
+            .expect("edit the evicted column");
+
+        let report = store
+            .store_columns(&world, vec![carried])
+            .expect("store the evicted column");
+        assert_eq!(report.written, vec![RegionCoord::new(0, 0)]);
+
+        // Region (0,0) held four columns; three are still in the world and one
+        // is not. All four must still be in the file.
+        let back = store
+            .read_region(&world, RegionCoord::new(0, 0))
+            .expect("read");
+        assert_eq!(back.len(), 4, "merging must not drop the other columns");
+        let restored = back
+            .iter()
+            .find(|chunk| chunk.coord() == evicted)
+            .expect("the stored column is there");
+        assert_eq!(
+            restored.get(BlockPos::new(3, 90, 3)).expect("in range"),
+            stone
+        );
+
+        // And the whole world still reads back, evicted column included.
+        assert_eq!(store.read().expect("read").chunk_count(), 9);
+    }
+
+    #[test]
+    fn storing_a_column_twice_keeps_the_second_write() {
+        let dir = TempDir::new("overwrite");
+        let store = RegionStore::with_shape(&dir.0, small_regions());
+        let mut world = built_world(13);
+        store.write_all(&mut world).expect("write");
+
+        let coord = ChunkCoord::new(1, 1);
+        let stone = block(&world, "nexora:block/stone");
+        let grass = block(&world, "nexora:block/grass");
+        let at = BlockPos::new(35, 95, 35);
+        let now = world.clock().now();
+
+        let mut first = world.unload_chunk(coord).expect("resident");
+        first.set(at, stone, now).expect("edit");
+        store
+            .store_columns(&world, vec![first.clone()])
+            .expect("first");
+
+        let mut second = first;
+        second.set(at, grass, now).expect("edit again");
+        store.store_columns(&world, vec![second]).expect("second");
+
+        let back = store
+            .read_column(&world, coord)
+            .expect("read")
+            .expect("stored");
+        assert_eq!(back.get(at).expect("in range"), grass);
+    }
+
+    #[test]
+    fn a_column_the_store_has_never_seen_reads_as_nothing() {
+        let dir = TempDir::new("unseen");
+        let store = RegionStore::with_shape(&dir.0, small_regions());
+        let mut world = built_world(14);
+        store.write_all(&mut world).expect("write");
+
+        // A region with a file, but not this column.
+        assert!(store
+            .read_column(&world, ChunkCoord::new(0, 0))
+            .expect("read")
+            .is_some());
+        // A region with no file at all.
+        assert!(store
+            .read_column(&world, ChunkCoord::new(40, 40))
+            .expect("read")
+            .is_none());
+    }
+
+    #[test]
+    fn a_column_stored_into_a_region_with_no_file_creates_one() {
+        let dir = TempDir::new("firstcolumn");
+        let store = RegionStore::with_shape(&dir.0, small_regions());
+        let mut world = built_world(15);
+        world
+            .load_or_generate(ChunkCoord::new(20, 20))
+            .expect("generate");
+        let carried = world
+            .unload_chunk(ChunkCoord::new(20, 20))
+            .expect("resident");
+
+        store.store_columns(&world, vec![carried]).expect("store");
+        assert!(store.region_path(RegionCoord::new(10, 10)).exists());
+        assert!(store
+            .read_column(&world, ChunkCoord::new(20, 20))
+            .expect("read")
+            .is_some());
     }
 
     #[test]

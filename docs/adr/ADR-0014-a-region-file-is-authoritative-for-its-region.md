@@ -84,8 +84,8 @@ while the palette grows, and its indices quietly mean different blocks.
 Writing the palette per region removes the coupling instead of guarding it: a
 region file resolves its own identifiers and is readable with nothing else
 present. That is also exactly what a streaming `activate` needs, and what
-`DEBT-0020` will need to read an evicted column back from disk. It costs the
-palette once per region, which deflates well and is measured below.
+`DEBT-0020` uses to read an evicted column back from disk. It costs the palette
+once per region, which deflates well and is measured below.
 
 ### The header is written last
 
@@ -130,6 +130,14 @@ would be nothing to skip):
 - **A crash between the regions and the header is recoverable**, and a test
   constructs exactly that state: the blocks that reached their region files are
   there, and the clock is the older one.
+- **The store is also where an evicted column can live.** `RegionStore::store_columns`
+  merges columns into their region files without displacing what is already
+  stored, and `read_column` brings one back; `nexora_simulation::RetainedChunks::backed_by`
+  uses both to take evicted edited columns out of memory entirely (`DEBT-0020`,
+  finding 10j). Eviction itself still writes nothing — that would put a file
+  write inside the streaming budget — so the write is a flush the caller runs at
+  the end of the tick. This is the use decision 2 exists for: a region file that
+  needed its neighbours or the header could not answer an `activate`.
 - **`World::mark_saved` exists and `World::chunk_mut` cannot stand in for it.**
   Clearing a dirty set is not a change to any cell's answer, so it deliberately
   does not move `World::revision`; bumping it would invalidate every body's

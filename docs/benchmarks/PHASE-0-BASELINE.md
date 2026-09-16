@@ -737,6 +737,50 @@ is where the nine-region line in its report comes from. `DEBT-0002` is reduced,
 not closed, and closing it waits on `DEBT-0020` — the evicted column going to
 its region file instead of to a `BTreeMap` in memory.
 
+### 10j. Retention can cost no memory, and the price is the file (2026-09-15)
+
+**20.0 KiB → 0 B per evicted edited column, at 184.7 ns → 3.08 ms a round
+trip.** `DEBT-0020` measured retention at 20.0 KiB per column, growing with how
+much the world was edited and dying with the process. `RetainedChunks` can now
+be backed by a region store ([ADR-0014](../adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md)).
+
+| | median |
+| --- | ---: |
+| `streaming.retained_bytes_per_chunk` (**control**, unchanged) | 20.0 KiB |
+| `streaming.retained_bytes_after_flush` | **0 B** |
+| `streaming.chunk_retained_cycle` (held in memory) | 184.7 ns |
+| `streaming.chunk_flushed_cycle` (through a region file) | **3.08 ms** |
+| `streaming.region_writes_per_eight_columns` | **4** |
+
+Every pre-existing streaming row held still across the change —
+`idle_tick_r3` 3.64 µs, `idle_tick_r12` 121.29 µs, `walk_one_chunk` 7.39 µs,
+`chunk_generate_cycle` 1.30 ms, `retained_bytes_per_chunk` 20.0 KiB — which is
+what makes the two new rows attributable.
+
+**16,700× is the honest number, and it is not the one that decides this.** The
+last row is: the cost is the **file**, not the column. Eight columns falling in
+four regions are four writes, not eight — a count, the same on every machine.
+`chunk_flushed_cycle` is the pathological shape, one column flushed and
+immediately read back; a per-tick flush amortises over everything that tick
+evicted.
+
+**Eviction does not write; a flush does.** The backend's `persist` still hands
+the chunk to memory, because eviction runs inside the streaming budget and a
+file write does not belong there. `flush_to_store` runs at the end of the tick.
+The bound on memory becomes *what was evicted since the last flush*.
+
+Measured in the slice, which is the only place the real streaming loop runs:
+peak retention **25 → 15** columns, 25 columns spilled to 12 region files and
+25 read back, and the **save byte-identical at 116,904 bytes** either way. The
+determinism smoke is still identical at one and eight threads, region stores
+included.
+
+**The default does not change, and that is the finding.** `RetainedChunks::new`
+is untouched. At Phase 0 scale 25 edited columns are 500 KiB and 3 ms a column
+is not worth paying; `DEBT-0020`'s own trigger is ~1,000 retained columns or the
+first dedicated server, and neither has happened. The mechanism is built and
+measured so that the switch is a decision rather than a project.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |

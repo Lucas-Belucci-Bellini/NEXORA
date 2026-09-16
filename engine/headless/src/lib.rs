@@ -100,6 +100,12 @@ pub struct SliceReport {
     pub ticks_advanced: u64,
     /// Size of the save file on disk, in bytes.
     pub save_bytes: usize,
+    /// Evicted edited columns spilled to region files during the walk.
+    pub streaming_spilled: usize,
+    /// Region files those spills touched.
+    pub streaming_region_writes: usize,
+    /// Columns read back from a region file rather than from memory.
+    pub streaming_read_back: u64,
     /// Regions the same world spans in a region store.
     pub regions_total: usize,
     /// Region files rewritten after a single block changed.
@@ -334,7 +340,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     // walk touches is regenerable except the columns edited above, so this is
     // where "logical identity survives eviction" either holds or does not - and
     // the reload verification at the end of the slice is what checks it.
-    let streaming = stream_a_walk(&mut world, config.radius, &diagnostics)?;
+    let streaming = stream_a_walk(&mut world, config, &diagnostics)?;
     diagnostics
         .counters()
         .add("streaming.generated", streaming.generated);
@@ -459,6 +465,9 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         streaming_restored: streaming.restored,
         streaming_retained_peak: streaming.retained_peak,
         streaming_evicted: streaming.evicted,
+        streaming_spilled: streaming.spilled,
+        streaming_region_writes: streaming.region_writes,
+        streaming_read_back: streaming.read_back,
         probes_verified: probes.len(),
         phases: lifecycle
             .history()
@@ -854,6 +863,10 @@ pub fn format_report(report: &SliceReport) -> String {
         "chunks retained    {} (peak, edits that cannot be regenerated)\n",
         report.streaming_retained_peak
     ));
+    out.push_str(&format!(
+        "retention spill    {} columns to {} region files, {} read back\n",
+        report.streaming_spilled, report.streaming_region_writes, report.streaming_read_back
+    ));
     out.push_str(&format!("probes verified    {}\n", report.probes_verified));
     out.push_str(&format!("lifecycle phases   {}\n", report.phases.len()));
     out.push_str(&format!(
@@ -993,6 +1006,9 @@ struct StreamingOutcome {
     restored: u64,
     retained_peak: usize,
     evicted: u32,
+    spilled: usize,
+    region_writes: usize,
+    read_back: u64,
 }
 
 /// Walk an observer away from the origin and back, streaming as it goes.
@@ -1008,13 +1024,21 @@ struct StreamingOutcome {
 /// verification below prove that nothing was lost on the way.
 fn stream_a_walk(
     world: &mut World,
-    radius: i64,
+    config: &SliceConfig,
     diagnostics: &Diagnostics,
 ) -> Result<StreamingOutcome> {
+    let radius = config.radius;
     let reach = u32::try_from(radius.max(0)).unwrap_or(0);
     let radii = LodRadii::new(reach, reach, reach, 0)?;
     let mut system = StreamingSystem::new();
-    let mut retained = RetainedChunks::new();
+
+    // Retention backed by region files (DEBT-0020, ADR-0014): an evicted
+    // edited column is written out at the end of the tick that evicted it and
+    // dropped, instead of being held until the save. The stage is the same
+    // walk; what it proves in addition is that the save comes out identical
+    // whether the edits waited in memory or on disk.
+    let spill = spill_store(config)?;
+    let mut retained = RetainedChunks::backed_by(spill);
     let budget = StreamingBudget {
         activations: 8,
         evictions: 16,
@@ -1024,6 +1048,8 @@ fn stream_a_walk(
     let mut ticks = 0;
     let mut evicted = 0;
     let mut retained_peak = 0;
+    let mut spilled = 0;
+    let mut region_writes = 0;
 
     // Out four steps, then back to where it started.
     let mut route: Vec<i64> = (0..=4).map(|step| step * (radius + 1)).collect();
@@ -1041,6 +1067,11 @@ fn stream_a_walk(
             ticks += 1;
             evicted += report.evicted;
             retained_peak = retained_peak.max(retained.len());
+            // End of tick: whatever this tick evicted goes to its region file
+            // now, so the held set does not grow across the walk.
+            let flush = retained.flush_to_store(world)?;
+            spilled += flush.columns;
+            region_writes += flush.regions;
             if report.is_quiet() {
                 break;
             }
@@ -1054,7 +1085,7 @@ fn stream_a_walk(
 
     // Anything still held outside the world has to go back before the save, or
     // the save is written without it. See `nexora_simulation::residency`.
-    let flushed = retained.flush_into(world);
+    let flushed = retained.flush_into(world)?;
     if !retained.is_empty() {
         return Err(Error::new(
             Domain::World,
@@ -1078,7 +1109,32 @@ fn stream_a_walk(
         restored: retained.restored(),
         retained_peak,
         evicted,
+        spilled,
+        region_writes,
+        read_back: retained.read_back(),
     })
+}
+
+/// The region store that evicted edited columns spill into.
+///
+/// Two columns per region rather than the engine default of 32: at 32 the
+/// slice's columns are one region and every flush would rewrite the same file,
+/// which would demonstrate nothing about filing by region.
+fn spill_store(config: &SliceConfig) -> Result<RegionStore> {
+    let stem = config
+        .save_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("world");
+    let root = config
+        .save_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{stem}-spill"));
+    // A store left by an earlier run would answer for columns this run has not
+    // evicted, which is a different world's data wearing this one's addresses.
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(RegionStore::with_shape(root, RegionShape::new(2)?))
 }
 
 /// What the physics stage observed.

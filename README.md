@@ -38,7 +38,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 953 tests
+cargo test --workspace          # 963 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -59,7 +59,8 @@ physics bodies     9 (9 settled)
 physics substeps   600 (270 contacts)
 character drop     1010 cm
 streaming ticks    29 (95 generated, 120 evicted, 25 restored)
-chunks retained    25 (peak, edits that cannot be regenerated)
+chunks retained    15 (peak, edits that cannot be regenerated)
+retention spill    25 columns to 12 region files, 25 read back
 probes verified    76
 result             OK
 ```
@@ -72,7 +73,10 @@ proof that streaming evicted 120 columns without losing an edit.
 The region-store line is the same world written the other way round, one file
 per region ([ADR-0014](docs/adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md)):
 changing one block afterwards rewrote one of the nine files instead of all of
-them.
+them. The spill line is the other use of the same store: an evicted column that
+cannot be regenerated goes to its region file at the end of the tick that
+evicted it, so the walk's peak retention is one tick's evictions rather than
+every edit ever made — and the save comes out byte-identical either way.
 
 ```bash
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path

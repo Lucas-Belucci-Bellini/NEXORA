@@ -1290,7 +1290,7 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
 ///
 /// Returns an error when a benchmark world or streaming configuration cannot be
 /// built.
-pub fn streaming(budget: Budget) -> Result<Vec<Measurement>> {
+pub fn streaming(budget: Budget, scratch: &Path) -> Result<Vec<Measurement>> {
     const TILE: u64 = 1_024;
 
     let radii = |reach: u32| LodRadii::new(reach, reach, reach, 0);
@@ -1482,6 +1482,89 @@ pub fn streaming(budget: Budget) -> Result<Vec<Measurement>> {
         "Memory an edited column occupies while it is evicted",
         retained_bytes,
     ));
+    // --- retention backed by region files (DEBT-0020) ------------------------
+    // The bytes above are what an evicted edited column costs in memory, and
+    // they grow with every such column. Backed by a region store the held set
+    // empties on each flush, so the same eviction costs a file write instead.
+    {
+        let region_root = scratch.join("benchmark-retention");
+        let _ = std::fs::remove_dir_all(&region_root);
+        let store = RegionStore::with_shape(
+            &region_root,
+            RegionShape::new(2).expect("two columns per region"),
+        );
+        let mut backed_world = bench_world(32)?;
+        let mut backed = RetainedChunks::backed_by(store);
+        let backed_target = StreamTarget::Chunk(ChunkCoord::new(-64, -64));
+        {
+            let mut backend = WorldResidency::new(&mut backed_world, &mut backed);
+            backend.activate(backed_target, Lod::Full)?;
+        }
+        let stone = backed_world.block_id(&Identifier::parse("nexora:block/stone")?)?;
+        backed_world.set_block(BlockPos::new(-2_040, 300, -2_040), stone)?;
+
+        out.push(measure(
+            "streaming.chunk_flushed_cycle",
+            "Persist, flush to a region file, drop, and read the column back from disk",
+            Budget {
+                iterations_per_sample: 20,
+                ..budget
+            },
+            || {
+                {
+                    let mut backend = WorldResidency::new(&mut backed_world, &mut backed);
+                    backend.persist(backed_target).expect("persisted");
+                    backend.evict(backed_target).expect("evicted");
+                }
+                backed.flush_to_store(&backed_world).expect("flushed");
+                let mut backend = WorldResidency::new(&mut backed_world, &mut backed);
+                consume(
+                    backend
+                        .activate(backed_target, Lod::Full)
+                        .expect("read back"),
+                );
+            },
+        ));
+
+        // Held bytes after a flush: the figure DEBT-0020 is about, and a count
+        // rather than a clock, so it reads the same on every machine.
+        {
+            let mut backend = WorldResidency::new(&mut backed_world, &mut backed);
+            backend.persist(backed_target)?;
+            backend.evict(backed_target)?;
+        }
+        let before_flush = backed.storage_bytes() as u64;
+        backed.flush_to_store(&backed_world)?;
+        out.push(record_bytes(
+            "streaming.retained_bytes_after_flush",
+            "Memory the same evicted column occupies once it is in its region file",
+            backed.storage_bytes() as u64,
+        ));
+        debug_assert!(
+            before_flush > 0,
+            "the column has to be held before the flush for the pair to mean anything"
+        );
+
+        // What makes a per-tick flush affordable, as a count rather than a
+        // clock: the cost is the region file, so columns sharing one are
+        // written together. Eight columns two to a region is four writes.
+        for x in 0..8i64 {
+            let coord = ChunkCoord::new(x, 40);
+            backed_world.load_or_generate(coord)?;
+            backed_world.set_block(BlockPos::new(x * 32 + 1, 300, 1_281), stone)?;
+            let mut backend = WorldResidency::new(&mut backed_world, &mut backed);
+            backend.persist(StreamTarget::Chunk(coord))?;
+        }
+        let batched = backed.flush_to_store(&backed_world)?;
+        out.push(record_quantity(
+            "streaming.region_writes_per_eight_columns",
+            "Region files a flush of eight columns touches, two columns to a region",
+            batched.regions as u64,
+        ));
+
+        let _ = std::fs::remove_dir_all(&region_root);
+    }
+
     out.push(record_quantity(
         "streaming.columns_of_interest_r12",
         "Columns a radius-12 observer makes the manager consider every tick",
@@ -1917,7 +2000,7 @@ mod tests {
         assert!(!startup(budget).expect("startup").is_empty());
         assert!(!entities(budget).expect("entities").is_empty());
         assert!(!physics(budget).expect("physics").is_empty());
-        assert!(!streaming(budget).expect("streaming").is_empty());
+        assert!(!streaming(budget, &scratch).expect("streaming").is_empty());
 
         let _ = std::fs::remove_dir_all(&scratch);
     }
