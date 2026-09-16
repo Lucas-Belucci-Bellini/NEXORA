@@ -837,6 +837,108 @@ waits on Phase 11, and building a consumer now would be working ahead of the
 evidence. What this change buys is that the cap is free and the gap is
 un-ignorable by the time one exists.
 
+### 10l. An index made a query 1,253× faster and the tick 4× slower (2026-09-16)
+
+**`DEBT-0010` said entity queries were a linear scan, and its remediation said
+to measure the scan again before keeping anything. Measured first, at three
+population sizes, the scan behaved almost exactly as the entry extrapolated —
+and one row did not.**
+
+| query, scan only | 1,000 | 10,000 | 100,000 | per entity |
+| --- | ---: | ---: | ---: | ---: |
+| `within_radius(16)` | 10.9 µs | 102.7 µs | 979.7 µs | 9.8–10.9 ns |
+| `in_chunk` | 17.3 µs | 168.0 µs | 1,655.4 µs | 16.6–17.3 ns |
+| `by_type` | 15.7 µs | 182.7 µs | **4,069.0 µs** | 15.7 → **40.7** ns |
+
+The entry's "~19 ns per entity examined" holds for the first two rows across two
+orders of magnitude. **The third row does not**, and neither does ADR-0006's
+matching note that a type query "will not hold at 100,000": it costs 2.6× more
+per entity at 100,000 than at 1,000, because it matches everything and the cost
+is dominated by building a 100,000-element result rather than by examining
+anything. That row is not a scan that wants an index. It is a query whose answer
+is the population, and no index makes an answer smaller.
+
+**What the radius row says instead is the whole case for indexing**: 100,000
+entities examined to return **six**.
+
+#### After: a loose grid, 16-block cells, maintained by the store
+
+| | scan | index | |
+| --- | ---: | ---: | ---: |
+| `within_radius(16)`, 1,000 spread | 10.9 µs | **430 ns** | 25× |
+| `within_radius(16)`, 10,000 spread | 102.7 µs | **654 ns** | 157× |
+| `within_radius(16)`, 100,000 spread | 979.7 µs | **782 ns** | **1,253×** |
+| `in_chunk`, 100,000 spread | 1,655.4 µs | **625 ns** | **2,647×** |
+| `by_type`, 100,000 | 4,069.0 µs | 4,196.5 µs | — (still a scan) |
+
+The last row is the control, and it is the one that had to not move: the
+non-spatial queries were left alone deliberately, and they were.
+
+**The number that is not from this machine is `entity.query_radius_candidates_100k`
+= 41.** Forty-one entities examined, of 100,000, to answer a 16-block radius
+query. It is a count, so it is the same in any build on any box, and it is what
+the three orders of magnitude above are made of. The time went from growing with
+the population to being flat in it — 430, 654, 782 ns as the population went
+×100.
+
+#### What it cost, which is not nothing
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| `entity.step_1000` | 2.07–2.11 µs | **7.2–8.7 µs** | ~4× |
+| `entity.step_1000_crossing_cells` | — | 170.9 µs | new row |
+| `entity.spawn` | 150–160 ns | 168–222 ns | noisy either way |
+| `entity.spawn_despawn_cycle` | 119–175 ns | 176–186 ns | |
+| `entity.query_radius_1000` (dense fixture) | 15.1–15.5 µs | 13.5–14.9 µs | ~1.1× |
+
+Three readings before, five after; the spread is between runs, not within them
+(each run's own relative stddev is 2–6%).
+
+**Half of the step regression was `f64::floor`.** Placing a position in a cell is
+`floor(x) as i64 >> 4` twice, and the x86-64 baseline has no `roundsd` — that is
+SSE4.1, which the default target does not assume — so `floor` is a call into
+libm. Measured over 1,000 placements: **4.94 ns** each via `floor`, **1.54 ns**
+via a truncating cast and a comparison that corrects the one case truncation
+gets wrong. `step_1000` went 10.57 → 7.27 µs on that change alone. The remaining
+~6.5 ns per entity per tick is the placement, the comparison against the stored
+cell, and the second data stream it reads.
+
+Two smaller things that are worth writing down because they were guesses that
+measurement settled. Hoisting the repeated read of the cell column changed
+`step_1000` by 0.04 µs — the compiler was already doing it; the change was kept
+for legibility and is not claimed as a saving. And the naive `truncated - 1`
+fixup wraps `i64::MIN` to `i64::MAX`, filing an entity at the opposite end of
+the world; `saturating_sub` costs nothing measurable and a test covers it.
+
+#### The awkward part, stated plainly
+
+**At the benchmark plan's own 1,000-entity stage, this index is a net loss of
+about 6.5 µs per tick.** The plan's fixture packs 1,000 entities into
+64 × 16 × 37 blocks — about twelve cells — so a 16-block radius query there asks
+about most of the population and there is nothing to exclude. `query_radius_1000`
+improved 1.1×, inside the run-to-run spread, while `step_1000` got 6.5 µs worse.
+
+That fixture was deliberately not changed. Rewriting it would have made every
+1,000-entity row in this document incomparable with every run before today, for
+the sake of making one change look better. The new rows ask the same questions
+of a population spread the way a world spreads one, and both sets are published.
+
+6.5 µs is 0.013% of a 50 ms tick, and it is bounded: the worst case, where every
+one of 1,000 entities changes cell on every tick, is 170.9 µs, and no entity
+moving at a plausible speed does that. The decision to keep the index always on
+rather than behind a switch is ADR-0015, and it turns on staleness rather than
+on these numbers: an index the store maintains only sometimes is an index a
+query cannot trust.
+
+#### One thing the guard does that is not about speed
+
+`Query` declines the index when the rectangle covers more cells than the store
+holds entities. That reads like a performance heuristic and is not one. A finite
+radius of `1e300` spans about 1.3 × 10³⁶ cells, and walking them does not
+finish. Removing the guard does not make that query slow; it makes it hang —
+which is also why the test for it asserts the *decision* rather than the answer.
+A test that hangs reports nothing.
+
 ### 11. Sleeping is worth about 180×, and it actually engages
 
 | 1,000 bodies, one substep | median |

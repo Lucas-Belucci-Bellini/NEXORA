@@ -38,7 +38,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 966 tests
+cargo test --workspace          # 990 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -209,7 +209,8 @@ for the completed benchmark.
 
 Measurement also opened `DEBT-0009` through `DEBT-0020`, each with a trigger
 point rather than a guess. Among them: the job system costs ~4,900× the work
-when used per entity, entity queries stop being free above ~10,000 entities, the
+when used per entity, spatial entity queries scanned the whole population
+(100,000 examined to return six — since fixed, `DEBT-0010` and ADR-0015), the
 voxel lookup is half of a physics step, and streaming generates chunks on the
 tick thread — where spending its own activation budget would cost 21.8 ms, more
 than a frame.

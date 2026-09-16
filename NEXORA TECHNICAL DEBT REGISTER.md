@@ -403,7 +403,61 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** população passar de 10.000, ou um perfil mostrar consulta em
   caminho quente.
 - **TARGET STAGE:** Phase 5 (Entity + AI Foundation)
-- **STATUS:** OPEN
+- **RESOLUÇÃO (2026-09-16):** existe índice espacial, e ele foi medido **antes**
+  — que era o que a remediação pedia. Ver [ADR-0015](docs/adr/ADR-0015-a-spatial-index-is-a-loose-grid-and-a-query-may-decline-it.md)
+  e o achado 10l do `PHASE-0-BASELINE.md`.
+
+  **A extrapolação acima foi conferida e quase toda ela se sustentou.** Medindo a
+  varredura em 1.000, 10.000 e 100.000: `within_radius` custa 9,8–10,9 ns por
+  entidade e `in_chunk` 16,6–17,3 ns, estáveis em duas ordens de grandeza. A
+  linha que **não** se sustentou foi `by_type`: 15,7 ns por entidade em 1.000 e
+  **40,7 ns** em 100.000, porque ela casa com a população inteira e o custo está
+  em montar o resultado, não em examinar. A nota equivalente da ADR-0006 errou
+  para menos pelo mesmo motivo.
+
+  **Isso mudou o que foi construído.** Consulta sem posição não tem índice que
+  ajude — nenhum arranjo encolhe uma resposta que já é tudo. Então `matching`,
+  `count`, `by_type` e `by_tag` continuam varredura de propósito, e o controle
+  provou que continuaram: `by_type` em 100.000 ficou em 4.069 → 4.196 µs.
+
+  **O que o índice comprou**, com população espalhada como um mundo espalha:
+
+  | | varredura | índice | |
+  | --- | ---: | ---: | ---: |
+  | `within_radius(16)`, 100.000 | 979,7 µs | **782 ns** | 1.253× |
+  | `in_chunk`, 100.000 | 1.655,4 µs | **625 ns** | 2.647× |
+
+  **O número que não é desta máquina é 41.** `entity.query_radius_candidates_100k`
+  = 41 entidades examinadas, de 100.000, para responder um raio de 16 blocos. É
+  contagem: igual em qualquer build, em qualquer caixa. E o tempo deixou de
+  crescer com a população — 430, 654 e 782 ns para 1.000, 10.000 e 100.000.
+
+  **O preço, dito inteiro:** `entity.step_1000` foi de 2,07–2,11 µs para
+  7,2–8,7 µs, ~4×, que são ~6,5 ns por entidade por tick. Metade da piora era
+  `f64::floor`: o baseline x86-64 não tem `roundsd` (é SSE4.1), então `floor` é
+  chamada de libm — 4,94 ns contra 1,54 ns na forma com `as i64` mais correção.
+  O pior caso, toda entidade mudando de célula todo tick, é 170,9 µs por 1.000.
+
+  **E a parte incômoda:** no estágio de 1.000 entidades do próprio plano, este
+  índice é **prejuízo líquido de ~6,5 µs por tick**. A fixture do plano empacota
+  1.000 entidades em doze células, então o raio de 16 blocos ali pergunta pela
+  população quase toda e não há o que excluir. A fixture **não** foi trocada —
+  trocá-la tornaria toda linha de 1.000 entidades do baseline incomparável com
+  todas as execuções anteriores, para fazer uma mudança parecer melhor. As linhas
+  novas medem população espalhada ao lado dela, e as duas estão publicadas.
+  6,5 µs é 0,013% de um tick de 50 ms.
+
+  **Manter ligado sempre não é decisão de número, é de obsolescência.** Índice
+  que a store mantém só às vezes é índice que a consulta não pode confiar, e
+  índice espacial errado devolve entidade errada em silêncio. A ADR-0015 fecha
+  isso.
+- **STATUS:** **CLOSED** para as consultas espaciais. O que fica registrado, e
+  não é o mesmo defeito: a remoção de uma célula varre o vetor daquela célula
+  para achar o slot, então uma célula com dezenas de milhares de entidades torna
+  cada `despawn` ou travessia proporcional a ela. Com densidade de mundo isso
+  são dezenas de entradas; o gatilho é uma célula passar de ~1.000. Não vira
+  entrada nova porque não há caso medido — é o mesmo erro que esta entrada
+  acabou de evitar.
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

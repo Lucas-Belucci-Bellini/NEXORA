@@ -27,6 +27,7 @@ use nexora_runtime::events::EventBus;
 use crate::components::{Bounds, Lifecycle, PersistencePolicy, TagSet, Transform, Velocity};
 use crate::events::{EntityDespawned, EntitySpawned};
 use crate::id::{stale_handle, EntityId, EntityTypeId, PersistentEntityId};
+use crate::index::{CellCoord, CellRect, SpatialIndex};
 
 /// Why an entity is being created (`Entity System.md` §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,6 +144,10 @@ struct Columns {
     lifecycle: Vec<Lifecycle>,
     policy: Vec<PersistencePolicy>,
     tags: Vec<TagSet>,
+    /// Which grid cell each slot's position falls in. A column like any other,
+    /// so the one place that can move a transform is the one place that has to
+    /// keep this beside it.
+    cell: Vec<CellCoord>,
 }
 
 impl Columns {
@@ -160,6 +165,7 @@ pub struct EntityStore {
     live: usize,
     next_persistent: u64,
     by_persistent: BTreeMap<PersistentEntityId, u32>,
+    index: SpatialIndex,
     bus: Option<EventBus>,
 }
 
@@ -170,6 +176,7 @@ impl std::fmt::Debug for EntityStore {
             .field("live", &self.live)
             .field("slots", &self.columns.len())
             .field("free", &self.free.len())
+            .field("occupied_cells", &self.index.occupied_cells())
             .finish()
     }
 }
@@ -186,6 +193,7 @@ impl EntityStore {
             live: 0,
             next_persistent: 1,
             by_persistent: BTreeMap::new(),
+            index: SpatialIndex::new(),
             bus: None,
         }
     }
@@ -287,6 +295,8 @@ impl EntityStore {
             }
         };
 
+        let cell = CellCoord::of(context.transform.position);
+
         let index = match self.free.pop() {
             Some(index) => {
                 let slot = index as usize;
@@ -299,6 +309,7 @@ impl EntityStore {
                 self.columns.lifecycle[slot] = Lifecycle::Active;
                 self.columns.policy[slot] = context.policy;
                 self.columns.tags[slot] = context.tags;
+                self.columns.cell[slot] = cell;
                 index
             }
             None => {
@@ -315,12 +326,16 @@ impl EntityStore {
                 self.columns.lifecycle.push(Lifecycle::Active);
                 self.columns.policy.push(context.policy);
                 self.columns.tags.push(context.tags);
+                self.columns.cell.push(cell);
                 index
             }
         };
 
         self.live += 1;
         self.by_persistent.insert(persistent, index);
+        self.index.insert(cell, index);
+        self.index
+            .observe_half_extent(context.bounds.widest_horizontal_half());
 
         let id = EntityId::new(self.world, index, self.columns.generation[index as usize]);
         if let Some(bus) = &self.bus {
@@ -350,6 +365,7 @@ impl EntityStore {
         self.columns.lifecycle[slot] = Lifecycle::Removed;
         self.columns.tags[slot] = TagSet::new();
         self.by_persistent.remove(&self.columns.persistent[slot]);
+        self.index.remove(self.columns.cell[slot], index);
         self.live -= 1;
 
         // Advancing the generation is what makes every outstanding handle stale.
@@ -456,7 +472,19 @@ impl EntityStore {
             let (dx, dy, dz) = velocity.displacement(seconds);
             let transform = &mut self.columns.transform[slot];
             transform.position = transform.position.offset(dx, dy, dz);
+            let position = transform.position;
             moved += 1;
+
+            // The common case by far: at a walking pace and a 16-block cell, an
+            // entity crosses a boundary on well under one tick in a hundred. So
+            // the per-tick cost of the index is this comparison, and the map
+            // work happens only on the tick that changes the answer.
+            let cell = CellCoord::of(position);
+            let previous = self.columns.cell[slot];
+            if cell != previous {
+                self.index.relocate(previous, cell, slot as u32);
+                self.columns.cell[slot] = cell;
+            }
         }
         Ok(moved)
     }
@@ -478,7 +506,11 @@ impl EntityStore {
     /// invalid.
     pub fn set_transform(&mut self, id: EntityId, transform: Transform) -> Result<()> {
         let index = self.resolve(id)?;
-        self.columns.transform[index as usize] = transform.validate()?;
+        let slot = index as usize;
+        self.columns.transform[slot] = transform.validate()?;
+        let cell = CellCoord::of(transform.position);
+        self.index.relocate(self.columns.cell[slot], cell, index);
+        self.columns.cell[slot] = cell;
         Ok(())
     }
 
@@ -622,6 +654,44 @@ impl EntityStore {
     /// Every live slot index, for internal iteration.
     pub(crate) fn live_slots(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.columns.len()).filter(move |slot| self.columns.alive[*slot])
+    }
+
+    /// The spatial index, for the query layer inside this crate.
+    pub(crate) const fn spatial_index(&self) -> &SpatialIndex {
+        &self.index
+    }
+
+    /// Whether walking a rectangle of cells beats scanning the population.
+    ///
+    /// The rectangle's size follows the *question* — a radius, a chunk column —
+    /// and the scan's follows the *world*, so for a small question in a large
+    /// world the index wins by however far apart those two have grown. They
+    /// cross when the rectangle covers as many cells as there are entities: past
+    /// that, the empty-cell lookups alone cost more than looking at every
+    /// entity, and the index would be slower than the thing it replaced.
+    ///
+    /// The bound is conservative rather than tuned, and **where the true
+    /// crossover sits has not been measured** — a cell lookup walks a
+    /// `BTreeMap` and a scan step reads the next element of a dense array, so it
+    /// is somewhere below this line, and it moves with cell occupancy. Tuning it
+    /// would need a way to force the scan for the same query, which is API added
+    /// for measurement, and there is nothing to spend it on: a 16-block radius
+    /// over 100,000 entities covers 9 cells against a bound of 100,000.
+    ///
+    /// The bound is not here for those queries anyway. It is here so that a
+    /// rectangle too large to walk is not walked — see the termination note in
+    /// ADR-0015.
+    pub(crate) fn prefers_index(&self, rect: CellRect) -> bool {
+        rect.cell_count() < self.live as i128
+    }
+
+    /// How many grid cells currently hold at least one entity.
+    ///
+    /// Diagnostics: an index whose cells hold one entity each has become a map
+    /// with extra steps, and this is what would show it.
+    #[must_use]
+    pub fn occupied_cells(&self) -> usize {
+        self.index.occupied_cells()
     }
 }
 

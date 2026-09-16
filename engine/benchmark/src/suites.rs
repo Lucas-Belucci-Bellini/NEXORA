@@ -961,7 +961,7 @@ pub fn entities(budget: Budget) -> Result<Vec<Measurement>> {
     let query_type = entity_type.clone();
     out.push(measure(
         "entity.query_type_1000",
-        "Linear scan of 1,000 entities filtering by type (no spatial index yet)",
+        "Scan of 1,000 entities filtering by type: no position, so no index",
         Budget {
             iterations_per_sample: 200,
             ..budget
@@ -974,7 +974,7 @@ pub fn entities(budget: Budget) -> Result<Vec<Measurement>> {
     let tag_for_query = living.clone();
     out.push(measure(
         "entity.query_tag_1000",
-        "Linear scan of 1,000 entities filtering by tag",
+        "Scan of 1,000 entities filtering by tag: no position, so no index",
         Budget {
             iterations_per_sample: 200,
             ..budget
@@ -986,7 +986,7 @@ pub fn entities(budget: Budget) -> Result<Vec<Measurement>> {
 
     out.push(measure(
         "entity.query_radius_1000",
-        "Nearest-first radius query over 1,000 entities, including the sort",
+        "Radius query in the plan's dense 1,000-entity box: the index cannot narrow it",
         Budget {
             iterations_per_sample: 100,
             ..budget
@@ -1000,6 +1000,129 @@ pub fn entities(budget: Budget) -> Result<Vec<Measurement>> {
                     &EntityFilter::new(),
                 )
                 .len(),
+            );
+        },
+    ));
+
+    // The fixture above packs 1,000 entities into 64x16x37 blocks, which is
+    // about twelve of the index's cells: a radius query there asks about most
+    // of the population and there is nothing for an index to exclude. That is a
+    // property of the fixture, not of the index, so the rows below ask the same
+    // questions of a population spread over an area a world would actually use.
+    // Changing the fixture instead would have made the published baseline's
+    // 1,000-entity rows incomparable with every run before this one.
+    const SPREAD: usize = 100_000;
+
+    let spread_out = |count: usize| -> Result<EntityStore> {
+        let mut store = EntityStore::new(world);
+        let mut rng = Rng::from_seed(BENCH_SEED);
+        // sqrt(count) * 8 keeps entities-per-cell constant as the count grows,
+        // so what changes between the two sizes is the world, not the crowding.
+        let extent = (count as f64).sqrt() * 8.0;
+        for _ in 0..count {
+            store.spawn(
+                SpawnContext::new(
+                    entity_type.clone(),
+                    WorldPosition::new(
+                        rng.next_f64() * extent,
+                        64.0 + rng.next_f64() * 64.0,
+                        rng.next_f64() * extent,
+                    ),
+                    SpawnReason::WorldGen,
+                )
+                .with_velocity(Velocity::new(0.5, 0.0, -0.25)?)
+                .with_bounds(Bounds::new(0.4, 0.9, 0.4)?)
+                .with_tags(TagSet::from_iter_sorted([living.clone()])),
+            )?;
+        }
+        Ok(store)
+    };
+
+    let wide = spread_out(SPREAD)?;
+    let wide_centre = WorldPosition::new(
+        (SPREAD as f64).sqrt() * 4.0,
+        96.0,
+        (SPREAD as f64).sqrt() * 4.0,
+    );
+
+    out.push(measure(
+        "entity.query_radius_100k",
+        "Radius query over 100,000 entities spread across a world, through the index",
+        Budget {
+            iterations_per_sample: 200,
+            ..budget
+        },
+        || {
+            consume(Query::within_radius(&wide, wide_centre, 16.0, &EntityFilter::new()).len());
+        },
+    ));
+
+    let wide_column = ChunkShape::cubic_default()
+        .section_of(wide_centre.to_block_pos())
+        .column();
+    out.push(measure(
+        "entity.query_chunk_100k",
+        "Which of 100,000 entities are in one chunk column, through the index",
+        Budget {
+            iterations_per_sample: 200,
+            ..budget
+        },
+        || {
+            consume(
+                Query::in_chunk(
+                    &wide,
+                    ChunkShape::cubic_default(),
+                    wide_column,
+                    &EntityFilter::new(),
+                )
+                .len(),
+            );
+        },
+    ));
+
+    // A count, so it is the same on every machine and in every build: the scan
+    // this replaced examined one entity per entity in the store, and the rows
+    // above are what that difference is worth in time on this one.
+    out.push(record_quantity(
+        "entity.query_radius_candidates_100k",
+        "Entities a 16-block radius query examines, of 100,000 in the store",
+        Query::radius_candidates(&wide, wide_centre, 16.0) as u64,
+    ));
+
+    out.push(record_quantity(
+        "entity.index_cells_100k",
+        "Grid cells holding at least one of the 100,000 entities",
+        wide.occupied_cells() as u64,
+    ));
+
+    // The index's maintenance, at its worst: every entity changes cell on every
+    // tick. `entity.step_1000` is the same walk at a walking pace, where a
+    // crossing is rare and what is left is the placement itself.
+    let mut crossing = EntityStore::new(world);
+    for index in 0..POPULATION {
+        crossing.spawn(
+            SpawnContext::new(
+                entity_type.clone(),
+                WorldPosition::new((index * 37) as f64, 64.0, (index * 11) as f64),
+                SpawnReason::WorldGen,
+            )
+            // 400 blocks/s at 20 ticks/s is 20 blocks a tick, past a 16-block
+            // cell every time.
+            .with_velocity(Velocity::new(400.0, 0.0, 0.0)?),
+        )?;
+    }
+    out.push(measure(
+        "entity.step_1000_crossing_cells",
+        "Advance 1,000 entities that all change grid cell every tick: the index at its worst",
+        Budget {
+            iterations_per_sample: 100,
+            ..budget
+        },
+        || {
+            consume(
+                crossing
+                    .step(WorldDuration::from_ticks(1), TICKS_PER_SECOND)
+                    .expect("step"),
             );
         },
     ));
