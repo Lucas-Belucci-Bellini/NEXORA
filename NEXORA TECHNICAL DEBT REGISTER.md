@@ -379,7 +379,49 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   que `NEXORA THREADING AND CONCURRENCY MODEL.md` manda dividir. **Um job por
   entidade é anti-padrão, agora com número.**
 - **TARGET STAGE:** antes da Phase 5 (Entity + AI Foundation)
-- **STATUS:** OPEN (medido)
+- **RESOLUÇÃO PARCIAL (2026-09-19):** a hipótese acima foi **medida antes de ser
+  consertada**, e estava certa sobre o despertar e errada sobre o mutex ser a
+  causa. Ver o achado 23 do `PHASE-0-BASELINE.md`.
+
+  **Uma submissão é 2% enfileirar e 98% acordar um worker.** Medindo `submit()`
+  em três estados que só diferem no que o pool está fazendo:
+
+  | `submit()` com… | mediana |
+  | --- | ---: |
+  | todo worker **parado** na fila — um despertar por submissão | **12,20 µs** |
+  | todo worker **ocupado** dentro de um job — ninguém para acordar | **288 ns** |
+  | workers **drenando** (o que o `jobs.submit_only` mede) | **12,18 µs** |
+
+  42× entre as duas primeiras, e a única diferença é existir uma thread para
+  acordar. As peças somadas à parte dão ~142 ns; um `notify_one` para uma thread
+  parada custa 646 ns sozinho e ~11,9 µs dentro do pool. A diferença é o
+  handoff: o worker acordado vai imediatamente buscar o mesmo mutex que o
+  produtor precisa para a próxima submissão. **O mutex é o amplificador, não a
+  causa** — é ele que transforma um despertar numa ida e volta inteira.
+
+  **`JobSystem::submit_all` acorda uma vez por onda, não por job.** Um lock,
+  a onda inteira enfileirada, e `min(jobs, workers)` despertares:
+
+  | | um a um | `submit_all` | |
+  | --- | ---: | ---: | ---: |
+  | 1.000 jobs submetidos e executados | 11,40 ms | **1,88 ms** | **6,1×** |
+  | custo do produtor por job | 10,95 µs | **103 ns** | **106×** |
+  | **despertares por 1.000 jobs** | **1 000** | **4** | contagem |
+
+  A última linha é a que não é desta máquina. Os controles — `jobs.submit_only`
+  e `jobs.submit_wait_roundtrip`, que continuam no caminho antigo — não se
+  mexeram (10,92/10,87 → 10,95 µs e 36,26/34,44 → 36,31 µs), e é isso que diz
+  que refatorar o `submit` para compartilhar o enfileiramento não custou nada.
+
+  **A nota de arquitetura continua valendo inteira.** 103 ns por job contra
+  ~3 ns para simular uma entidade inline ainda são ~35×: um job por entidade
+  segue sendo anti-padrão. O que o lote conserta é submeter uma **onda de
+  trabalho real** — as 25 colunas do slice agora vão como um lote só.
+- **STATUS:** OPEN (reduzido) — o caminho de onda está consertado e medido; o
+  `submit()` de um job isolado continua custando ~11 µs quando há worker parado,
+  e ninguém mediu ainda se dá para baixar isso sem filas por worker. O segundo
+  candidato da remediação (work-stealing) não foi construído: não há caso medido
+  que o exija depois que a onda deixou de ser o gargalo.
 
 ### DEBT-0010 — Consultas de entidade são varredura linear, sem índice espacial
 
@@ -458,6 +500,36 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   são dezenas de entradas; o gatilho é uma célula passar de ~1.000. Não vira
   entrada nova porque não há caso medido — é o mesmo erro que esta entrada
   acabou de evitar.
+
+### DEBT-0040 — O job system guarda o resultado de todo job para sempre
+
+- **SYSTEM:** `engine/runtime::jobs`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** encontrado ao medir o DEBT-0009, não por suspeita de projeto.
+  `worker_loop` faz `state.results.insert(handle, outcome)` ao terminar cada job,
+  e **nada remove**: `JobSystem::wait` lê com `get` e clona, porque um segundo
+  `wait` no mesmo handle tem de continuar funcionando. O sistema não tem como
+  saber que ninguém mais vai perguntar.
+- **IMPACT:** um `(JobHandle, JobOutcome)` por job já submetido, para sempre, num
+  `HashMap` dentro do mutex do escalonador. A 113.000 jobs/s isso é da ordem de
+  dezenas de MB por hora de sessão. **Não custa vazão**: medido, `submit()` lê
+  12,15 / 10,99 / 12,28 µs com 0, 100.000 e 500.000 resultados retidos — plano,
+  dentro do ruído. É defeito de memória, e só.
+- **RISK:** baixo numa sessão curta; alto num servidor dedicado, que é
+  exatamente onde o processo não reinicia.
+- **PROPOSED REMEDIATION:** decidir a semântica antes de mexer, porque as opções
+  não são equivalentes. `wait` que **consome** o resultado é uma mudança de API
+  observável (o segundo `wait` deixa de achar). Reter só os handles que alguém
+  pode ainda esperar exige saber isso, e o sistema não sabe. Um teto com
+  descarte do mais antigo troca vazamento por resposta perdida em silêncio — o
+  mesmo defeito que o DEBT-0004 fechou em outro lugar. Provavelmente é ADR.
+- **MITIGAÇÃO ATUAL:** `JobMetrics::retained_results` publica o tamanho, então o
+  crescimento é **verificável** em vez de silencioso — e há teste cobrindo isso.
+  É o mesmo movimento do DEBT-0004: medir o sinal antes de ter o consumidor.
+- **TRIGGER:** primeiro processo de vida longa — servidor dedicado, ou o slice
+  passar a rodar por horas.
+- **TARGET STAGE:** Phase 2 em diante
+- **STATUS:** OPEN (medido, visível)
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

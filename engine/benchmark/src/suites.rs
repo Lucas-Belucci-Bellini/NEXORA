@@ -33,7 +33,7 @@ use nexora_physics::query::raycast;
 use nexora_physics::step::FixedStep;
 use nexora_physics::voxel::{FlatGround, VoxelShape, VoxelSource};
 use nexora_physics::world::PhysicsWorld;
-use nexora_runtime::jobs::{JobSystem, Priority};
+use nexora_runtime::jobs::{CancellationToken, JobSystem, Priority};
 use nexora_simulation::{RetainedChunks, WorldResidency, WorldVoxels};
 use nexora_streaming::backend::{MemoryBackend, ResidencyBackend};
 use nexora_streaming::budget::StreamingBudget;
@@ -535,7 +535,7 @@ pub fn jobs(budget: Budget) -> Result<Vec<Measurement>> {
     const BATCH: u32 = 1_000;
     out.push(measure(
         "jobs.batch_1000_barrier",
-        "Submit 1,000 jobs and barrier: throughput across the whole pool",
+        "Submit 1,000 jobs one at a time and barrier: a wake-up per job",
         Budget {
             iterations_per_sample: 1,
             ..budget
@@ -546,6 +546,54 @@ pub fn jobs(budget: Budget) -> Result<Vec<Measurement>> {
             }
             pool.barrier();
         },
+    ));
+
+    out.push(measure(
+        "jobs.batch_1000_barrier_submit_all",
+        "The same 1,000 jobs handed over as one batch: one wake-up for the wave",
+        Budget {
+            iterations_per_sample: 1,
+            ..budget
+        },
+        || {
+            pool.submit_all(
+                Priority::Normal,
+                (0..BATCH).map(|_| |_: &CancellationToken| Ok(())),
+            );
+            pool.barrier();
+        },
+    ));
+
+    out.push(measure(
+        "jobs.submit_all_1000",
+        "Hand over 1,000 jobs as one batch, without waiting: the producer's cost",
+        Budget {
+            iterations_per_sample: 1,
+            ..budget
+        },
+        || {
+            consume(
+                pool.submit_all(
+                    Priority::Background,
+                    (0..BATCH).map(|_| |_: &CancellationToken| Ok(())),
+                )
+                .len(),
+            );
+        },
+    ));
+    pool.barrier();
+
+    // Counts, not times: the wake-up is what a submission costs, so how many a
+    // wave issues is the machine-independent statement of the difference.
+    out.push(record_quantity(
+        "jobs.wakeups_per_1000_submitted",
+        "Condvar wake-ups a wave of 1,000 jobs issues, submitted one at a time",
+        u64::from(BATCH),
+    ));
+    out.push(record_quantity(
+        "jobs.wakeups_per_1000_submit_all",
+        "Condvar wake-ups the same wave issues through submit_all",
+        workers as u64,
     ));
 
     Ok(out)

@@ -33,6 +33,15 @@ build job runs; the publish job is skipped because there is no tag. The
 archives land as workflow artifacts named after the commit
 (`0.0.0-dev+<sha>`), so a dry run can never be mistaken for a release.
 
+> **Not yet possible, and not because of anything in this file.** GitHub only
+> offers `workflow_dispatch` for workflows that exist on the repository's
+> **default branch**. Until this workflow is merged to `main` it is not in the
+> Actions tab at all, and the dispatch API answers `404` — confirmed by asking
+> the API to list the repository's workflows, which returns only `CI`. So the
+> first run of this pipeline necessarily happens after the merge, and **nothing
+> here has ever executed.** Treat every claim in this document as describing
+> what the workflow is written to do, not as something observed.
+
 ## What the archive contains
 
 The three binaries, `content/` so the texture forge has definitions to read,

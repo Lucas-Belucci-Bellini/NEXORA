@@ -44,7 +44,7 @@ use nexora_physics::body::BodyDescriptor;
 use nexora_physics::collision::overlaps_solid;
 use nexora_physics::math::Vec3;
 use nexora_physics::world::PhysicsWorld;
-use nexora_runtime::jobs::{JobOutcome, JobSystem, Priority};
+use nexora_runtime::jobs::{CancellationToken, JobOutcome, JobSystem, Priority};
 use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
@@ -506,13 +506,16 @@ fn generate_in_parallel(
     let shared = Arc::new(world);
     let (sender, receiver) = mpsc::channel();
 
-    let handles: Vec<_> = coords
-        .iter()
-        .map(|coord| {
+    // One batch, not a loop of submissions. Submitting a wave one job at a
+    // time wakes a worker per job, and that wake is ~98% of what a submission
+    // costs (`DEBT-0009`); a batch pays it once for the wave.
+    let handles = pool.submit_all(
+        Priority::High,
+        coords.iter().map(|coord| {
             let coord = *coord;
             let world = shared.clone();
             let sender = sender.clone();
-            pool.submit(Priority::High, move |token| {
+            move |token: &CancellationToken| {
                 if token.is_cancelled() {
                     return Ok(());
                 }
@@ -520,9 +523,9 @@ fn generate_in_parallel(
                 sender.send(chunk).map_err(|_| {
                     Error::new(Domain::Job, "slice", "chunk receiver went away").fatal()
                 })
-            })
-        })
-        .collect();
+            }
+        }),
+    );
 
     // Drop the extra sender so the channel closes once every job has finished.
     drop(sender);

@@ -1524,3 +1524,109 @@ kind of unearned claim the earlier appendices were corrected for.
 Of the plan's vertical-slice stages, what is left is the render path and the
 things that only exist inside one. **The list of "blocked on hardware" items is
 one shorter than it was, and it was one too long.**
+
+---
+
+# Appendix G — the job system (2026-09-19)
+
+## Finding 23 — a submission is 2% enqueue and 98% waking a worker
+
+**`DEBT-0009` measured 8.84 µs to submit one trivial job and blamed *"a futex
+wake per `notify_one`, plus contention of every worker on one mutex"*. That was
+a hypothesis. Measured, it is right about the wake and the mutex is the
+amplifier, not the cause.**
+
+The submission was measured in three states that differ only in what the pool is
+doing, so the wake is isolated from the enqueue:
+
+| `submit()` with… | median |
+| --- | ---: |
+| every worker **parked** on the queue — a wake-up per submission | **12.20 µs** |
+| every worker **busy** inside a job — nobody to wake | **288 ns** |
+| workers **draining** as fast as the producer fills (what `jobs.submit_only` measures) | **12.18 µs** |
+
+**42× between the first two rows, and the only difference is whether there was a
+thread to wake.** The third row is the benchmark's own shape and matches the
+first, which is what says the published 8.84 µs was never mostly enqueue.
+
+The pieces confirm it from the other side. Summed standalone, everything a
+submission actually *does* comes to about 142 ns:
+
+| piece | median |
+| --- | ---: |
+| `Box::new(closure)` | 0.6 ns |
+| `Arc::new` (the cancellation token) | 20.4 ns |
+| `HashMap::insert` (the token table) | 79.4 ns |
+| `BinaryHeap::push` | 28.5 ns |
+| uncontended mutex lock + unlock | 12.7 ns |
+| `Condvar::notify_one`, nobody parked | 125.2 ns |
+| `Condvar::notify_one`, one thread parked | **645.6 ns** |
+
+A bare wake of a parked thread is 646 ns; in the pool it costs ~11.9 µs. The
+difference is the handoff: the woken worker immediately reaches for the same
+mutex the producer needs for its next submission, so the producer ends up
+serialized behind a worker's whole wake → lock → pop → run → lock → notify →
+park cycle. That is the mutex's role — it turns one wake into a round trip.
+
+### The fix the measurement points at
+
+If the wake is the cost, the fix is to wake once per *wave* instead of once per
+job. `JobSystem::submit_all` takes one lock, enqueues the batch, releases it, and
+wakes as many workers as there is work for, capped at the pool.
+
+| | one at a time | `submit_all` | |
+| --- | ---: | ---: | ---: |
+| `jobs.batch_1000_barrier*` — 1,000 jobs, submitted and run | 11.40 ms | **1.88 ms** | **6.1×** |
+| producer's cost per job (`submit_only` vs `submit_all_1000`) | 10.95 µs | **103 ns** | **106×** |
+| **`jobs.wakeups_per_1000_*`** | **1 000** | **4** | a count |
+
+**The last row is the one that is not from this machine.** A wave of 1,000 jobs
+issues 1,000 condvar wake-ups submitted one at a time and `min(1000, workers)`
+— four here — through `submit_all`. That integer is the same in any build on any
+box, and it is what the two rows above it are made of.
+
+**The two rows being compared come from the same run of the same binary**, which
+is deliberate: `jobs.batch_1000_barrier` reads 9.62, 10.11 and 11.40 ms across
+three runs on this box, so a before/after quoted across runs could have reported
+anything from 5× to 6×. Within one run the pool, the machine and the build are
+held still and only the submission path differs.
+
+**The controls are the unchanged paths, and they held.** `jobs.submit_only`
+reads 10.92 and 10.87 µs before the change and 10.95 µs after;
+`jobs.submit_wait_roundtrip` 36.26 and 34.44 µs before, 36.31 µs after. `submit`
+was refactored to share its enqueue with the batch, so those two rows not moving
+is what says the refactor cost nothing.
+
+103 ns per job also lands where the decomposition said it should: the pieces sum
+to ~142 ns and the busy-worker case measured 288 ns, and a batch is cheaper than
+either because it takes the lock once for the whole wave rather than once per
+job.
+
+### What this does not change
+
+**The register's architectural note still stands, and this does not soften it.**
+*"Um job por entidade é anti-padrão, agora com número."* A batched submission is
+103 ns against ~3 ns to simulate one entity inline — still ~35×. What the batch
+fixes is submitting a *wave of real work*: the slice's 25 chunk-generation jobs
+now go over as one batch, which is the pattern the API exists for. It does not
+make a job a cheap unit of work, and nothing here argues for finer jobs.
+
+`jobs.submit_only` is also deliberately left in place measuring the old path.
+It is the honest number for a producer that submits one job and has nothing to
+batch it with, and that case did not get faster.
+
+### A suspicion the measurement killed
+
+Reading the code first suggested the `results` map — which is inserted into on
+every completion and **never removed by anything** — would be slowing the
+producer down as it grew. It does not:
+
+| finished jobs still held in the map | `submit()` |
+| ---: | ---: |
+| 0 | 12.15 µs |
+| 100,000 | 10.99 µs |
+| 500,000 | 12.28 µs |
+
+Flat, inside the spread. The leak is real and is now recorded as `DEBT-0040`,
+but it is a memory defect and not a throughput one, and saying otherwise would
+have been a plausible story with no number behind it.

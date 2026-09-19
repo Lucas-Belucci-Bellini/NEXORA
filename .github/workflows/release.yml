@@ -16,7 +16,9 @@ name: release
 #
 # Cutting a release is `git tag vX.Y.Z && git push origin vX.Y.Z`; see
 # `docs/RELEASING.md`. `workflow_dispatch` runs everything except the publish,
-# so the pipeline can be exercised without creating a tag.
+# so the pipeline can be exercised without creating a tag — but only once this
+# file is on the default branch, because that is the only place GitHub looks for
+# dispatchable workflows. Until then this has never run; see `docs/RELEASING.md`.
 
 on:
   push:
