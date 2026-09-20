@@ -38,7 +38,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 998 tests
+cargo test --workspace          # 1005 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```

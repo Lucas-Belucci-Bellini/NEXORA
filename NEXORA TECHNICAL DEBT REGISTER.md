@@ -529,7 +529,46 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** primeiro processo de vida longa — servidor dedicado, ou o slice
   passar a rodar por horas.
 - **TARGET STAGE:** Phase 2 em diante
-- **STATUS:** OPEN (medido, visível)
+- **RESOLUÇÃO (2026-09-20):** [ADR-0016](docs/adr/ADR-0016-a-job-result-can-be-forgotten-and-says-so.md).
+  A remediação pedia decidir a semântica antes de mexer, e as três opções que
+  ela listou continuam com os defeitos que ela apontou. A escolhida foi a
+  terceira — **teto com descarte do mais antigo** — com a objeção dela
+  respondida em vez de ignorada: o descarte virou **resposta**, não ausência.
+
+  `JobOutcome::Forgotten` é variante própria, e `wait` passou a ter três saídas:
+  devolve o resultado se estiver retido, **continua bloqueando enquanto o pool
+  ainda segura o job**, e devolve `Forgotten` quando nem um nem outro. O sinal
+  que separa os dois últimos é o `tokens`, que já existia e já era limitado —
+  entra no submit, sai na conclusão, então guarda exatamente os jobs em voo.
+  Nenhuma estrutura nova foi necessária para responder a pergunta.
+
+  Três coisas que são o ponto, não efeito colateral:
+
+  - **Job esquecido nunca é reportado como sucesso.** O atalho tentador — tratar
+    resultado ausente como "então deu certo" — deixou de existir:
+    `is_success()` é falso para `Forgotten`, e `is_known()` existe para
+    perguntar direto. Um job que falhou e foi descartado leria como sucesso, que
+    é a única resposta que um escalonador não pode inventar.
+  - **`wait` agora sempre termina, e antes não terminava.** Esperar por um handle
+    que este pool nunca emitiu bloqueava para sempre. A mesma checagem que
+    distingue "ainda rodando" de "sumiu" resolve esse caso — conserto que caiu
+    do desenho, não que foi procurado.
+  - **Descartes são contados.** `JobMetrics::forgotten_results` é total corrido.
+    Contagem e não flag: a pergunta útil não é *se* o pool descarta, é a que
+    velocidade.
+
+  **E um segundo vazamento, apagado em vez de limitado.** O `State` também
+  carregava `cancelled: HashSet<JobHandle>`, escrito pelo `cancel` e **lido por
+  nada** — o cancelamento de verdade é a flag atômica do `CancellationToken`,
+  setada na linha seguinte. Vazava uma entrada por job cancelado sem efeito
+  nenhum. Conjunto que ninguém lê não é estado; foi removido.
+
+  O teto é 65.536, escolhido contra a maior onda que o motor submete e não por
+  ser redondo: geração de chunks num raio de interesse 12 são 625 colunas.
+  **Nada no motor hoje enxerga o teto** — o slice submete 25 e coleta 25 —, e é
+  por isso que os testes empurram dois tetos inteiros por um pool em vez de
+  confiar em algum caminho existente exercitá-lo.
+- **STATUS:** **CLOSED**
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
