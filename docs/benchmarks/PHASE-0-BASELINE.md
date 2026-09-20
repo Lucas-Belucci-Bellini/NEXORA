@@ -1630,3 +1630,99 @@ producer down as it grew. It does not:
 Flat, inside the spread. The leak is real and is now recorded as `DEBT-0040`,
 but it is a memory defect and not a throughput one, and saying otherwise would
 have been a plausible story with no number behind it.
+
+---
+
+# Appendix H — the noise floor (2026-09-20)
+
+## Finding 24 — the smallest numbers here are the steadiest, and the entry that said otherwise was guessing
+
+**`DEBT-0039` recorded that `voxel.get_paletted` read 11.4 ns at one commit and
+7.8–8.2 ns at the next, which touched no line of `engine/world`, and concluded:
+*"no number below ~20 ns published here should be read as precise better than a
+range."* The remediation asked for *n* builds of the same source, published with
+the spread between them. That is `scripts/build-spread.sh`, and the answer it
+gives is not the one the entry expected.**
+
+The script builds the workspace *n* times from **identical source**, separating
+each build with a neutral comment appended to `engine/benchmark/src/lib.rs` — a
+crate holding none of the measured kernels but linked into the same binary,
+which is the exact shape of the change that caused the entry. Whatever a row
+moves across those builds, it moved for no reason at all.
+
+### What moves, over three builds of one source
+
+| the six worst rows in the suite | lowest | highest | spread |
+| --- | ---: | ---: | ---: |
+| `journal.append_durable` | 108.74 µs | 148.16 µs | **36.3%** |
+| `physics.thousand_bodies_step_flat` | 86.03 µs | 111.77 µs | **29.9%** |
+| `save.region_write_one_dirty` | 2.27 ms | 2.81 ms | **23.8%** |
+| `jobs.batch_1000_barrier_submit_all` | 1.99 ms | 2.46 ms | **23.6%** |
+| `journal.append_batched_sync` | 190.49 µs | 231.12 µs | **21.3%** |
+| `jobs.submit_wait_roundtrip` | 18.04 µs | 21.35 µs | **18.3%** |
+
+| the small arithmetic kernels | lowest | highest | spread |
+| --- | ---: | ---: | ---: |
+| `ffi.scalar_inlined` | 2.10 ns | 2.10 ns | **0.0%** |
+| `ffi.scalar_opaque_rust` | 2.10 ns | 2.10 ns | **0.0%** |
+| `physics.voxel_lookup` | 13.00 ns | 13.20 ns | **1.5%** |
+| `physics.timestep_accumulate` | 5.20 ns | 5.30 ns | **1.9%** |
+| `voxel.get_uniform` | 2.90 ns | 3.00 ns | **3.4%** |
+| **`voxel.get_paletted`** — the row the entry is named for | 5.30 ns | 5.60 ns | **5.7%** |
+
+**Magnitude does not predict instability. What the row touches does.** Every one
+of the six worst rows goes through `fsync`, the disk, or thread scheduling. The
+steadiest rows in the whole suite are the two-nanosecond arithmetic kernels,
+which did not move by a single reported digit.
+
+Across three separate invocations of the script:
+
+| | rows under 20 ns, worst | any row, worst |
+| --- | ---: | ---: |
+| 2 builds | 5.0% | 17.2% (`jobs.submit_wait_roundtrip`) |
+| 3 builds | 10.2% | 33.1% (`jobs.submit_all_1000`) |
+| 3 builds, again | 13.0% | 36.3% (`journal.append_durable`) |
+
+**The floor grows with the number of builds, which is the honest shape of it.**
+A spread is a lower bound on the range, and sampling more finds more. Two builds
+are enough to know a floor exists and not enough to size it; the default is
+three and `--builds` takes more.
+
+### One sub-20 ns row that did move, and why it is less than it looks
+
+`entity.resolve_handle` spread **13.0%** — 2.30 ns to 2.60 ns. The harness
+reports to 0.1 ns, so at 2.3 ns a single digit of display resolution is already
+4.3%, and the whole "13%" is three of those ticks. That is a quantisation
+artefact as much as a measurement, and it is the reason the rule below is about
+comparing against a row's *measured* spread rather than against a percentage
+someone picked.
+
+### What this does not explain, and will not from here
+
+**The 11.4 → 7.8 ns observation that opened `DEBT-0039` is not reproduced by
+this, and cannot be.** Identical source is a different experiment from two
+different commits: the commit in question did change real code, and thin LTO can
+inline differently because of that, not merely lay code out differently. This
+measures only the second effect.
+
+The box has also moved. `voxel.get_paletted` reads **5.3–5.6 ns** here against
+the 11.4 and 7.8–8.2 ns recorded then, so the original pair cannot be re-run for
+comparison from this machine at all. The entry's observation stands as recorded;
+what it *inferred* from it — that smallness is the hazard — is what the
+measurement contradicts.
+
+### The rule that replaces "below ~20 ns"
+
+> Before publishing a gain, run `scripts/build-spread.sh` and compare the claim
+> against **that row's** spread. A change smaller than the row's own
+> build-to-build floor is not a finding, whatever the row's magnitude.
+
+It is deliberately not in CI: three release builds of the workspace is minutes
+of compute for a number that only matters when someone is about to publish a
+comparison. It is also unrelated to `.github/workflows/release.yml`, despite the
+entry's wording about "the release script" — the script meant is the one that
+produces published numbers, which is this.
+
+The script restores the file it edits on exit, including on failure, and refuses
+to start if that file already has uncommitted changes — a tool for measuring
+build noise has no business becoming a source of it.

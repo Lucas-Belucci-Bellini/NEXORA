@@ -100,11 +100,19 @@ measured rather than asserted:
 ```bash
 cargo run --release -p nexora-benchmark      # the Rust reference
 scripts/compare-stacks.sh                    # Rust vs C++, every compiler found
+scripts/build-spread.sh                      # how much a row moves for no reason
 ```
 
 The second script needs a C++20 compiler; nothing else in the repository does.
 It checks conformance before it times anything, and **fails without producing a
 single number** if the stacks disagree on any digest.
+
+The third builds the same source three times and reports how far each row
+drifted between builds. That is the floor a claimed improvement has to clear,
+and it is not where it was assumed to be: the two-nanosecond arithmetic kernels
+are the steadiest rows in the suite, and the noisiest are `fsync`, disk and
+thread-scheduling rows three orders of magnitude larger (finding 24,
+`DEBT-0039`).
 
 Results and analysis:
 [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md).

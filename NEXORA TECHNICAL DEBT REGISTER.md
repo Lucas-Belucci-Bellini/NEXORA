@@ -880,7 +880,53 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** a próxima vez que alguém quiser publicar um ganho abaixo de
   ~20 ns, ou antes de mexer em `spatial.index_of` (o que sobrou do DEBT-0011).
 - **TARGET STAGE:** Phase 4
-- **STATUS:** OPEN
+- **RESOLUÇÃO (2026-09-20):** o gatilho disparou pela minha própria mão — o ciclo
+  do DEBT-0010 publicou 4,94 ns contra 1,54 ns. A ferramenta que a remediação
+  pediu existe: **`scripts/build-spread.sh`** constrói *n* vezes a partir do
+  **mesmo fonte**, separando cada build por um comentário neutro em
+  `engine/benchmark/src/lib.rs` — crate que não contém nenhum kernel medido e é
+  religado no mesmo binário, que é exatamente a forma da mudança que gerou esta
+  entrada. Achado 24 do `PHASE-0-BASELINE.md`.
+
+  **E a resposta não é a que a entrada previa.** Em três builds do mesmo fonte:
+
+  | as seis piores linhas da suíte | faixa |
+  | --- | ---: |
+  | `journal.append_durable` | **36,3%** |
+  | `physics.thousand_bodies_step_flat` | **29,9%** |
+  | `save.region_write_one_dirty` | **23,8%** |
+  | `jobs.batch_1000_barrier_submit_all` | **23,6%** |
+  | `journal.append_batched_sync` | **21,3%** |
+  | `jobs.submit_wait_roundtrip` | **18,3%** |
+
+  Todas em µs ou ms, e **todas passam por `fsync`, disco ou escalonamento de
+  thread**. As linhas mais estáveis da suíte inteira são os kernels aritméticos
+  de dois nanossegundos: `ffi.scalar_inlined` e `ffi.scalar_opaque_rust` não
+  moveram **um dígito**. O `voxel.get_paletted`, a linha que dá nome a esta
+  entrada, moveu **5,7%** (5,30–5,60 ns).
+
+  **Grandeza não prevê instabilidade; o que a linha toca, sim.** A regra que a
+  entrada propôs — "nada abaixo de ~20 ns é preciso" — aponta para as linhas
+  erradas, e deixa passar linhas de 36% três ordens de grandeza acima.
+
+  **O piso cresce com o número de builds** (2 builds: 5,0% / 17,2%; 3 builds:
+  10,2% / 33,1%; 3 builds de novo: 13,0% / 36,3%), que é a forma honesta disso —
+  faixa é limite inferior, e amostrar mais acha mais.
+
+  **O que isto NÃO explica:** os 11,4 → 7,8 ns originais. Fonte idêntico é um
+  experimento diferente de dois commits diferentes — o commit em questão mudou
+  código de verdade, e o LTO fino pode inlinar diferente por causa disso, não só
+  realocar. Além disso a caixa mudou: `get_paletted` lê 5,3–5,6 ns aqui contra
+  11,4 e 7,8–8,2 lá, então o par original não é mais reexecutável daqui. A
+  observação continua válida como registrada; o que ela **inferiu** é que está
+  contrariado.
+- **REGRA EM VIGOR:** antes de publicar um ganho, rodar `scripts/build-spread.sh`
+  e comparar com a faixa **daquela linha**. Ganho menor que o piso de build da
+  própria linha não é achado, seja qual for a grandeza. Fora do CI de propósito:
+  três builds de release do workspace são minutos de compute para um número que
+  só importa quando alguém vai publicar comparação.
+- **STATUS:** **CLOSED** — a ferramenta existe, o piso está medido e publicado, e
+  a regra é verificável em vez de ser um limiar escolhido a olho.
 
 ### DEBT-0013 — Física não publicou orçamento, embora agora tenha os números
 
