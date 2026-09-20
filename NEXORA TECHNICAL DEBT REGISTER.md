@@ -570,6 +570,40 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   confiar em algum caminho existente exercitá-lo.
 - **STATUS:** **CLOSED**
 
+### DEBT-0041 — O loop de quadro existe, mas nenhum processo roda quadros contra um relógio
+
+- **SYSTEM:** `engine/runtime::frame`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o ENGINE-0 do `CORE.md` §16 foi construído
+  ([ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)) com o
+  tempo entrando como argumento, de propósito: um loop que lê o relógio não é
+  reproduzível. A consequência é que **alguém tem de entregar o tempo**, e o
+  único chamador hoje é a caminhada do slice, que entrega um delta roteirizado
+  de exatamente um passo. Nenhum processo deste repositório roda quadros contra
+  um relógio real.
+- **IMPACT:** três coisas que o loop mede nunca chegam a acontecer. `discarded`
+  é sempre zero, porque um delta de um passo não pode atrasar. A classificação é
+  sempre `Target`, porque um quadro roteirizado não estoura orçamento. E
+  `unattributed` — o número que o módulo inteiro existe para produzir — nunca é
+  observado num quadro de verdade, só nos testes e no benchmark. Um mecanismo de
+  contabilidade que nunca contabilizou uma carga real não foi exercitado, foi
+  compilado.
+- **RISK:** médio. Não há sintoma hoje, porque não há quadro a perder; o risco é
+  o de sempre com mecanismo não exercitado — descobrir que a contabilidade está
+  errada no dia em que ela for a única coisa a explicar um travamento.
+- **PROPOSED REMEDIATION:** um host que rode quadros num laço, entregando o
+  tempo real medido entre eles, e um estágio do slice ou do benchmark que use
+  esse host. Pode ser headless: não precisa de janela nenhuma para existir um
+  laço com relógio. O que ele precisa é de um critério de parada que não dependa
+  do relógio, ou o slice deixa de ser determinístico — o caminho provável é o
+  benchmark, que já é medição e não prova.
+- **TRIGGER:** já disparado, no sentido de que o mecanismo existe sem carga
+  real. A ordem, porém, é depois do `DEBT-0018` e do `DEBT-0027`: um host que
+  rode quadros enquanto a geração e o meshing ainda moram na thread do tick
+  mede o atraso deles, não o loop.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
 - **SYSTEM:** `engine/simulation::terrain` (`WorldVoxels`)
@@ -1062,7 +1096,15 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   inteiro custa 21,8 ms na thread do tick, e isso é intolerável assim que
   houver um quadro para perder.)*
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN (medido) — **o gatilho disparou em 2026-09-20.** O loop de
+  quadro existe (`engine/runtime/src/frame.rs`, ENGINE-0, ADR-0017) e a própria
+  caminhada do slice roda dentro dele. Isso **não** conserta nada aqui: a
+  ativação continua síncrona na thread do tick, e o que o loop acrescenta é só
+  que agora há um lugar onde os 21,8 ms aparecem como um quadro classificado
+  `EMERGENCY` em vez de uma frase neste registro. O que falta continua sendo o
+  descrito acima — submeter a geração como job e concluir a ativação num tick
+  posterior — mais a pergunta que o loop torna respondível e que ainda não foi
+  medida: **quantas ativações cabem num passo de 50 ms**.
 
 ### DEBT-0019 — `Regional` e `Abstract` são estados reais sem dados próprios
 
@@ -1381,7 +1423,9 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `DenseSnapshot` do `DEBT-0029` existe, é `Send`, e há um teste que falha em
   compilar se deixar de ser. O que falta é só o agendamento: submeter ao job
   system. A parte difícil — dar ao worker uma entrada que não é o mundo — está
-  feita.
+  feita. *(2026-09-20: o gatilho "existir um loop de quadro" também disparou —
+  ADR-0017. O mesher continua rodando na thread que pedir; o que mudou é que
+  agora dá para dizer em que estágio ele roda e quanto do quadro ele levou.)*
 
 ### DEBT-0028 — Não há malha de LOD
 

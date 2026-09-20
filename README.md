@@ -27,6 +27,14 @@ and `NEXORA DEFINITION OF DONE.md` does not accept unverified work.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists exactly what is and
 is not implemented.
 
+There *is* a frame, as of ENGINE-0
+([ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)): a fixed
+timestep, a cap on catching up that says how many steps it threw away, and
+per-stage attribution whose point is the time **no** stage claimed. A frame does
+not need a renderer; it needs somewhere for the engine's own costs to be
+compared against a budget, which until now existed only in prose. Nothing in the
+repository yet drives it against a real clock — `DEBT-0041`.
+
 The implementation language is **not locked**. Rust is the reference
 implementation for the benchmark gate defined in
 `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md` §17 — see
@@ -38,7 +46,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 1005 tests
+cargo test --workspace          # 1025 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -148,7 +156,8 @@ violation fails the build rather than a review
 engine/foundation    errors, versions, identifiers, space, time, determinism,
                      diagnostics, configuration          (no dependencies at all)
 engine/persistence   versioned, checksummed, atomic save container
-engine/runtime       lifecycle, engine modules, registries, event bus, jobs
+engine/runtime       lifecycle, engine modules, registries, event bus, jobs,
+                     the frame loop and its budget
 engine/world         voxel storage, chunks, world lifecycle, generation
 engine/entity        identity, lifecycle, components, queries, persistence
 engine/physics       fixed timestep, bodies, swept voxel collision, characters,

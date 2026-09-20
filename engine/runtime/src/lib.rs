@@ -11,18 +11,23 @@
 //! | [`registry`] | `Registry System.md` - namespaced content and fingerprints |
 //! | [`events`] | `Event Bus.md` - facts, correlation, causation, loop protection |
 //! | [`jobs`] | `JOB SYSTEM.md` - a bounded worker pool with priorities |
+//! | [`frame`] | `CORE.md` §16 - the frame loop, its fixed step and its budget |
 //!
 //! `NEXORA ARCHITECTURE RULES.md` §4 governs the vocabulary used here:
 //! a command is an intention, an event is a fact that already happened, and a
 //! query is a read. [`events`] carries facts only.
 
 pub mod events;
+pub mod frame;
 pub mod jobs;
 pub mod lifecycle;
 pub mod module;
 pub mod registry;
 
 pub use events::{Event, EventBus, EventContext, EventId};
+pub use frame::{
+    BudgetClass, FrameBudget, FrameLoop, FrameReport, FrameRun, FrameSchedule, FrameStage, StepPlan,
+};
 pub use jobs::{JobHandle, JobOutcome, JobSystem};
 pub use lifecycle::{Lifecycle, Phase, RuntimeMode, State};
 pub use module::{EngineModule, ModuleContext, ModuleId, ModuleManager};

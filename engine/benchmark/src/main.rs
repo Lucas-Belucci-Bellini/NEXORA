@@ -131,6 +131,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::physics(coarse)?);
     measurements.extend(suites::streaming(coarse, &options.scratch)?);
     measurements.extend(suites::jobs(coarse)?);
+    measurements.extend(suites::frame(standard)?);
     measurements.extend(suites::persistence(coarse, &options.scratch)?);
     measurements.extend(suites::meshing(coarse)?);
     measurements.extend(suites::ffi(standard));

@@ -1726,3 +1726,71 @@ produces published numbers, which is this.
 The script restores the file it edits on exit, including on failure, and refuses
 to start if that file already has uncommitted changes — a tool for measuring
 build noise has no business becoming a source of it.
+
+---
+
+## Finding 25 — a frame's accounting costs about 70 ns, and it is not the division
+
+`CORE.md` §16 has specified a game loop since Phase 0 and nothing implemented
+one, so every number in this document has been compared against a frame by hand.
+`engine/runtime/src/frame.rs` ([ADR-0017](../adr/ADR-0017-a-frame-is-time-the-host-hands-in.md))
+is that loop. The obvious objection to an accounting layer is that it changes
+what it measures, so the first thing measured about it is itself.
+
+| row | reading | what it covers |
+| --- | --- | --- |
+| `frame.schedule_advance` | **39.0 ns** | the accumulator alone: one delta in, a step plan out |
+| `frame.accounting_one_stage` | **65–78 ns** | a whole frame: open, charge one stage, close, classify |
+| `frame.accounting_seven_stages` | **74–77 ns** | the same frame with all seven stages charged |
+| `frame.stages` | **7** | the sequence `CORE.md` §16 declares |
+| `frame.stages_with_a_system` | **3** | of those, the ones anything in this repository can run in |
+
+Two readings are given for the two timed frame rows because they were measured
+twice, back to back, on the same binary: 78.0 and 65.0 ns, 77.0 and 74.0 ns. The
+spread is the reading, not one of the numbers.
+
+**Charging seven stages costs the same as charging one.** The two rows overlap
+inside their own spread, so per-stage attribution is effectively free and the
+whole fixed cost is in `begin` and `finish` — most of it in the accumulator,
+which is 39 ns of the ~70.
+
+### A guess about that 39 ns, and the measurement that killed it
+
+`FrameSchedule::advance` divides `Duration::as_nanos()` by the step, which is a
+128-bit division — a software routine on this target, and the obvious suspect
+for a figure that large. It is wrong. Replacing it with a 64-bit division when
+both operands fit (which they do for any step shorter than 584 years) moved the
+row from **42.0 ns to 40.0 ns** against a **37% spread**: nothing.
+
+The cost is the `Duration` arithmetic around it. One `advance` does a
+`saturating_add`, a `checked_mul`, and one or two `saturating_sub`s, each on a
+`(u64 seconds, u32 nanos)` pair with normalisation and overflow checks. Five
+checked operations on a two-field type is where the time goes, and the 64-bit
+fast path was reverted rather than kept: complexity bought nothing.
+
+This is the fourth entry in this document where a prediction about *where* the
+cost lived was wrong and the control said so — after `DEBT-0034`, `DEBT-0010`'s
+`by_type` extrapolation, and `DEBT-0039`'s own diagnosis.
+
+### Is it cheap enough to run every frame?
+
+Against the 50 ms a 20 Hz frame is allowed, 70 ns is **0.00014%**. Against the
+cheapest *real* frame this engine can currently run — `streaming.idle_tick_r3`
+at **3.03 µs and 2.98 µs** in the same two runs — it is about **2.3%**.
+
+The second figure is the honest one to quote, and it is small but not nothing:
+an engine whose frames were all idle streaming ticks would spend a fortieth of
+its time saying where the time went. That is an argument for the accounting
+staying as thin as it is, not for removing it, and it is the reason the seven
+stages are a fixed array indexed by `FrameStage::index` rather than a map.
+
+### What is not measured here
+
+No frame in this repository has ever been driven by a real clock. The slice's
+walk hands the loop a scripted delta of exactly one step, on purpose — the slice
+is a determinism proof, not a measurement — so `StepPlan::discarded` is always
+zero, the budget class is always `Target`, and `FrameReport::unattributed` has
+never been observed against real work outside these benchmark rows. That gap is
+`DEBT-0041`, and it is deliberately queued behind `DEBT-0018` and `DEBT-0027`:
+running frames against a clock while generation and meshing still sit on the
+tick thread would measure those two, not the loop.

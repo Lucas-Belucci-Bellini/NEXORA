@@ -368,6 +368,7 @@ fn the_report_renders_every_field() {
         "physics substeps",
         "character drop",
         "streaming ticks",
+        "frames",
         "chunks retained",
         "probes verified",
         "lifecycle phases",
@@ -377,6 +378,34 @@ fn the_report_renders_every_field() {
             "the report omits `{expected}`:\n{rendered}"
         );
     }
+}
+
+/// The walk runs on the engine's frame loop, and every fixed step is one tick.
+///
+/// This is what keeps the loop load-bearing here rather than decorative: stop
+/// driving the walk with it and `frame_steps` falls to zero while
+/// `streaming_ticks` keeps climbing. The two counts are deterministic because
+/// the delta handed to the loop is scripted - the slice is a proof, and the
+/// real per-frame distribution is the benchmark's job.
+#[test]
+fn the_walk_runs_on_the_frame_loop_and_every_step_is_one_tick() {
+    let scratch = Scratch::new("frames");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+
+    assert!(report.frames > 0, "the walk ran no frames at all");
+    assert_eq!(
+        report.frame_steps,
+        u64::from(report.streaming_ticks),
+        "every fixed step runs exactly one streaming tick"
+    );
+    assert_eq!(
+        report.frames, report.frame_steps,
+        "a delta of exactly one step buys exactly one step"
+    );
+    assert_eq!(
+        report.frame_steps_dropped, 0,
+        "a scripted one-step delta can never fall behind its own schedule"
+    );
 }
 
 #[test]

@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::path::Path;
+use std::time::Duration;
 
 use nexora_entity::components::{Bounds, TagSet, Velocity};
 use nexora_entity::id::EntityTypeId;
@@ -22,6 +23,7 @@ use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape, RegionShape, 
 use nexora_foundation::time::CalendarConfig;
 use nexora_foundation::time::WorldDuration;
 use nexora_foundation::time::WorldTime;
+use nexora_foundation::time::DEFAULT_TICKS_PER_SECOND;
 use nexora_persistence::journal::{self, Journal, SnapshotId};
 use nexora_persistence::SaveContainer;
 use nexora_physics::body::BodyDescriptor;
@@ -33,6 +35,7 @@ use nexora_physics::query::raycast;
 use nexora_physics::step::FixedStep;
 use nexora_physics::voxel::{FlatGround, VoxelShape, VoxelSource};
 use nexora_physics::world::PhysicsWorld;
+use nexora_runtime::frame::{FrameBudget, FrameLoop, FrameSchedule, FrameStage};
 use nexora_runtime::jobs::{CancellationToken, JobSystem, Priority};
 use nexora_simulation::{RetainedChunks, WorldResidency, WorldVoxels};
 use nexora_streaming::backend::{MemoryBackend, ResidencyBackend};
@@ -594,6 +597,87 @@ pub fn jobs(budget: Budget) -> Result<Vec<Measurement>> {
         "jobs.wakeups_per_1000_submit_all",
         "Condvar wake-ups the same wave issues through submit_all",
         workers as u64,
+    ));
+
+    Ok(out)
+}
+
+/// The frame loop: `CORE.md` §16.
+///
+/// What is worth measuring about an accounting layer is what the accounting
+/// costs, because that is the objection to having one: a frame that spends more
+/// time recording where its time went than doing the work is a measurement that
+/// changed what it measured. The rows below are the whole per-frame overhead —
+/// the accumulator, the stage charges and the classification — against an idle
+/// streaming tick of 4.70 µs (Appendix C, finding 18) as the smallest real
+/// frame this engine can currently run.
+///
+/// # Errors
+///
+/// Returns an error when the schedule is rejected, which a 50 ms step is not.
+pub fn frame(budget: Budget) -> Result<Vec<Measurement>> {
+    let step = Duration::from_secs(1) / DEFAULT_TICKS_PER_SECOND;
+    let mut out = Vec::new();
+
+    let mut schedule = FrameSchedule::new(step, 4)?;
+    out.push(measure(
+        "frame.schedule_advance",
+        "The fixed-timestep accumulator alone: one delta in, a step plan out",
+        budget,
+        || {
+            consume(schedule.advance(step).steps);
+        },
+    ));
+
+    let mut engine = FrameLoop::new(
+        FrameSchedule::new(step, 4)?,
+        FrameBudget::doubling_from(step),
+    );
+    out.push(measure(
+        "frame.accounting_one_stage",
+        "A whole frame opened, charged to one stage and closed, with no work in it",
+        budget,
+        || {
+            let mut frame = engine.begin(step);
+            let recorded = frame
+                .record(FrameStage::World, Duration::from_micros(1))
+                .is_ok();
+            consume(recorded);
+            consume(frame.finish(Duration::from_micros(2)).class());
+        },
+    ));
+
+    let mut engine = FrameLoop::new(
+        FrameSchedule::new(step, 4)?,
+        FrameBudget::doubling_from(step),
+    );
+    out.push(measure(
+        "frame.accounting_seven_stages",
+        "The same frame with every stage in the sequence charged separately",
+        budget,
+        || {
+            let mut frame = engine.begin(step);
+            for stage in FrameStage::SEQUENCE {
+                consume(frame.record(stage, Duration::from_micros(1)).is_ok());
+            }
+            consume(frame.finish(Duration::from_micros(8)).unattributed());
+        },
+    ));
+
+    // Counts, not times: how much of ENGINE-0 exists is a property of the
+    // repository, not of the machine that ran this.
+    out.push(record_quantity(
+        "frame.stages",
+        "Stages in the sequence `CORE.md` §16 declares",
+        FrameStage::COUNT as u64,
+    ));
+    out.push(record_quantity(
+        "frame.stages_with_a_system",
+        "Of those, the ones a system in this repository can actually run in",
+        FrameStage::SEQUENCE
+            .iter()
+            .filter(|stage| stage.has_system())
+            .count() as u64,
     ));
 
     Ok(out)
