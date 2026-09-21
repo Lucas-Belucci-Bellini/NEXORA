@@ -145,7 +145,10 @@ impl FrameStage {
     /// are silent because nothing *exists*.
     #[must_use]
     pub const fn has_system(self) -> bool {
-        matches!(self, Self::Simulation | Self::World | Self::Physics)
+        matches!(
+            self,
+            Self::Input | Self::Simulation | Self::World | Self::Physics
+        )
     }
 }
 
@@ -645,7 +648,7 @@ mod tests {
             .filter(|stage| stage.has_system())
             .map(|stage| stage.as_str())
             .collect();
-        assert_eq!(staffed, ["simulation", "world", "physics"]);
+        assert_eq!(staffed, ["input", "simulation", "world", "physics"]);
     }
 
     #[test]

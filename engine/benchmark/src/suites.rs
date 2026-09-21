@@ -36,6 +36,10 @@ use nexora_physics::step::FixedStep;
 use nexora_physics::voxel::{FlatGround, VoxelShape, VoxelSource};
 use nexora_physics::world::PhysicsWorld;
 use nexora_runtime::frame::{FrameBudget, FrameLoop, FrameSchedule, FrameStage};
+use nexora_runtime::input::{
+    ActionDefinition, ActionKind, ActionState, AxisCode, AxisTuning, Binding, ButtonCode, DeviceId,
+    DeviceKind, InputFrame, InputSnapshot, InputSystem, ResponseCurve, Signal, Source,
+};
 use nexora_runtime::jobs::{CancellationToken, JobSystem, Priority};
 use nexora_simulation::{RetainedChunks, WorldResidency, WorldVoxels};
 use nexora_streaming::backend::{MemoryBackend, ResidencyBackend};
@@ -678,6 +682,138 @@ pub fn frame(budget: Budget) -> Result<Vec<Measurement>> {
             .iter()
             .filter(|stage| stage.has_system())
             .count() as u64,
+    ));
+
+    Ok(out)
+}
+
+/// The input system: `INPUT SYSTEM.md`, ENGINE-8.
+///
+/// The row that matters is `input.sample_idle`. Resolution walks every binding
+/// every frame, so what the engine pays for input is a function of how large a
+/// keymap the player has, not of how much they are pressing - and a frame in
+/// which nothing happened still pays it. `input.bindings` is published beside
+/// the timings for exactly that reason: the other rows are per-frame costs *at
+/// that keymap size*, and quoting one without the other says nothing.
+///
+/// # Errors
+///
+/// Returns an error when the benchmark keymap cannot be built.
+pub fn input(budget: Budget) -> Result<Vec<Measurement>> {
+    /// A keymap about the size a real one is: movement, combat, the hotbar,
+    /// and a menu layer on top of it.
+    const KEYS: u16 = 40;
+
+    let context = Identifier::nexora("context/gameplay")?;
+    let menu = Identifier::nexora("context/menu")?;
+    let walk = Identifier::nexora("action/walk")?;
+    let look = Identifier::nexora("action/look")?;
+    let keyboard = DeviceId::new(DeviceKind::Keyboard, 0);
+    let pad = DeviceId::new(DeviceKind::Gamepad, 0);
+
+    let mut input = InputSystem::new();
+    input.register_action(ActionDefinition::new(walk.clone(), ActionKind::Axis))?;
+    input.register_action(ActionDefinition::new(look.clone(), ActionKind::Axis))?;
+    input.set_context(context.clone(), 0);
+    input.set_context(menu.clone(), 100);
+
+    input.bind(
+        Binding::new(
+            context.clone(),
+            look.clone(),
+            Source::axis(DeviceKind::Gamepad, AxisCode(0)),
+        )
+        .with_tuning(AxisTuning::new(0.15, 1.0, ResponseCurve::Quadratic, false)?),
+    )?;
+    input.bind(Binding::new(
+        context.clone(),
+        walk.clone(),
+        Source::button(DeviceKind::Keyboard, ButtonCode(0)),
+    ))?;
+    for key in 1..KEYS {
+        let action = Identifier::nexora(&format!("action/slot_{key}"))?;
+        input.register_action(ActionDefinition::new(action.clone(), ActionKind::Button))?;
+        let layer = if key % 4 == 0 { &menu } else { &context };
+        input.bind(Binding::new(
+            layer.clone(),
+            action,
+            Source::button(DeviceKind::Keyboard, ButtonCode(key)),
+        ))?;
+    }
+    let bindings = input.binding_count() as u64;
+
+    // The devices arrive before anything is measured, so no row includes the
+    // one-off cost of attaching them.
+    consume(
+        input
+            .sample(
+                &InputFrame::new()
+                    .with(Signal::Attached(keyboard))
+                    .with(Signal::Attached(pad)),
+            )
+            .len(),
+    );
+
+    let mut out = Vec::new();
+
+    let idle = InputFrame::new();
+    out.push(measure(
+        "input.sample_idle",
+        "One frame with no signals at all, resolved against the whole keymap",
+        budget,
+        || {
+            consume(input.sample(&idle).len());
+        },
+    ));
+
+    let mut down = true;
+    out.push(measure(
+        "input.sample_one_key",
+        "One frame carrying a single key transition, resolved against the keymap",
+        budget,
+        || {
+            down = !down;
+            consume(
+                input
+                    .sample(&InputFrame::new().with(Signal::button(keyboard, ButtonCode(0), down)))
+                    .len(),
+            );
+        },
+    ));
+
+    let mut swing = 0.0_f32;
+    out.push(measure(
+        "input.sample_stick",
+        "One frame carrying an analogue reading through dead zone, curve and sensitivity",
+        budget,
+        || {
+            swing = if swing > 0.0 { -0.7 } else { 0.7 };
+            consume(
+                input
+                    .sample(&InputFrame::new().with(Signal::axis(pad, AxisCode(0), swing)))
+                    .len(),
+            );
+        },
+    ));
+
+    let mut claim = InputSnapshot::new(1);
+    claim.set(walk, ActionState::new(1.0, true, true, false));
+    claim.set(look, ActionState::new(-0.5, true, false, false));
+    out.push(measure(
+        "input.validate_remote",
+        "Checking a two-action snapshot that arrived from outside the trust boundary",
+        budget,
+        || {
+            consume(input.validate_remote(&claim).is_ok());
+        },
+    ));
+
+    // A count, not a time: the rows above are per-frame costs at this keymap
+    // size, and the size is a property of the benchmark and not of the machine.
+    out.push(record_quantity(
+        "input.bindings",
+        "Bindings the sampled keymap holds, across two contexts",
+        bindings,
     ));
 
     Ok(out)

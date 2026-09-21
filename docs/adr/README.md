@@ -27,3 +27,4 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0015](ADR-0015-a-spatial-index-is-a-loose-grid-and-a-query-may-decline-it.md) | The spatial index is a loose grid the store maintains, and a query may decline it | ACCEPTED |
 | [0016](ADR-0016-a-job-result-can-be-forgotten-and-says-so.md) | A job result can be forgotten, and the pool says so rather than guessing | ACCEPTED |
 | [0017](ADR-0017-a-frame-is-time-the-host-hands-in.md) | A frame is time the host hands in, and the stages account for it | ACCEPTED |
+| [0018](ADR-0018-input-is-intent-the-host-hands-in.md) | Input is intent the host hands in, and a context consumes a source | ACCEPTED |

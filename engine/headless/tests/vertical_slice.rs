@@ -369,6 +369,7 @@ fn the_report_renders_every_field() {
         "character drop",
         "streaming ticks",
         "frames",
+        "input",
         "chunks retained",
         "probes verified",
         "lifecycle phases",
@@ -405,6 +406,32 @@ fn the_walk_runs_on_the_frame_loop_and_every_step_is_one_tick() {
     assert_eq!(
         report.frame_steps_dropped, 0,
         "a scripted one-step delta can never fall behind its own schedule"
+    );
+}
+
+/// The walk is what the input system says the player asked for.
+///
+/// `stream_a_walk` already fails if the derived route is not the route the
+/// slice is specified to walk, so reaching this test at all means the chain
+/// from scancode to interest source held. What is checked here is that the
+/// input stage really ran on every frame rather than once at the start, and
+/// that the taps are the ones the script contains.
+#[test]
+fn the_walk_is_driven_by_the_input_system_and_not_by_a_list_of_stops() {
+    let scratch = Scratch::new("input");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+
+    assert_eq!(
+        report.input_frames, report.frames,
+        "input is sampled at the top of every frame, not once per leg"
+    );
+    assert_eq!(
+        report.input_intents, 16,
+        "eight taps out and back, each with the release on the frame after it"
+    );
+    assert!(
+        report.input_intents < report.input_frames,
+        "most frames carry no intent at all, which is what makes the ones that do worth reporting"
     );
 }
 

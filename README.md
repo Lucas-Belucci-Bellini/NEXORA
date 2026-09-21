@@ -35,6 +35,16 @@ not need a renderer; it needs somewhere for the engine's own costs to be
 compared against a budget, which until now existed only in prose. Nothing in the
 repository yet drives it against a real clock — `DEBT-0041`.
 
+There is also **input**, as of ENGINE-8
+([ADR-0018](docs/adr/ADR-0018-input-is-intent-the-host-hands-in.md)): devices,
+actions, mapping contexts that consume a control rather than share it, chords,
+dead zones and curves, a remap that survives being written out, and a validator
+for intent that arrived from outside the trust boundary. It produces intent and
+nothing else — the command system already owns what intent is allowed to do. The
+slice's walk is driven through it: the route used to be a list of stops and is
+now what the input system says the player asked for. As with the frame, nothing
+here has met a real device — `DEBT-0043`.
+
 The implementation language is **not locked**. Rust is the reference
 implementation for the benchmark gate defined in
 `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md` §17 — see
@@ -46,7 +56,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 1025 tests
+cargo test --workspace          # 1060 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -157,7 +167,7 @@ engine/foundation    errors, versions, identifiers, space, time, determinism,
                      diagnostics, configuration          (no dependencies at all)
 engine/persistence   versioned, checksummed, atomic save container
 engine/runtime       lifecycle, engine modules, registries, event bus, jobs,
-                     the frame loop and its budget
+                     the frame loop and its budget, input and its bindings
 engine/world         voxel storage, chunks, world lifecycle, generation
 engine/entity        identity, lifecycle, components, queries, persistence
 engine/physics       fixed timestep, bodies, swept voxel collision, characters,

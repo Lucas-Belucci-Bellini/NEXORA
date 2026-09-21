@@ -12,6 +12,7 @@
 //! | [`events`] | `Event Bus.md` - facts, correlation, causation, loop protection |
 //! | [`jobs`] | `JOB SYSTEM.md` - a bounded worker pool with priorities |
 //! | [`frame`] | `CORE.md` §16 - the frame loop, its fixed step and its budget |
+//! | [`input`] | `INPUT SYSTEM.md` - devices and bindings become intent, not gameplay |
 //!
 //! `NEXORA ARCHITECTURE RULES.md` §4 governs the vocabulary used here:
 //! a command is an intention, an event is a fact that already happened, and a
@@ -19,6 +20,7 @@
 
 pub mod events;
 pub mod frame;
+pub mod input;
 pub mod jobs;
 pub mod lifecycle;
 pub mod module;
@@ -27,6 +29,10 @@ pub mod registry;
 pub use events::{Event, EventBus, EventContext, EventId};
 pub use frame::{
     BudgetClass, FrameBudget, FrameLoop, FrameReport, FrameRun, FrameSchedule, FrameStage, StepPlan,
+};
+pub use input::{
+    ActionDefinition, ActionKind, ActionState, AxisCode, AxisTuning, Binding, ButtonCode, DeviceId,
+    DeviceKind, InputFrame, InputSnapshot, InputSystem, ResponseCurve, Signal, Source,
 };
 pub use jobs::{JobHandle, JobOutcome, JobSystem};
 pub use lifecycle::{Lifecycle, Phase, RuntimeMode, State};

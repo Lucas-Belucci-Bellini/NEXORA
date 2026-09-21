@@ -604,6 +604,87 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
+### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
+
+- **SYSTEM:** `engine/runtime::input` (`InputSystem::resolve`)
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** `resolve` percorre `self.bindings` inteiro uma vez por quadro
+  e, para cada binding, procura a prioridade do contexto num
+  `BTreeMap<Identifier, i32>` — ou seja, comparação de string por nível da
+  árvore, 41 vezes por quadro no keymap medido. Roda mesmo quando ninguém
+  apertou nada: um quadro parado paga o mesmo que um quadro de combate.
+- **IMPACT:** medido, com o par que existe para isso
+  (`docs/benchmarks/PHASE-0-BASELINE.md`, achado 26). Três leituras de cada
+  lado, com `frame.schedule_advance` como controle que não pode se mexer — e não
+  se mexeu (39–42 ns dos dois lados):
+
+  | `input.sample_idle`, 41 bindings | leitura 1 | 2 | 3 |
+  | --- | ---: | ---: | ---: |
+  | como está | 322 ns | 342 ns | 356 ns |
+  | sem a busca do contexto | 102 ns | 102 ns | 99 ns |
+
+  **Cerca de 70% do custo de um quadro parado é descobrir de que contexto cada
+  binding é**, ~5,4 ns por binding. O resto da varredura é o que sobra.
+
+  A segunda dimensão nunca foi medida: `button_held` é uma varredura do conjunto
+  de teclas seguradas *dentro* do laço de bindings, então o custo real é
+  O(bindings × seguradas), e todas as medições têm no máximo uma tecla embaixo.
+  Um keymap cheio de cordas com quatro modificadores segurados é um caso sobre o
+  qual este registro não tem número nenhum.
+- **RISK:** baixo hoje, e é importante dizer por quê em vez de deixar o número
+  assustar: 322 ns são 0,00064% do orçamento TARGET de 50 ms de um quadro a
+  20 Hz, e ~11% de um tick de streaming parado (3,0 µs, medido nas mesmas
+  execuções). O risco não é o número atual, é a inclinação — ele cresce com o
+  tamanho do keymap, e keymap cresce.
+- **PROPOSED REMEDIATION:** um índice de contexto → bindings, mantido em `bind`,
+  `unbind` e `unbind_context`, para que a busca aconteça uma vez por contexto
+  ativo (1 a 3) em vez de uma vez por binding (dezenas). A varredura de teclas
+  seguradas pede a mesma forma de conserto: um índice por `Source`. Nenhum dos
+  dois é difícil; os dois são estrutura nova para manter, e é por isso que este
+  é um registro e não um commit.
+- **TRIGGER:** o keymap embarcado passar de ~150 bindings — 3,6× o medido, o que
+  põe o quadro parado perto de 1,2 µs — **ou** o input aparecer com participação
+  não trivial num relatório de quadro de carga real, o que depende do
+  `DEBT-0041`. Antes disso, indexar seria exatamente o que o `DEBT-0010` provou
+  que não se deve fazer sem número: lá a varredura custava 979,7 µs e valia o
+  índice; aqui custa 322 ns e não vale.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0043 — Nenhum dispositivo real jamais produziu um sinal de input
+
+- **SYSTEM:** `engine/runtime::input`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o ENGINE-8 do `CORE.md` §24 e o `INPUT SYSTEM.md` foram
+  construídos ([ADR-0018](docs/adr/ADR-0018-input-is-intent-the-host-hands-in.md))
+  com o sinal entrando como argumento, pelo mesmo motivo do `DEBT-0041`: um
+  sistema que abre o dispositivo sozinho não se reproduz. E, pelo mesmo motivo,
+  **alguém tem de entregar o sinal** — e o único chamador hoje é o jogador
+  roteirizado do slice, que aperta duas teclas de um teclado que não existe.
+- **IMPACT:** o que nunca aconteceu, listado para não ser confundido com o que
+  funciona: nenhum teclado, mouse, gamepad ou tela de toque jamais entregou um
+  sinal; `DeviceKind::Mouse` e `DeviceKind::Touch` não têm um único chamador
+  fora dos testes; nenhum arquivo de remap foi gravado em disco, só codificado e
+  decodificado em memória; e `validate_remote` nunca examinou um snapshot que
+  tivesse atravessado uma rede, porque não há rede. O que está exercitado é a
+  lógica; o que não está é a borda.
+- **RISK:** médio. A parte que costuma dar errado numa camada de input é
+  justamente a borda — que scancode o sistema operacional manda, o que ele faz
+  com repetição de tecla, se a desconexão chega como evento ou como silêncio. O
+  módulo tem uma resposta declarada para cada uma dessas e nenhuma foi
+  confrontada com um driver.
+- **PROPOSED REMEDIATION:** um host que traduza eventos de dispositivo do
+  sistema operacional em `Signal` e chame `sample` uma vez por quadro. É o mesmo
+  host que o `DEBT-0041` pede, e provavelmente é um só: quem tem o relógio tem
+  os dispositivos. Enquanto ele não existir, o ganho barato é gravar e ler o
+  arquivo de remap de verdade, que não precisa de driver nenhum.
+- **TRIGGER:** existir qualquer processo com janela ou com laço de eventos do
+  sistema operacional. Depende do `DEBT-0041` pela mesma razão que ele depende
+  do `DEBT-0018` e do `DEBT-0027`: medir ou exercitar a borda antes de haver
+  host é medir o roteiro.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
 - **SYSTEM:** `engine/simulation::terrain` (`WorldVoxels`)

@@ -1745,6 +1745,9 @@ what it measures, so the first thing measured about it is itself.
 | `frame.stages` | **7** | the sequence `CORE.md` §16 declares |
 | `frame.stages_with_a_system` | **3** | of those, the ones anything in this repository can run in |
 
+(`frame.stages_with_a_system` reads **4** since ENGINE-8 staffed the `Input`
+stage — finding 26. The **3** above is what it read when this finding was taken.)
+
 Two readings are given for the two timed frame rows because they were measured
 twice, back to back, on the same binary: 78.0 and 65.0 ns, 77.0 and 74.0 ns. The
 spread is the reading, not one of the numbers.
@@ -1794,3 +1797,91 @@ never been observed against real work outside these benchmark rows. That gap is
 `DEBT-0041`, and it is deliberately queued behind `DEBT-0018` and `DEBT-0027`:
 running frames against a clock while generation and meshing still sit on the
 tick thread would measure those two, not the loop.
+
+---
+
+## Finding 26 — the input system costs a third of a microsecond a frame, and 70% of that is looking up the context
+
+`CORE.md` §24 and `INPUT SYSTEM.md` specified ENGINE-8 from the start and
+nothing implemented it, so `FrameStage::Input` existed and reported
+`has_system() == false`. `engine/runtime/src/input.rs`
+([ADR-0018](../adr/ADR-0018-input-is-intent-the-host-hands-in.md)) fills it.
+What it costs matters more than most rows here for one reason: **resolution runs
+every frame whether or not anything was pressed.** A player standing still pays
+the same as a player in a fight.
+
+| row | reading | what it covers |
+| --- | --- | --- |
+| `input.sample_idle` | **322–356 ns** | a frame with no signals at all, resolved against the whole keymap |
+| `input.sample_one_key` | **551–872 ns** | a frame carrying one key transition |
+| `input.sample_stick` | **723 ns – 1.02 µs** | a frame carrying an analogue reading through dead zone, curve and sensitivity |
+| `input.validate_remote` | **87–129 ns** | checking a two-action snapshot from outside the trust boundary |
+| `input.bindings` | **41** | bindings the sampled keymap holds, across two contexts |
+
+The binding count is published beside the timings deliberately. Every timed row
+above is a per-frame cost *at that keymap size*; quoting one without the other
+says nothing, because the scan is linear in bindings.
+
+### These are the least reproducible rows in the suite
+
+Four separate runs of the same binary read `input.sample_idle` at **341, 485,
+354 and 928 ns**, while `streaming.idle_tick_r3` in those same four runs held a
+3.5% band (2.99–3.10 µs). A row that swings 2.7× beside a row that does not move
+is the box, not the code — and it means **no point figure should be quoted for
+these rows from this machine**, which is why the table above gives ranges.
+
+This does not match the shape `DEBT-0039` found. There the unstable rows were
+the ones touching fsync, the disk or thread scheduling, and the small arithmetic
+kernels were the steadiest things in the suite. These rows touch none of that.
+What they do is chase pointers — `BTreeMap` nodes and the heap-allocated strings
+inside `Identifier` — so the reading depends on cache state in a way a
+register-bound kernel does not. That is an explanation, not a measurement: what
+is established is the instability, not its cause.
+
+### The one comparison that is clean
+
+Because a single reading proves nothing here, the diagnostic was run three times
+a side, on the same machine, minutes apart, with `frame.schedule_advance` as the
+control that must not move — and did not:
+
+| `input.sample_idle`, 41 bindings | 1 | 2 | 3 | control |
+| --- | ---: | ---: | ---: | ---: |
+| as written | 322 ns | 342 ns | 356 ns | 39 / 42 / 40 ns |
+| with the context lookup removed | 102 ns | 102 ns | 99 ns | 41 / 41 / 40 ns |
+
+The ranges are disjoint by 3×. **About 70% of an idle frame's input cost is
+`BTreeMap<Identifier, i32>::get`, called once per binding to find out which
+context that binding belongs to** — roughly 5.4 ns each, which is what comparing
+two heap strings per tree level costs. The remainder is the scan itself.
+
+Note that the diagnostic changes what the other rows *mean* — with every
+priority forced to zero, a pressed key resolves to a different winner — so only
+the idle row, in which no binding fires either way, is being compared like for
+like. The other two rows moved in that build and those movements are not
+evidence of anything.
+
+### Not fixed, on purpose
+
+The remedy is known and written down: index bindings by context so the lookup
+happens once per active context (1 to 3) instead of once per binding (dozens).
+It is `DEBT-0042` and not a commit, because 322 ns is **0.00064%** of the 50 ms a
+20 Hz frame is allowed, and about **11%** of an idle streaming tick. `DEBT-0010`
+is the precedent that decides this: there the scan cost 979.7 µs and earned its
+index; here it costs a third of a microsecond and does not. The trigger is
+written into the entry — a keymap past ~150 bindings, or input showing up with a
+non-trivial share of a real frame.
+
+### What is not measured here
+
+The second dimension of the scan. `button_held` walks the set of held buttons
+*inside* the per-binding loop, so the real cost is O(bindings × held), and every
+measurement above has at most one key down. A chord-heavy keymap with four
+modifiers held is a case this document has no number for.
+
+And, as with the frame loop: no real device has ever produced a signal. The only
+caller outside the tests is the slice's scripted player, tapping two keys on a
+keyboard that does not exist. `DeviceKind::Mouse` and `DeviceKind::Touch` have no
+caller at all, no remap file has been written to disk, and `validate_remote` has
+never examined a snapshot that crossed a network. That is `DEBT-0043`, and it
+waits on the same host `DEBT-0041` waits on — whoever owns the clock owns the
+devices.
