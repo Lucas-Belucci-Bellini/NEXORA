@@ -975,7 +975,9 @@ impl InputSystem {
         Ok(())
     }
 
-    /// Remove a mapping, naming it the way [`Binding::slot`] identifies one.
+    /// Remove a mapping, named by what identifies one: its context, its source
+    /// and its chord. The action is not part of that — binding one key to two
+    /// actions in a context is the conflict [`Self::bind`] refuses.
     ///
     /// Returns whether anything was removed. This is the other half of a remap:
     /// unbind the old source, bind the new one.
