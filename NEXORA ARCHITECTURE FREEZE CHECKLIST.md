@@ -40,7 +40,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | RHI boundary | [x] | [ ] | no display or GPU to verify against (ADR-0005) |
 | Input boundary | [x] | [ ] | meaningless without a window |
 | Audio boundary | [x] | [ ] | — |
-| Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0015); the runtime cannot decode a PNG yet (DEBT-0037) and resource packs do not layer |
+| Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0015); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0016); resource packs do not layer, and deflate's dynamic-Huffman blocks are not read |
 | Streaming lifecycle | [x] | [ ] | chunks are loaded explicitly for now |
 | Headless mode | [x] | [x] | `nexora-headless` |
 

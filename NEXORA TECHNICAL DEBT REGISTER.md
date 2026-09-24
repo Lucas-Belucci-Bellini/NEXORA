@@ -936,4 +936,9 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro consumidor de pixels no runtime (renderizador,
   validação de conteúdo em runtime, ou ícone de UI).
 - **TARGET STAGE:** Phase 1 (Resource System)
-- **STATUS:** OPEN
+- **STATUS:** RESOLVED — [ADR-0016](docs/adr/ADR-0016-one-png-decoder-and-it-lives-in-the-engine.md).
+  `engine/image` tem o `inflate` (agora limitado pelo tamanho que o cabeçalho
+  declara), o `png::decode` e o `TextureLoader`; o forge reexporta, e há um
+  decodificador só. Prova: `engine/image` (PNGs montados à mão, sem o
+  encoder), `first_generation::the_runtime_reaches_every_first_generation_texture_by_identifier`
+  e o slice headless com `--resources` no CI.

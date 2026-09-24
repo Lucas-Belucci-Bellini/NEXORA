@@ -128,6 +128,7 @@ engine/asset         surface materials, provenance, the strict JSON reader
 engine/resource      resource manifest, integrity-checked loading, bounded
                      cache and typed handles (ADR-0015)
 engine/mesh          greedy meshing into a data structure (ADR-0012)
+engine/image         the one PNG decoder and the texture loader (ADR-0016)
 tools/texture-forge  the content tool: recipes, generation, batch, INDEX
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine

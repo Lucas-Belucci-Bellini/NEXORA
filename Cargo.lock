@@ -55,15 +55,27 @@ version = "0.0.1"
 name = "nexora-headless"
 version = "0.0.1"
 dependencies = [
+ "nexora-asset",
  "nexora-command",
  "nexora-foundation",
+ "nexora-image",
  "nexora-mesh",
  "nexora-persistence",
  "nexora-physics",
+ "nexora-resource",
  "nexora-runtime",
  "nexora-simulation",
  "nexora-streaming",
  "nexora-world",
+]
+
+[[package]]
+name = "nexora-image"
+version = "0.0.1"
+dependencies = [
+ "nexora-asset",
+ "nexora-foundation",
+ "nexora-resource",
 ]
 
 [[package]]
@@ -129,6 +141,7 @@ version = "0.0.1"
 dependencies = [
  "nexora-asset",
  "nexora-foundation",
+ "nexora-image",
  "nexora-resource",
 ]
 

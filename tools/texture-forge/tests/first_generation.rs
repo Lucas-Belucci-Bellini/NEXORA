@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use nexora_asset::texture::{ChannelLayout, MapRole, Resolution};
 use nexora_foundation::hashing::fnv1a64;
+use nexora_image::TextureLoader;
 use nexora_resource::{BytesLoader, ResourceKind, ResourceManager};
 use nexora_texture_forge::batch::{Plan, Policy};
 use nexora_texture_forge::forge::Forge;
@@ -199,6 +200,30 @@ fn the_runtime_reaches_every_first_generation_texture_by_identifier() {
         "the budget forced evictions: {stats:?}"
     );
     assert_eq!(resources.integrity_failures(), 0);
+
+    // And to pixels, with the engine's decoder and the first generation's
+    // limit: nothing above 16x16 may load. A 16x16 RGBA map costs 1 KiB of
+    // memory, so the same 2 KiB budget must evict here too.
+    let mut resources = ResourceManager::open(&out, budget).unwrap();
+    let albedo = TextureLoader::new(MapRole::Albedo).at_most(16);
+    for entry in &plan.entries {
+        let texture = entry.definition.map_asset_id(MapRole::Albedo).unwrap();
+        let handle = resources.resolve(&texture, &albedo).unwrap();
+        let map = resources.load(&handle, &albedo).expect("decodes");
+        assert_eq!(
+            map.resolution(),
+            Resolution::square(16).unwrap(),
+            "{texture}"
+        );
+        assert_eq!(map.role(), MapRole::Albedo);
+        assert_eq!(map.pixels().len(), 16 * 16 * 4);
+    }
+    assert_eq!(
+        resources.cache().stats().bytes,
+        2 * 1024,
+        "two decoded maps fit"
+    );
+    assert!(resources.cache().stats().evictions >= 14);
 
     let _ = std::fs::remove_dir_all(&out);
 }

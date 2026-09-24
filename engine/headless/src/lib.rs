@@ -39,6 +39,8 @@ use nexora_foundation::spatial::{BlockPos, ChunkCoord};
 use nexora_foundation::time::{CalendarConfig, TimeScale, WorldDuration, WorldTime};
 use std::path::Path;
 
+use nexora_asset::texture::MapRole;
+use nexora_image::TextureLoader;
 use nexora_mesh::mesh::SurfaceId;
 use nexora_mesh::mesh_region;
 use nexora_mesh::view::Extent;
@@ -48,6 +50,7 @@ use nexora_physics::body::BodyDescriptor;
 use nexora_physics::collision::overlaps_solid;
 use nexora_physics::math::Vec3;
 use nexora_physics::world::PhysicsWorld;
+use nexora_resource::ResourceManager;
 use nexora_runtime::jobs::{JobOutcome, JobSystem, Priority};
 use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
@@ -84,6 +87,10 @@ pub struct SliceConfig {
     /// same save, reload and recovery boundaries as the slice's own edits,
     /// and is checked through the mesher.
     pub content: Option<PathBuf>,
+    /// A resource root (with its `resources.json`) holding the content's
+    /// textures, if any. Requires `content`: every content block's texture is
+    /// then resolved by identifier, verified against the index and decoded.
+    pub resources: Option<PathBuf>,
 }
 
 impl Default for SliceConfig {
@@ -95,6 +102,7 @@ impl Default for SliceConfig {
             worker_threads: 4,
             verbose: true,
             content: None,
+            resources: None,
         }
     }
 }
@@ -158,6 +166,9 @@ pub struct SliceReport {
     pub content_blocks: usize,
     /// Distinct surfaces those blocks showed in a mesh of the placed row.
     pub content_surfaces: usize,
+    /// Content textures resolved, verified and decoded through the resource
+    /// system.
+    pub content_textures: usize,
     /// Lifecycle phases entered, in order.
     pub phases: Vec<&'static str>,
 }
@@ -325,6 +336,15 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         Some(content) => verify_content_surfaces(&world, content)?,
         None => 0,
     };
+    let content_textures = match (&content, &config.resources) {
+        (Some(content), Some(root)) => load_content_textures(content, root, &diagnostics)?,
+        (None, Some(_)) => {
+            return Err(mismatch(
+                "a resource root was given without content to look up",
+            ))
+        }
+        _ => 0,
+    };
     let blocks_edited = probes.len();
     diagnostics
         .counters()
@@ -475,6 +495,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         probes_verified: probes.len(),
         content_blocks: content_blocks.len(),
         content_surfaces,
+        content_textures,
         phases: lifecycle
             .history()
             .iter()
@@ -803,6 +824,37 @@ fn verify_content_surfaces(world: &World, content: &BlockContent) -> Result<usiz
     Ok(expected.len())
 }
 
+/// The decoded-texture budget the slice runs with: sixteen first-generation
+/// albedos are 16 KiB of pixels, so this holds them all without eviction and
+/// leaves no room for anything larger to hide in.
+const TEXTURE_BUDGET: u64 = 64 * 1024;
+
+/// Resolve every content block's albedo by identifier, verify it against the
+/// resource index, and decode it -- the runtime reaching its own textures
+/// without the tool that wrote them (ADR-0015, ADR-0016).
+fn load_content_textures(
+    content: &BlockContent,
+    root: &Path,
+    diagnostics: &Diagnostics,
+) -> Result<usize> {
+    let mut resources = ResourceManager::open(root, TEXTURE_BUDGET)?;
+    let before = resources.cache().stats();
+    // The first visual generation is 16x16; anything larger is a content
+    // error, found here rather than in video memory.
+    let loader = TextureLoader::new(MapRole::Albedo).at_most(16);
+    for material in content.materials() {
+        let id = material.map_asset_id(MapRole::Albedo)?;
+        let handle = resources.resolve(&id, &loader)?;
+        let map = resources.load(&handle, &loader)?;
+        if map.resolution() != material.resolution() {
+            return Err(mismatch("a texture is not the size its material declares")
+                .with_context("texture", id.to_string()));
+        }
+    }
+    resources.cache().publish(diagnostics.counters(), before);
+    Ok(content.materials().len())
+}
+
 fn apply_edits(
     world: &mut World,
     coords: &[ChunkCoord],
@@ -925,6 +977,12 @@ pub fn format_report(report: &SliceReport) -> String {
         out.push_str(&format!(
             "content blocks     {} ({} surfaces in the mesh)\n",
             report.content_blocks, report.content_surfaces
+        ));
+    }
+    if report.content_textures > 0 {
+        out.push_str(&format!(
+            "content textures   {} (resolved, verified and decoded)\n",
+            report.content_textures
         ));
     }
     out.push_str(&format!("probes verified    {}\n", report.probes_verified));

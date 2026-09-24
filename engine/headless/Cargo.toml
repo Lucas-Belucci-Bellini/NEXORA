@@ -25,6 +25,9 @@ nexora-streaming.workspace = true
 nexora-command.workspace = true
 nexora-simulation.workspace = true
 nexora-mesh.workspace = true
+nexora-asset.workspace = true
+nexora-resource.workspace = true
+nexora-image.workspace = true
 
 [lints]
 workspace = true

@@ -44,7 +44,8 @@ fn usage() -> String {
          \x20 --radius <i64>      chunk radius to generate (default {})\n\
          \x20 --save <path>       save file path (default {})\n\
          \x20 --threads <n>       worker threads (default {})\n\
-                  \x20 --content <path>    register, place and verify a block content document\n\
+                           \x20 --content <path>    register, place and verify a block content document\n\
+         \x20 --resources <dir>   load the content's textures from this resource root\n\
          \x20 --quiet             suppress progress diagnostics\n\
          \x20 --help              show this message",
         default.seed,
@@ -92,10 +93,14 @@ fn parse_args() -> Result<Option<SliceConfig>, String> {
                 config.worker_threads = threads;
             }
             "--content" => config.content = Some(PathBuf::from(value("--content")?)),
+            "--resources" => config.resources = Some(PathBuf::from(value("--resources")?)),
             "--quiet" => config.verbose = false,
             unknown => return Err(format!("unknown argument `{unknown}`")),
         }
     }
 
+    if config.resources.is_some() && config.content.is_none() {
+        return Err("--resources needs --content: it loads the content's textures".to_owned());
+    }
     Ok(Some(config))
 }
