@@ -73,3 +73,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0015](docs/adr/ADR-0015-resources-are-verified-before-they-are-decoded.md) | Recursos são indexados e verificados antes de serem decodificados | ACCEPTED |
 | [0016](docs/adr/ADR-0016-one-png-decoder-and-it-lives-in-the-engine.md) | Um único decodificador PNG, e ele mora no engine | ACCEPTED |
 | [0017](docs/adr/ADR-0017-queries-are-reads-and-a-contract.md) | Queries são leituras, e um contrato | ACCEPTED |
+| [0018](docs/adr/ADR-0018-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memória é contabilizada pelo dono, num livro-razão só | ACCEPTED |

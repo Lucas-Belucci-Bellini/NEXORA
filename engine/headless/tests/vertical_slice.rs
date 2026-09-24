@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use nexora_foundation::memory::{MemoryClass, Pressure};
 use nexora_headless::{format_report, run_slice, SliceConfig};
 
 /// A scratch directory that removes itself.
@@ -350,6 +351,9 @@ fn the_report_renders_every_field() {
         "character drop",
         "streaming ticks",
         "chunks retained",
+        "memory",
+        "world.chunks",
+        "world.retained",
         "probes verified",
         "lifecycle phases",
     ] {
@@ -458,4 +462,38 @@ fn journalling_does_not_depend_on_the_worker_count_either() {
         std::fs::read(scratch.save("jr-b")).expect("save b"),
         "journalling made the save depend on the worker count"
     );
+}
+
+#[test]
+fn every_memory_pool_stays_inside_its_budget_and_drains_at_rest() {
+    let scratch = Scratch::new("memory");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+    let memory = &report.memory;
+
+    assert_eq!(
+        memory
+            .pools
+            .iter()
+            .map(|pool| pool.name)
+            .collect::<Vec<_>>(),
+        ["world.chunks", "world.retained"],
+        "no texture pool without textures"
+    );
+    assert_eq!(memory.worst(), Pressure::Nominal, "{memory:?}");
+    assert_eq!(memory.suspected_leaks(), 0);
+
+    let world = &memory.pools[0];
+    assert_eq!(world.class, MemoryClass::World);
+    assert_eq!(
+        world.current as usize, report.storage_bytes,
+        "the pool records what the world reports, and the reloaded world is the one it saved"
+    );
+    assert!(world.high_water >= world.current);
+
+    // Every edited column was held outside the world at some point, and all
+    // of it went back before the save.
+    let retained = &memory.pools[1];
+    assert_eq!(retained.current, 0);
+    assert!(retained.high_water > 0, "the walk retained edited columns");
+    assert!(retained.drains_at_rest);
 }

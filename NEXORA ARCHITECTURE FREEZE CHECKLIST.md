@@ -27,7 +27,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Core lifecycle | [x] | [x] | `runtime::lifecycle` |
 | Module lifecycle | [x] | [x] | `runtime::module` |
 | Job / threading model | [x] | [x] | `runtime::jobs` |
-| Resource ownership | [x] | [~] | the asset cache is built — byte budget, priority, last use, pinning, eviction, counters, `Arc` so eviction never takes a value from its holder (`engine/resource`, ADR-0015); per-subsystem budgets for the other memory classes are not |
+| Resource ownership | [x] | [~] | the asset cache is built — byte budget, priority, last use, pinning, eviction, counters, `Arc` so eviction never takes a value from its holder (`engine/resource`, ADR-0015); **per-owner memory budgets** are built — one ledger, eight classes, `TARGET/WARNING/CRITICAL/EMERGENCY`, high-water marks, worst pressure, refusals, suspected leaks (`foundation::memory`, ADR-0018) — and the world, retained chunks and texture cache record into it, gated in CI; the `Frame`, `Gpu`, `Network`, `Script` and `Editor` classes have no owner yet because none of those subsystems exists |
 | Time model | [x] | [x] | `foundation::time` |
 | Spatial model | [x] | [x] | `foundation::spatial` |
 | Registry / ID rules | [x] | [x] | `runtime::registry`, `foundation::ident` |
@@ -54,7 +54,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | AI decision pipeline | [x] | [ ] | `NEXORA AI DECISION ARCHITECTURE.md` |
 | LOD transitions | [x] | [~] | the `FULL → REGIONAL → ABSTRACT → UNRESIDENT` ladder, hysteresis and eviction are built and tested (`engine/streaming`, ADR-0008); the two middle tiers hold no distinct data until the regional simulation exists (DEBT-0019) |
 | Streaming residency | [x] | [x] | interest, priority, budgets with backpressure, and eviction that persists before it drops — including the case where the write fails and the chunk is *not* dropped (ADR-0008) |
-| Performance budgets | [x] | [~] | storage, counters and now physics are measurable; no budgets published or enforced (DEBT-0013) |
+| Performance budgets | [x] | [~] | the `MEMORY` dimension is published and enforced for the slice's pools, from measured per-column figures (ADR-0018); time budgets are not, because a shared runner's clock is noise (DEBT-0013) |
 | Deterministic requirements | [x] | [~] | RNG, generation and saves are deterministic and tested; replay is not built |
 
 ## World

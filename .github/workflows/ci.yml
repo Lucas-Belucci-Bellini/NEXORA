@@ -68,7 +68,12 @@ jobs:
       # build if the world does not survive a save and reload.
       - name: Smoke test the headless vertical slice
         run: |
-          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv"
+          # Memory is gated, unlike time: a pool's bytes are a property of the
+          # data structures and come out the same on any runner (ADR-0018).
+          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv" \
+            | tee "${RUNNER_TEMP}/ci-world.txt"
+          grep '^memory             2 pools, worst nominal, 0 suspected leaks$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones must register, show its own surface in a mesh, and survive
           # the save, the reload and the journal replay as a probe.
@@ -136,8 +141,13 @@ jobs:
         run: |
           ./target/release/nexora-headless --quiet --radius 1 --save "${RUNNER_TEMP}/ci-textures.nxsv" \
             --content content/first-generation/blocks.json \
-            --resources "${RUNNER_TEMP}/first-generation" \
-            | grep '^content textures   16 (resolved, verified and decoded)$' > /dev/null
+            --resources "${RUNNER_TEMP}/first-generation" > "${RUNNER_TEMP}/ci-textures.txt"
+          grep '^content textures   16 (resolved, verified and decoded)$' \
+            "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
+          # The decoded textures are a third pool, and the cache that held them
+          # must have given its bytes back when the stage ended.
+          grep '^memory             3 pools, worst nominal, 0 suspected leaks$' \
+            "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its

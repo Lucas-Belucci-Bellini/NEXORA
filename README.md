@@ -112,7 +112,8 @@ violation fails the build rather than a review
 
 ```text
 engine/foundation    errors, versions, identifiers, space, time, determinism,
-                     diagnostics, configuration          (no dependencies at all)
+                     diagnostics, configuration, memory budgets (ADR-0018)
+                                                         (no dependencies at all)
 engine/persistence   versioned, checksummed, atomic save container
 engine/runtime       lifecycle, engine modules, registries, event bus, jobs
 engine/world         voxel storage, chunks, world lifecycle, generation

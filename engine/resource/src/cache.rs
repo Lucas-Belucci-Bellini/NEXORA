@@ -23,6 +23,14 @@
 //! The insert is refused with [`Recovery::Retry`]. The alternative — letting
 //! the cache grow past its capacity — would make "bounded" a suggestion, and a
 //! budget that can be exceeded silently is not a budget.
+//!
+//! # In the memory ledger
+//!
+//! A cache attached to a [`MemoryPool`] ([`ResourceCache::attach`]) records
+//! its bytes after every change and counts every refusal there, so the ledger
+//! sees the cache without anyone polling it. The pool's ceiling must hold the
+//! whole capacity: a cache allowed to fill past the ledger's ceiling would be
+//! over budget while doing exactly what it was told.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -31,6 +39,7 @@ use std::sync::Arc;
 use nexora_foundation::diagnostics::Counters;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
+use nexora_foundation::memory::MemoryPool;
 
 /// How much a resource is worth keeping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -84,6 +93,7 @@ pub struct ResourceCache {
     clock: u64,
     slots: BTreeMap<Identifier, Slot>,
     stats: CacheStats,
+    pool: Option<Arc<MemoryPool>>,
 }
 
 impl ResourceCache {
@@ -95,6 +105,48 @@ impl ResourceCache {
             clock: 0,
             slots: BTreeMap::new(),
             stats: CacheStats::default(),
+            pool: None,
+        }
+    }
+
+    /// Account for this cache in a memory pool from now on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pool's ceiling is below the cache's capacity.
+    pub fn attach(&mut self, pool: Arc<MemoryPool>) -> Result<()> {
+        if pool.budget().emergency() < self.capacity {
+            return Err(Error::new(
+                Domain::Content,
+                "resource-cache",
+                "the memory pool's ceiling is below the cache's capacity",
+            )
+            .with_recovery(Recovery::Reject)
+            .with_context("pool", pool.name())
+            .with_context("ceiling", pool.budget().emergency().to_string())
+            .with_context("capacity", self.capacity.to_string()));
+        }
+        pool.record(self.stats.bytes);
+        self.pool = Some(pool);
+        Ok(())
+    }
+
+    /// The pool this cache records into, if any.
+    #[must_use]
+    pub const fn pool(&self) -> Option<&Arc<MemoryPool>> {
+        self.pool.as_ref()
+    }
+
+    fn account(&self) {
+        if let Some(pool) = &self.pool {
+            pool.record(self.stats.bytes);
+        }
+    }
+
+    fn refused(&mut self) {
+        self.stats.refused += 1;
+        if let Some(pool) = &self.pool {
+            pool.refuse();
         }
     }
 
@@ -142,7 +194,7 @@ impl ResourceCache {
         priority: Priority,
     ) -> Result<()> {
         if cost > self.capacity {
-            self.stats.refused += 1;
+            self.refused();
             return Err(full("the resource is larger than the whole cache budget")
                 .with_context("resource", id.to_string())
                 .with_context("cost", cost.to_string())
@@ -169,7 +221,7 @@ impl ResourceCache {
             victims.push(key.clone());
         }
         if freed < needed {
-            self.stats.refused += 1;
+            self.refused();
             return Err(full("pinned resources leave no room in the cache budget")
                 .with_context("resource", id.to_string())
                 .with_context("needed", needed.to_string())
@@ -200,6 +252,7 @@ impl ResourceCache {
         self.stats.inserts += 1;
         self.stats.high_water = self.stats.high_water.max(self.stats.bytes);
         self.stats.entries = self.slots.len();
+        self.account();
         Ok(())
     }
 
@@ -226,6 +279,7 @@ impl ResourceCache {
             Some(slot) => {
                 self.stats.bytes -= slot.cost;
                 self.stats.entries = self.slots.len();
+                self.account();
                 true
             }
             None => false,
@@ -250,6 +304,16 @@ impl ResourceCache {
         counters.add("resource.cache.inserts", now.inserts - since.inserts);
         counters.add("resource.cache.evictions", now.evictions - since.evictions);
         counters.add("resource.cache.refused", now.refused - since.refused);
+    }
+}
+
+impl Drop for ResourceCache {
+    /// A dropped cache holds nothing. Values still held elsewhere as `Arc` are
+    /// their holders' memory now, not the cache's.
+    fn drop(&mut self) {
+        if let Some(pool) = &self.pool {
+            pool.record(0);
+        }
     }
 }
 
@@ -383,5 +447,58 @@ mod tests {
         assert_eq!(counters.get("resource.cache.hits"), 1);
         assert_eq!(counters.get("resource.cache.misses"), 1);
         assert_eq!(counters.get("resource.cache.inserts"), 1);
+    }
+
+    #[test]
+    fn an_attached_cache_is_visible_in_the_memory_ledger() {
+        use nexora_foundation::memory::{
+            MemoryBudget, MemoryClass, MemoryLedger, PoolSpec, Pressure,
+        };
+        let ledger = MemoryLedger::new();
+        let spec = |name| {
+            PoolSpec::new(
+                name,
+                MemoryClass::Streaming,
+                MemoryBudget::capacity(20).unwrap(),
+            )
+        };
+
+        // A pool whose ceiling is below the capacity is refused.
+        let small = ledger
+            .register(PoolSpec::new(
+                "resource.small",
+                MemoryClass::Streaming,
+                MemoryBudget::capacity(19).unwrap(),
+            ))
+            .unwrap();
+        assert!(ResourceCache::new(20).attach(small).is_err());
+
+        let pool = ledger.register(spec("resource.test")).unwrap();
+        let mut cache = ResourceCache::new(20);
+        cache.attach(Arc::clone(&pool)).unwrap();
+        for (n, raw) in ["nexora:data/a", "nexora:data/b", "nexora:data/c"]
+            .into_iter()
+            .enumerate()
+        {
+            cache
+                .insert(id(raw), value(n as u32), 10, Priority::Normal)
+                .unwrap();
+            assert_eq!(pool.current(), cache.stats().bytes);
+        }
+        assert_eq!(pool.high_water(), 20);
+        assert_eq!(pool.worst_pressure(), Pressure::Nominal, "full is nominal");
+
+        cache.pin(&id("nexora:data/b"));
+        cache.pin(&id("nexora:data/c"));
+        assert!(cache
+            .insert(id("nexora:data/d"), value(9), 5, Priority::High)
+            .is_err());
+        assert_eq!(pool.report().refusals, 1, "the refusal reaches the ledger");
+
+        cache.remove(&id("nexora:data/b"));
+        assert_eq!(pool.current(), 10);
+        drop(cache);
+        assert_eq!(pool.current(), 0, "a dropped cache holds nothing");
+        assert_eq!(pool.high_water(), 20);
     }
 }

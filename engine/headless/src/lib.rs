@@ -15,6 +15,7 @@
 //!   -> save
 //!   -> shut down in reverse order
 //!   -> reopen, load, and verify the state survived
+//!   -> check every memory pool at rest: none over its ceiling, none leaking
 //! ```
 //!
 //! **There is no window and no renderer here, by design.** The RHI boundary is
@@ -35,6 +36,9 @@ use std::sync::Arc;
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, Record, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
+use nexora_foundation::memory::{
+    MemoryBudget, MemoryClass, MemoryLedger, MemoryPool, MemoryReport, PoolSpec, Pressure,
+};
 use nexora_foundation::spatial::{BlockPos, ChunkCoord};
 use nexora_foundation::time::{CalendarConfig, TimeScale, WorldDuration, WorldTime};
 use std::path::Path;
@@ -178,6 +182,8 @@ pub struct SliceReport {
     /// Content textures resolved, verified and decoded through the resource
     /// system.
     pub content_textures: usize,
+    /// Every memory pool the slice opened, at the end of the run.
+    pub memory: MemoryReport,
     /// Lifecycle phases entered, in order.
     pub phases: Vec<&'static str>,
 }
@@ -318,9 +324,11 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         .flat_map(|x| (-config.radius..=config.radius).map(move |z| ChunkCoord::new(x, z)))
         .collect();
     let chunks_generated = coords.len();
+    let memory = SliceMemory::open(chunks_generated as u64, config.resources.is_some())?;
 
     let generated = generate_in_parallel(world, &coords, config.worker_threads, &diagnostics)?;
     world = generated;
+    memory.world.record(world.storage_bytes() as u64);
     diagnostics
         .counters()
         .add("chunks.generated", chunks_generated as u64);
@@ -341,12 +349,19 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     // --- mutation ----------------------------------------------------------
     let content_ids: Vec<Identifier> = content_blocks.iter().map(|(id, _)| id.clone()).collect();
     let probes = apply_edits(&mut world, &coords, &content_ids)?;
+    memory.world.record(world.storage_bytes() as u64);
     let content_surfaces = match &content {
         Some(content) => verify_content_surfaces(&world, content)?,
         None => 0,
     };
     let content_textures = match (&content, &config.resources) {
-        (Some(content), Some(root)) => load_content_textures(content, root, &diagnostics)?,
+        (Some(content), Some(root)) => {
+            let pool = memory
+                .textures
+                .as_ref()
+                .ok_or_else(|| mismatch("the texture pool was not opened"))?;
+            load_content_textures(content, root, pool, &diagnostics)?
+        }
         (None, Some(_)) => {
             return Err(mismatch(
                 "a resource root was given without content to look up",
@@ -387,7 +402,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     // walk touches is regenerable except the columns edited above, so this is
     // where "logical identity survives eviction" either holds or does not - and
     // the reload verification at the end of the slice is what checks it.
-    let streaming = stream_a_walk(&mut world, config.radius, &diagnostics)?;
+    let streaming = stream_a_walk(&mut world, config.radius, &memory, &diagnostics)?;
     diagnostics
         .counters()
         .add("streaming.generated", streaming.generated);
@@ -399,6 +414,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     let ticks_advanced = world.clock().now().since(before).ticks();
 
     let storage_bytes = world.storage_bytes();
+    memory.world.record(storage_bytes as u64);
     let non_air_blocks: u64 = world
         .loaded_chunks()
         .iter()
@@ -426,11 +442,13 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     modules.shutdown_all(&module_context);
     lifecycle.advance_through(Phase::ProcessExit)?;
     drop(world);
+    memory.world.record(0);
     log(&diagnostics, "runtime shut down");
 
     // --- reopen and verify -------------------------------------------------
     let reopened = SaveContainer::read(&config.save_path)?;
     let restored = persist::load_with(&reopened, &content_blocks)?;
+    memory.world.record(restored.storage_bytes() as u64);
 
     if restored.clock().now() != saved_time {
         return Err(mismatch("world time did not survive the save")
@@ -531,6 +549,12 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     drop(journal);
     log(&diagnostics, "recovery verified");
 
+    // --- memory --------------------------------------------------------------
+    // Every stage is over, so this is a point at rest: what must have drained
+    // has to have drained, and no pool may have gone over its ceiling.
+    let memory = memory.verify()?;
+    log(&diagnostics, "memory budgets held");
+
     Ok(SliceReport {
         world_id,
         seed: config.seed,
@@ -560,6 +584,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         content_blocks: content_blocks.len(),
         content_surfaces,
         content_textures,
+        memory,
         phases: lifecycle
             .history()
             .iter()
@@ -893,15 +918,104 @@ fn verify_content_surfaces(world: &World, content: &BlockContent) -> Result<usiz
 /// leaves no room for anything larger to hide in.
 const TEXTURE_BUDGET: u64 = 64 * 1024;
 
+/// Voxel storage per column, as `[target, warning, critical, emergency]`
+/// (`NEXORA PERFORMANCE BUDGETS.md`).
+///
+/// Measured, not guessed: a generated and edited column costs 28.7-32.1 KiB at
+/// every radius from 0 to 6 and every seed tried, and the figure is a property
+/// of the data structures -- the same on any machine, unlike a timing. Target
+/// is the worst measured column with a quarter to spare; the ceiling is one
+/// 32x32x32 section stored without a palette (128 KiB), the point at which
+/// palettes have stopped paying for themselves and the storage model, not the
+/// budget, is what failed.
+const COLUMN_BUDGET: [u64; 4] = [40 << 10, 48 << 10, 64 << 10, 128 << 10];
+
+/// The slice's memory pools, one per owner (`NEXORA MEMORY AND RESOURCE
+/// OWNERSHIP.md`, ADR-0018).
+struct SliceMemory {
+    ledger: MemoryLedger,
+    /// Chunks resident in the world. Streaming enforces this pool's ceiling.
+    world: Arc<MemoryPool>,
+    /// Edited chunks held outside the world until they can be written back.
+    /// Must be empty before the save, or the save is written without them.
+    retained: Arc<MemoryPool>,
+    /// Decoded textures in the resource cache, when the slice loads them.
+    textures: Option<Arc<MemoryPool>>,
+}
+
+impl SliceMemory {
+    fn open(columns: u64, textures: bool) -> Result<Self> {
+        let ledger = MemoryLedger::new();
+        let [target, warning, critical, emergency] = COLUMN_BUDGET.map(|b| b * columns);
+        let budget = MemoryBudget::new(target, warning, critical, emergency)?;
+        let world = ledger.register(PoolSpec::new("world.chunks", MemoryClass::World, budget))?;
+        // The slice edits every column it generates, so every one of them may
+        // be held outside the world at once -- and is, measured, at the far
+        // end of the walk. The same per-column figures apply.
+        let retained = ledger.register(
+            PoolSpec::new("world.retained", MemoryClass::World, budget).drains_at_rest(),
+        )?;
+        // Opened only when the slice loads textures: a pool nobody records
+        // into is refused by `verify` as a wiring mistake.
+        let textures = if textures {
+            Some(
+                ledger.register(
+                    PoolSpec::new(
+                        "resource.textures",
+                        MemoryClass::Streaming,
+                        MemoryBudget::capacity(TEXTURE_BUDGET)?,
+                    )
+                    .drains_at_rest(),
+                )?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            ledger,
+            world,
+            retained,
+            textures,
+        })
+    }
+
+    /// Check the ledger at rest, and hand back its report.
+    fn verify(self) -> Result<MemoryReport> {
+        let leaks = self.ledger.suspected_leaks();
+        if !leaks.is_empty() {
+            return Err(mismatch("a memory pool that must drain at rest did not")
+                .with_context("pools", leaks.join(", ")));
+        }
+        let report = self.ledger.report();
+        if let Some(pool) = report
+            .pools
+            .iter()
+            .find(|pool| pool.worst == Pressure::Emergency)
+        {
+            return Err(mismatch("a memory pool went over its ceiling")
+                .with_context("pool", pool.name)
+                .with_context("high_water", pool.high_water.to_string())
+                .with_context("ceiling", pool.budget.emergency().to_string()));
+        }
+        if let Some(pool) = report.pools.iter().find(|pool| pool.records == 0) {
+            return Err(mismatch("a memory pool was opened and never recorded into")
+                .with_context("pool", pool.name));
+        }
+        Ok(report)
+    }
+}
+
 /// Resolve every content block's albedo by identifier, verify it against the
 /// resource index, and decode it -- the runtime reaching its own textures
 /// without the tool that wrote them (ADR-0015, ADR-0016).
 fn load_content_textures(
     content: &BlockContent,
     root: &Path,
+    pool: &Arc<MemoryPool>,
     diagnostics: &Diagnostics,
 ) -> Result<usize> {
     let mut resources = ResourceManager::open(root, TEXTURE_BUDGET)?;
+    resources.cache_mut().attach(Arc::clone(pool))?;
     let before = resources.cache().stats();
     // The first visual generation is 16x16; anything larger is a content
     // error, found here rather than in video memory.
@@ -1053,6 +1167,22 @@ pub fn format_report(report: &SliceReport) -> String {
             report.content_textures
         ));
     }
+    out.push_str(&format!(
+        "memory             {} pools, worst {}, {} suspected leaks\n",
+        report.memory.pools.len(),
+        report.memory.worst().as_str(),
+        report.memory.suspected_leaks()
+    ));
+    for pool in &report.memory.pools {
+        out.push_str(&format!(
+            "                   {:<18} {:<9} {} now, {} peak, {} ceiling\n",
+            pool.name,
+            pool.class.as_str(),
+            pool.current,
+            pool.high_water,
+            pool.budget.emergency()
+        ));
+    }
     out.push_str(&format!("probes verified    {}\n", report.probes_verified));
     out.push_str(&format!("lifecycle phases   {}\n", report.phases.len()));
     out.push_str(&format!(
@@ -1085,15 +1215,19 @@ struct StreamingOutcome {
 fn stream_a_walk(
     world: &mut World,
     radius: i64,
+    memory: &SliceMemory,
     diagnostics: &Diagnostics,
 ) -> Result<StreamingOutcome> {
     let reach = u32::try_from(radius.max(0)).unwrap_or(0);
     let radii = LodRadii::new(reach, reach, reach, 0)?;
     let mut system = StreamingSystem::new();
     let mut retained = RetainedChunks::new();
+    // Chunk memory belongs to the world's pool; streaming decides residency,
+    // so it enforces that pool's ceiling rather than keeping a count of its own.
     let budget = StreamingBudget {
         activations: 8,
         evictions: 16,
+        max_bytes: memory.world.budget().emergency(),
         ..StreamingBudget::UNLIMITED
     };
 
@@ -1117,6 +1251,8 @@ fn stream_a_walk(
             ticks += 1;
             evicted += report.evicted;
             retained_peak = retained_peak.max(retained.len());
+            memory.world.record(world.storage_bytes() as u64);
+            memory.retained.record(retained.storage_bytes() as u64);
             if report.is_quiet() {
                 break;
             }
@@ -1131,6 +1267,8 @@ fn stream_a_walk(
     // Anything still held outside the world has to go back before the save, or
     // the save is written without it. See `nexora_simulation::residency`.
     let flushed = retained.flush_into(world);
+    memory.retained.record(retained.storage_bytes() as u64);
+    memory.world.record(world.storage_bytes() as u64);
     if !retained.is_empty() {
         return Err(Error::new(
             Domain::World,
@@ -1265,4 +1403,35 @@ fn simulate_physics(world: &World, diagnostics: &Diagnostics) -> Result<PhysicsO
 #[must_use]
 pub fn describe_time(time: WorldTime) -> String {
     format!("tick {}", time.ticks())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_slice_refuses_a_broken_ceiling_a_leak_and_an_unused_pool() {
+        let over = SliceMemory::open(1, false).unwrap();
+        over.world.record(COLUMN_BUDGET[3] + 1);
+        over.retained.record(0);
+        let err = over.verify().unwrap_err();
+        assert!(err.to_string().contains("ceiling"), "{err}");
+
+        let leak = SliceMemory::open(1, false).unwrap();
+        leak.world.record(1);
+        leak.retained.record(1);
+        let err = leak.verify().unwrap_err();
+        assert!(err.to_string().contains("drain"), "{err}");
+
+        let unused = SliceMemory::open(1, true).unwrap();
+        unused.world.record(1);
+        unused.retained.record(0);
+        let err = unused.verify().unwrap_err();
+        assert!(err.to_string().contains("never recorded"), "{err}");
+
+        let fine = SliceMemory::open(4, false).unwrap();
+        fine.world.record(4 * COLUMN_BUDGET[0]);
+        fine.retained.record(0);
+        assert_eq!(fine.verify().unwrap().worst(), Pressure::Nominal);
+    }
 }

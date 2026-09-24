@@ -27,3 +27,4 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0015](ADR-0015-resources-are-verified-before-they-are-decoded.md) | Resources are indexed, and verified before they are decoded | ACCEPTED |
 | [0016](ADR-0016-one-png-decoder-and-it-lives-in-the-engine.md) | One PNG decoder, and it lives in the engine | ACCEPTED |
 | [0017](ADR-0017-queries-are-reads-and-a-contract.md) | Queries are reads, and a contract | ACCEPTED |
+| [0018](ADR-0018-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memory is accounted by its owner, in one ledger | ACCEPTED |
