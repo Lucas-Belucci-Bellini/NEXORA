@@ -52,6 +52,8 @@ pub enum Domain {
     /// an actor being refused permission is a security answer, not a framework
     /// fault.
     Command,
+    /// Query definition, permission and budgets.
+    Query,
 }
 
 impl Domain {
@@ -75,6 +77,7 @@ impl Domain {
             Self::Spatial => "spatial",
             Self::Physics => "physics",
             Self::Command => "command",
+            Self::Query => "query",
         }
     }
 }

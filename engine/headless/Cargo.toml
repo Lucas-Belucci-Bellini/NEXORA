@@ -28,6 +28,7 @@ nexora-mesh.workspace = true
 nexora-asset.workspace = true
 nexora-resource.workspace = true
 nexora-image.workspace = true
+nexora-query.workspace = true
 
 [lints]
 workspace = true

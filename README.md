@@ -124,6 +124,7 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
 engine/command       intent: definitions, validation, dispatch, quotas
+engine/query         reads as a contract: versioned, permitted, bounded (ADR-0017)
 engine/asset         surface materials, provenance, the strict JSON reader
 engine/resource      resource manifest, integrity-checked loading, bounded
                      cache and typed handles (ADR-0015)

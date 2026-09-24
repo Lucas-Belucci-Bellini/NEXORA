@@ -60,6 +60,16 @@ impl SourcePolicy {
     pub fn permits_source(&self, source: Source) -> bool {
         self.allowed_sources.contains(&source)
     }
+
+    /// Whether any request at all could pass: at least one actor kind and at
+    /// least one source are allowed.
+    ///
+    /// The same policy guards queries (`nexora-query`), which need to refuse
+    /// a definition nobody could ever use without reaching into its fields.
+    #[must_use]
+    pub fn admits_anyone(&self) -> bool {
+        !self.allowed_actors.is_empty() && !self.allowed_sources.is_empty()
+    }
 }
 
 /// Who has to be authoritative for this command to execute (§7 `authority`).

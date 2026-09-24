@@ -40,6 +40,8 @@ use nexora_foundation::time::{CalendarConfig, TimeScale, WorldDuration, WorldTim
 use std::path::Path;
 
 use nexora_asset::texture::MapRole;
+use nexora_command::identity::{Actor, Source};
+use nexora_foundation::version::QueryVersion;
 use nexora_image::TextureLoader;
 use nexora_mesh::mesh::SurfaceId;
 use nexora_mesh::mesh_region;
@@ -50,12 +52,15 @@ use nexora_physics::body::BodyDescriptor;
 use nexora_physics::collision::overlaps_solid;
 use nexora_physics::math::Vec3;
 use nexora_physics::world::PhysicsWorld;
+use nexora_query::{QueryRequest, QueryService, QueryStats};
 use nexora_resource::ResourceManager;
 use nexora_runtime::jobs::{JobOutcome, JobSystem, Priority};
 use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
+use nexora_simulation::queries::WORLD_QUERY_VERSION;
+use nexora_simulation::WorldQueries;
 use nexora_simulation::{
     BlockContent, PhysicsModule, RetainedChunks, WorldResidency, WorldSurfaces, WorldVoxels,
     UNMAPPED_SURFACE,
@@ -162,6 +167,10 @@ pub struct SliceReport {
     pub commands_refused: usize,
     /// Probes checked after reloading.
     pub probes_verified: usize,
+    /// Queries answered: every probe is read back through `nexora:block_at`.
+    pub queries_answered: u64,
+    /// Queries refused. Non-zero on purpose, like `commands_refused`.
+    pub queries_refused: u64,
     /// Content blocks registered from the content document.
     pub content_blocks: usize,
     /// Distinct surfaces those blocks showed in a mesh of the placed row.
@@ -437,12 +446,29 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         return Err(mismatch("world identity did not survive the save"));
     }
 
+    // Read back through the query contract, as any other system would: the
+    // slice is a consumer of the world like the rest, not a privileged one.
+    let mut query_service = QueryService::new()?;
+    let world_queries = WorldQueries::register(&mut query_service)?;
+    query_service.freeze();
+    let server = Actor::server();
     for probe in &probes {
-        let found = restored.get_block(probe.position)?;
-        let found_id = restored.block_identifier(found).ok_or_else(|| {
-            mismatch("a restored block state has no registered identifier")
-                .with_context("position", describe(probe.position))
-        })?;
+        let found_id = query_service
+            .ask(
+                &world_queries.block_at,
+                &restored,
+                &QueryRequest {
+                    actor: &server,
+                    source: Source::Local,
+                    version: WORLD_QUERY_VERSION,
+                    input: probe.position,
+                },
+            )
+            .map_err(|failure| {
+                mismatch("a probe could not be read back through the query contract")
+                    .with_context("position", describe(probe.position))
+                    .with_context("failure", failure.to_string())
+            })?;
         if found_id != probe.expected {
             return Err(mismatch("a block changed across the save/load boundary")
                 .with_context("position", describe(probe.position))
@@ -450,6 +476,42 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
                 .with_context("found", found_id.to_string()));
         }
     }
+    // Two questions the contract must turn away, for the reason the command
+    // stage refuses three: a gate only ever shown opening has not been shown
+    // to close. A player asking to scan far more than a query may, and a
+    // client built against a version of the contract that does not exist.
+    let player = Actor::player(1);
+    let refusals = [
+        query_service
+            .ask(
+                &world_queries.blocks_in_region,
+                &restored,
+                &QueryRequest {
+                    actor: &player,
+                    source: Source::Network,
+                    version: WORLD_QUERY_VERSION,
+                    input: (BlockPos::new(0, 0, 0), BlockPos::new(63, 63, 63)),
+                },
+            )
+            .err(),
+        query_service
+            .ask(
+                &world_queries.world_time,
+                &restored,
+                &QueryRequest {
+                    actor: &player,
+                    source: Source::Network,
+                    version: QueryVersion(WORLD_QUERY_VERSION.0 + 1),
+                    input: (),
+                },
+            )
+            .err(),
+    ];
+    if refusals.iter().any(Option::is_none) {
+        return Err(mismatch("a query that must be refused was answered"));
+    }
+    let query_stats = query_service.stats();
+    query_service.publish(diagnostics.counters(), QueryStats::default());
     log(&diagnostics, "reload verified");
 
     // --- recovery ------------------------------------------------------------
@@ -493,6 +555,8 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         streaming_retained_peak: streaming.retained_peak,
         streaming_evicted: streaming.evicted,
         probes_verified: probes.len(),
+        queries_answered: query_stats.answered,
+        queries_refused: query_stats.refused,
         content_blocks: content_blocks.len(),
         content_surfaces,
         content_textures,
@@ -943,6 +1007,10 @@ pub fn format_report(report: &SliceReport) -> String {
     out.push_str(&format!(
         "commands           {} accepted, {} refused\n",
         report.commands_accepted, report.commands_refused
+    ));
+    out.push_str(&format!(
+        "queries            {} answered, {} refused\n",
+        report.queries_answered, report.queries_refused
     ));
     out.push_str(&format!(
         "journal            {} edits, {} probes recovered\n",

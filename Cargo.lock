@@ -62,6 +62,7 @@ dependencies = [
  "nexora-mesh",
  "nexora-persistence",
  "nexora-physics",
+ "nexora-query",
  "nexora-resource",
  "nexora-runtime",
  "nexora-simulation",
@@ -100,6 +101,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-query"
+version = "0.0.1"
+dependencies = [
+ "nexora-command",
+ "nexora-foundation",
+ "nexora-runtime",
+]
+
+[[package]]
 name = "nexora-resource"
 version = "0.0.1"
 dependencies = [
@@ -123,6 +133,7 @@ dependencies = [
  "nexora-foundation",
  "nexora-mesh",
  "nexora-physics",
+ "nexora-query",
  "nexora-runtime",
  "nexora-streaming",
  "nexora-world",

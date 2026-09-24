@@ -11,11 +11,12 @@
 #     resource    -> foundation, asset
 #     image       -> foundation, asset, resource
 #     command     -> foundation, runtime
+#     query       -> foundation, runtime, command
 #     world       -> foundation, runtime, persistence
 #     physics     -> foundation
 #     streaming   -> foundation
 #     mesh        -> foundation
-#     simulation  -> foundation, runtime, asset, world, physics, streaming, command
+#     simulation  -> foundation, runtime, asset, world, physics, streaming, command, query
 #     headless    -> all of the above
 #
 # Outside engine/, over the public contracts only:
@@ -33,6 +34,7 @@ members = [
     "engine/resource",
     "engine/image",
     "engine/command",
+    "engine/query",
     "engine/persistence",
     "engine/world",
     "engine/entity",
@@ -63,6 +65,7 @@ nexora-asset = { path = "engine/asset", version = "0.0.1" }
 nexora-resource = { path = "engine/resource", version = "0.0.1" }
 nexora-image = { path = "engine/image", version = "0.0.1" }
 nexora-command = { path = "engine/command", version = "0.0.1" }
+nexora-query = { path = "engine/query", version = "0.0.1" }
 nexora-persistence = { path = "engine/persistence", version = "0.0.1" }
 nexora-world = { path = "engine/world", version = "0.0.1" }
 nexora-entity = { path = "engine/entity", version = "0.0.1" }

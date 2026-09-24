@@ -131,6 +131,17 @@ contract_version!(
     "command"
 );
 
+contract_version!(
+    /// Version of one query's input and answer shape.
+    ///
+    /// A query is a public contract like a command (`NEXORA PUBLIC API AND
+    /// CONTRACTS.md`): a mod or a remote client asks it with a shape it was
+    /// built against, and an answer in a shape it cannot read is worse than a
+    /// refusal that names the version.
+    QueryVersion,
+    "query"
+);
+
 /// What the engine is allowed to do with a given persisted version.
 ///
 /// Mirrors the policy list in `NEXORA SAVE FORMAT AND COMPATIBILITY.md`.

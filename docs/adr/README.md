@@ -26,3 +26,4 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0014](ADR-0014-content-blocks-enter-through-the-api-a-mod-uses.md) | Content blocks enter through the API a mod uses | ACCEPTED |
 | [0015](ADR-0015-resources-are-verified-before-they-are-decoded.md) | Resources are indexed, and verified before they are decoded | ACCEPTED |
 | [0016](ADR-0016-one-png-decoder-and-it-lives-in-the-engine.md) | One PNG decoder, and it lives in the engine | ACCEPTED |
+| [0017](ADR-0017-queries-are-reads-and-a-contract.md) | Queries are reads, and a contract | ACCEPTED |

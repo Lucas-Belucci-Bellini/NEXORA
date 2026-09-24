@@ -31,7 +31,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Time model | [x] | [x] | `foundation::time` |
 | Spatial model | [x] | [x] | `foundation::spatial` |
 | Registry / ID rules | [x] | [x] | `runtime::registry`, `foundation::ident` |
-| Event / Command / Query semantics | [x] | [~] | events and **commands** built (`engine/command`, ADR-0010: intent, layered validation, one authority per command, quotas); **queries are not**, and commands stop at CMD-4 (DEBT-0021) |
+| Event / Command / Query semantics | [x] | [~] | events, **commands** (`engine/command`, ADR-0010) and **queries** (`engine/query`, ADR-0017: read-only by type, versioned, deny-by-default through the same `SourcePolicy`, budget re-counted after the handler, answers in identifiers) are built; commands stop at CMD-4 (DEBT-0021) and queries read the live world, not snapshots |
 
 ## Runtime
 
