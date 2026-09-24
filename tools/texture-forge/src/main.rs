@@ -14,6 +14,7 @@ use nexora_asset::texture::MapRole;
 use nexora_asset::validation::Verdict;
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
+use nexora_resource::manifest::MANIFEST_FILE;
 use nexora_texture_forge::batch::Plan;
 use nexora_texture_forge::forge::Forge;
 use nexora_texture_forge::layout;
@@ -55,7 +56,8 @@ fn usage() -> String {
      \x20 validate <material-id>       check what is on disk for a material\n\
      \x20 inspect  <material-id>       print a material's definition and origin\n\
      \x20 list                         every material written under the root\n\
-     \x20 batch    <manifest.json>     generate every material a manifest lists\n\
+          \x20 batch    <manifest.json>     generate every material a manifest lists, then index\n\
+     \x20 index                        write resources.json for the runtime\n\
      \n\
      options:\n\
           \x20 --out <dir>     where materials live (default: assets/materials)\n\
@@ -89,6 +91,9 @@ enum Command {
         root: PathBuf,
     },
     List {
+        root: PathBuf,
+    },
+    Index {
         root: PathBuf,
     },
     Batch {
@@ -179,6 +184,12 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
             }
             Ok(Some(Command::List { root }))
         }
+        "index" => {
+            if positional.is_some() {
+                return Err("`index` takes no argument".to_owned());
+            }
+            Ok(Some(Command::Index { root }))
+        }
         "batch" => {
             // A seed on the command line would make the run depend on
             // something that is not in the repository, which is the one thing
@@ -221,6 +232,7 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Validate { id, root } => validate(&id, root),
         Command::Inspect { id, root } => inspect(&id, root),
         Command::List { root } => list(root),
+        Command::Index { root } => index(root),
         Command::Batch {
             manifest,
             root,
@@ -446,11 +458,29 @@ fn batch(manifest: &Path, root: PathBuf, recipes: PathBuf, force: bool) -> Resul
         }
     }
     println!("batch {}: {}", plan.name, report.tally());
-    Ok(if report.succeeded() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    if !report.succeeded() {
+        return Ok(ExitCode::FAILURE);
+    }
+    // The pipeline's INDEX stage: only after a batch that succeeded, so the
+    // runtime is never handed an index of a half-generated tree.
+    let manifest = forge.write_index()?;
+    println!(
+        "index {} ({} resources)",
+        forge.root().join(MANIFEST_FILE).display(),
+        manifest.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn index(root: PathBuf) -> Result<ExitCode> {
+    let forge = Forge::new(root)?;
+    let manifest = forge.write_index()?;
+    println!(
+        "index {} ({} resources)",
+        forge.root().join(MANIFEST_FILE).display(),
+        manifest.len()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Bytes, in units a person reads without counting digits.

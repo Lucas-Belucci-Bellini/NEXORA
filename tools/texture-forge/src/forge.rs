@@ -33,6 +33,9 @@ use nexora_asset::validation::TextureValidationResult;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
 
+use nexora_foundation::hashing::fnv1a64;
+use nexora_resource::manifest::{Manifest, ManifestEntry, ResourceKind, MANIFEST_FILE};
+
 use crate::layout;
 use crate::pbr::PbrPipeline;
 use crate::png;
@@ -339,6 +342,109 @@ impl Forge {
         }
         listing.materials.sort_by(|a, b| a.id().cmp(b.id()));
         Ok(listing)
+    }
+
+    /// The runtime's view of everything under the root: the INDEX stage.
+    ///
+    /// `NEXORA CONTENT PIPELINE SPECIFICATION.md` ends at
+    /// `… → PACKAGE → INDEX → RUNTIME RESOURCE`. Every map file becomes a
+    /// texture resource under the identifier the material derives for it
+    /// (`nexora:texture/stone/basalt/albedo`), every definition a material
+    /// resource that depends on its maps, each with its exact size and hash.
+    /// Previews are left out: they are for people, not for the runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a definition under the root does not read — an
+    /// index that silently skipped it would tell the runtime the material does
+    /// not exist — or when a file cannot be read or named.
+    pub fn index(&self) -> Result<Manifest> {
+        let listing = self.list()?;
+        if let Some((path, error)) = listing.unreadable.into_iter().next() {
+            return Err(missing(
+                "a definition under the root does not read, so it cannot be indexed",
+            )
+            .with_context("path", path.display().to_string())
+            .with_source(error));
+        }
+        let mut entries = Vec::new();
+        for material in &listing.materials {
+            let mut maps = Vec::new();
+            for role in MapRole::ALL {
+                let file = layout::map_file(&self.root, material.id(), role);
+                if !file.is_file() {
+                    continue;
+                }
+                let texture = material.map_asset_id(role)?;
+                entries.push(self.entry(
+                    &file,
+                    texture.clone(),
+                    ResourceKind::Texture,
+                    Vec::new(),
+                )?);
+                maps.push(texture);
+            }
+            let definition = layout::definition_file(&self.root, material.id());
+            entries.push(self.entry(
+                &definition,
+                material.id().clone(),
+                ResourceKind::Material,
+                maps,
+            )?);
+        }
+        Manifest::new(entries)
+    }
+
+    /// Write [`Forge::index`] to `<root>/resources.json`, returning it.
+    ///
+    /// # Errors
+    ///
+    /// See [`Forge::index`]; also when the file cannot be written.
+    pub fn write_index(&self) -> Result<Manifest> {
+        let manifest = self.index()?;
+        std::fs::create_dir_all(&self.root).map_err(|cause| {
+            unwritable("the output root could not be created")
+                .with_context("path", self.root.display().to_string())
+                .with_context("cause", cause.to_string())
+        })?;
+        write_file(
+            &self.root.join(MANIFEST_FILE),
+            manifest.to_text().as_bytes(),
+        )?;
+        Ok(manifest)
+    }
+
+    fn entry(
+        &self,
+        file: &Path,
+        id: Identifier,
+        kind: ResourceKind,
+        dependencies: Vec<Identifier>,
+    ) -> Result<ManifestEntry> {
+        let bytes = std::fs::read(file).map_err(|cause| {
+            missing("a file to index could not be read")
+                .with_context("path", file.display().to_string())
+                .with_context("cause", cause.to_string())
+        })?;
+        // Relative, with `/` whatever the host: the manifest is read on other
+        // machines, and it refuses anything else.
+        let relative = file
+            .strip_prefix(&self.root)
+            .map_err(|_| missing("an indexed file is outside the root"))?
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        Ok(ManifestEntry {
+            id,
+            kind,
+            path: relative,
+            size: bytes.len() as u64,
+            hash: fnv1a64(&bytes),
+            dependencies,
+            optional: false,
+            fallback: None,
+        })
     }
 
     fn walk(&self, directory: &Path, depth: usize, listing: &mut Listing) {
@@ -747,6 +853,42 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&recipes);
+    }
+
+    #[test]
+    fn the_index_names_every_map_by_identifier_with_its_exact_hash() {
+        let root = scratch("index");
+        let forge = Forge::new(&root).unwrap();
+        forge
+            .generate(&definition("nexora:material/oak", 0.8), 7, false)
+            .unwrap();
+
+        let manifest = forge.write_index().expect("indexes");
+        // Albedo, height, normal, and the definition.
+        assert_eq!(manifest.len(), 4);
+        let albedo = manifest
+            .get(&id("nexora:texture/oak/albedo"))
+            .expect("the albedo is a texture resource");
+        assert_eq!(albedo.kind, ResourceKind::Texture);
+        assert_eq!(albedo.path, "nexora/oak/albedo.png");
+        let bytes = std::fs::read(root.join("nexora/oak/albedo.png")).unwrap();
+        assert_eq!(albedo.size, bytes.len() as u64);
+        assert_eq!(albedo.hash, fnv1a64(&bytes));
+
+        let material = manifest.get(&id("nexora:material/oak")).unwrap();
+        assert_eq!(material.kind, ResourceKind::Material);
+        assert_eq!(material.dependencies.len(), 3, "it depends on its maps");
+
+        let written = std::fs::read_to_string(root.join(MANIFEST_FILE)).unwrap();
+        assert_eq!(Manifest::from_text(&written).unwrap(), manifest);
+
+        // A root holding a definition that does not read is not indexed.
+        let broken = root.join("nexora").join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(layout::DEFINITION_FILE), "{").unwrap();
+        assert!(forge.index().is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

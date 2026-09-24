@@ -124,6 +124,11 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
 engine/command       intent: definitions, validation, dispatch, quotas
+engine/asset         surface materials, provenance, the strict JSON reader
+engine/resource      resource manifest, integrity-checked loading, bounded
+                     cache and typed handles (ADR-0015)
+engine/mesh          greedy meshing into a data structure (ADR-0012)
+tools/texture-forge  the content tool: recipes, generation, batch, INDEX
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
 benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)

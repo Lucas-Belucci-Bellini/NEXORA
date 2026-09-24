@@ -74,7 +74,7 @@ jobs:
           # the save, the reload and the journal replay as a probe.
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-content.nxsv" \
             --content content/first-generation/blocks.json \
-            | grep -q '^content blocks     16 (16 surfaces in the mesh)$'
+            | grep '^content blocks     16 (16 surfaces in the mesh)$' > /dev/null
 
       # The benchmark harness is code too: run a minimal pass so it cannot rot.
       # Deliberately NOT gated on timings - a shared runner's numbers would
@@ -89,6 +89,10 @@ jobs:
       # material from a checked-in definition, then read it back off disk and
       # validate it. A tool that writes something it cannot then read is the
       # failure this stage exists to catch.
+      #
+      # `grep PATTERN > /dev/null`, never `grep -q`: the runner's bash uses
+      # `pipefail`, and `-q` closes the pipe at the first match, so a tool
+      # that prints one more line dies of SIGPIPE and fails the step.
       #
       # Generation goes through the checked-in manifest, so CI builds exactly
       # the list the repository declares -- with the seed the manifest owns.
@@ -105,11 +109,11 @@ jobs:
           # a second pass that rewrites files would mean it is not.
           ./target/release/nexora-texture-forge batch content/materials/manifest.json \
             --out "${RUNNER_TEMP}/materials" \
-            | grep -q '^batch .*: 0 written, [0-9]* unchanged, 0 replaced, 0 refused, 0 failed$'
+            | grep '^batch .*: 0 written, [0-9]* unchanged, 0 replaced, 0 refused, 0 failed$' > /dev/null
           # And a single generate with the manifest's seed must agree with the
           # batch byte for byte: two paths to one material, one answer.
           ./target/release/nexora-texture-forge generate content/materials/stone_rough.json \
-            --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE | grep -q '^unchanged'
+            --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE | grep '^unchanged' > /dev/null
           # The first visual generation: 16x16, albedo only, every stone drawn
           # from its own recipe. The manifest's policy refuses anything else,
           # and the byte-level check against CATALOG.md runs in `cargo test`.
@@ -117,9 +121,13 @@ jobs:
             --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes
           ./target/release/nexora-texture-forge validate nexora:material/stone/basalt \
             --out "${RUNNER_TEMP}/first-generation"
+          # The batch ends with the pipeline's INDEX stage: the runtime's view
+          # of what was generated -- 16 textures and 16 materials.
+          grep -q '"id": "nexora:texture/stone/basalt/albedo"' \
+            "${RUNNER_TEMP}/first-generation/resources.json"
           ./target/release/nexora-texture-forge batch content/first-generation/manifest.json \
             --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes \
-            | grep -q '^batch .*: 0 written, 16 unchanged, 0 replaced, 0 refused, 0 failed$'
+            | grep '^batch .*: 0 written, 16 unchanged, 0 replaced, 0 refused, 0 failed$' > /dev/null
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its

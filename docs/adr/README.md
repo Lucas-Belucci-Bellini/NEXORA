@@ -24,3 +24,4 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0012](ADR-0012-a-mesh-is-a-data-structure-not-a-picture.md) | A mesh is a data structure, not a picture | ACCEPTED |
 | [0013](ADR-0013-a-recipe-is-data-and-a-material-names-it.md) | A recipe is data, and a material names it | ACCEPTED |
 | [0014](ADR-0014-content-blocks-enter-through-the-api-a-mod-uses.md) | Content blocks enter through the API a mod uses | ACCEPTED |
+| [0015](ADR-0015-resources-are-verified-before-they-are-decoded.md) | Resources are indexed, and verified before they are decoded | ACCEPTED |

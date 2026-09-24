@@ -88,6 +88,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-resource"
+version = "0.0.1"
+dependencies = [
+ "nexora-asset",
+ "nexora-foundation",
+]
+
+[[package]]
 name = "nexora-runtime"
 version = "0.0.1"
 dependencies = [
@@ -121,6 +129,7 @@ version = "0.0.1"
 dependencies = [
  "nexora-asset",
  "nexora-foundation",
+ "nexora-resource",
 ]
 
 [[package]]

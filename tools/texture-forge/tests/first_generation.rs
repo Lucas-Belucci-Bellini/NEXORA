@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use nexora_asset::texture::{ChannelLayout, MapRole, Resolution};
 use nexora_foundation::hashing::fnv1a64;
+use nexora_resource::{BytesLoader, ResourceKind, ResourceManager};
 use nexora_texture_forge::batch::{Plan, Policy};
 use nexora_texture_forge::forge::Forge;
 use nexora_texture_forge::layout;
@@ -148,6 +149,56 @@ fn the_first_generation_is_what_its_catalog_says_it_is() {
     // And a second pass changes nothing.
     let again = plan.run(&forge, false).unwrap();
     assert_eq!(again.tally().unchanged, plan.entries.len());
+
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
+fn the_runtime_reaches_every_first_generation_texture_by_identifier() {
+    let out = scratch("resources");
+    let plan = Plan::load(&content().join("first-generation/manifest.json")).unwrap();
+    let forge = Forge::new(&out)
+        .unwrap()
+        .with_recipes(RecipeBook::at(content().join("recipes")));
+    assert!(plan.run(&forge, false).unwrap().succeeded());
+    forge.write_index().expect("the INDEX stage");
+
+    // Small enough that sixteen textures cannot all stay resident: the budget
+    // must hold while every one of them is still served.
+    let budget = 2 * 1024;
+    let mut resources = ResourceManager::open(&out, budget).expect("the manifest reads");
+    let catalog = catalogued();
+    let textures = BytesLoader(ResourceKind::Texture);
+    for entry in &plan.entries {
+        let material = entry.definition.id();
+        // By identifier, never by path: the runtime derives the texture id
+        // from the material, and the manifest says where the bytes are.
+        let texture = entry.definition.map_asset_id(MapRole::Albedo).unwrap();
+        let handle = resources.resolve(&texture, &textures).unwrap();
+        let bytes = resources
+            .load(&handle, &textures)
+            .expect("verified and loaded");
+        assert_eq!(
+            fnv1a64(&bytes),
+            catalog[&material.to_string()],
+            "{texture}: the bytes the runtime loads are the ones the catalog records"
+        );
+        assert!(
+            resources.cache().stats().bytes <= budget,
+            "the budget holds"
+        );
+
+        // The material resource depends on exactly its one map.
+        let order = resources.manifest().load_order(material).unwrap();
+        assert_eq!(order, [texture.clone(), material.clone()]);
+    }
+    let stats = resources.cache().stats();
+    assert_eq!(stats.inserts, 16);
+    assert!(
+        stats.evictions > 0,
+        "the budget forced evictions: {stats:?}"
+    );
+    assert_eq!(resources.integrity_failures(), 0);
 
     let _ = std::fs::remove_dir_all(&out);
 }

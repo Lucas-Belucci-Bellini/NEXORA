@@ -22,6 +22,7 @@ path = "src/main.rs"
 [dependencies]
 nexora-foundation.workspace = true
 nexora-asset.workspace = true
+nexora-resource.workspace = true
 
 [lints]
 workspace = true

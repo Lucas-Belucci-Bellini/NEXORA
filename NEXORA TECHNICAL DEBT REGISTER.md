@@ -913,3 +913,27 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   renderiza pálida; caminho, categoria e identificador errados são recusados),
   `forge::tests::editing_a_named_recipe_is_noticed_though_the_material_did_not_change`
   e `batch::tests::a_missing_recipe_stops_the_batch_before_anything_is_written`.
+
+### DEBT-0037 — O runtime carrega textura como bytes, porque o decodificador PNG mora no forge
+
+- **SYSTEM:** `engine/resource`, `tools/texture-forge::png`, `tools/texture-forge::deflate`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o `ResourceManager` (ADR-0015) resolve, verifica e faz cache
+  de uma textura, mas só existe um loader de bytes para ela: o único
+  decodificador PNG (e o inflate que ele usa) está em `tools/texture-forge`,
+  misturado com o codificador, e o engine não pode depender de uma ferramenta.
+- **IMPACT:** o runtime prova que tem os bytes certos de uma textura, mas não
+  consegue transformá-los em `TextureMap`. Nada consome pixels hoje (não há
+  renderizador), então o custo ainda é zero — e deixa de ser no primeiro
+  consumidor.
+- **RISK:** médio. A tentação no primeiro renderizador será copiar o
+  decodificador para o engine, e aí haverá dois — exatamente o que a regra do
+  Vanguard/NEXORA contra duas implementações do mesmo cálculo proíbe.
+- **PROPOSED REMEDIATION:** mover `png::decode` e `deflate::inflate` (e os
+  testes deles) para uma crate de engine sobre `nexora-asset`, reexportar no
+  forge, e escrever um `TextureLoader` que devolve `TextureMap` com limites de
+  dimensão e de razão de descompressão (a *Security* do documento de recursos).
+- **TRIGGER:** o primeiro consumidor de pixels no runtime (renderizador,
+  validação de conteúdo em runtime, ou ícone de UI).
+- **TARGET STAGE:** Phase 1 (Resource System)
+- **STATUS:** OPEN

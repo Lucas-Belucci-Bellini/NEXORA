@@ -8,6 +8,7 @@
 #     persistence -> foundation
 #     runtime     -> foundation
 #     asset       -> foundation, runtime
+#     resource    -> foundation, asset
 #     command     -> foundation, runtime
 #     world       -> foundation, runtime, persistence
 #     physics     -> foundation
@@ -17,7 +18,7 @@
 #     headless    -> all of the above
 #
 # Outside engine/, over the public contracts only:
-#     texture-forge -> foundation, asset
+#     texture-forge -> foundation, asset, resource
 #
 # A crate cannot depend "upwards", because Cargo rejects cycles. The matrix is
 # therefore checked by the build rather than by review alone.
@@ -28,6 +29,7 @@ members = [
     "engine/foundation",
     "engine/runtime",
     "engine/asset",
+    "engine/resource",
     "engine/command",
     "engine/persistence",
     "engine/world",
@@ -56,6 +58,7 @@ repository = "https://github.com/Lucas-Belucci-Bellini/NEXORA"
 nexora-foundation = { path = "engine/foundation", version = "0.0.1" }
 nexora-runtime = { path = "engine/runtime", version = "0.0.1" }
 nexora-asset = { path = "engine/asset", version = "0.0.1" }
+nexora-resource = { path = "engine/resource", version = "0.0.1" }
 nexora-command = { path = "engine/command", version = "0.0.1" }
 nexora-persistence = { path = "engine/persistence", version = "0.0.1" }
 nexora-world = { path = "engine/world", version = "0.0.1" }

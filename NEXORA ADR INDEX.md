@@ -70,3 +70,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0012](docs/adr/ADR-0012-a-mesh-is-a-data-structure-not-a-picture.md) | Uma malha é uma estrutura de dados, não uma imagem | ACCEPTED |
 | [0013](docs/adr/ADR-0013-a-recipe-is-data-and-a-material-names-it.md) | Uma receita é dado, e um material a nomeia — schema 2 do documento de material | ACCEPTED |
 | [0014](docs/adr/ADR-0014-content-blocks-enter-through-the-api-a-mod-uses.md) | Blocos de conteúdo entram pela mesma API que um mod usa | ACCEPTED |
+| [0015](docs/adr/ADR-0015-resources-are-verified-before-they-are-decoded.md) | Recursos são indexados e verificados antes de serem decodificados | ACCEPTED |

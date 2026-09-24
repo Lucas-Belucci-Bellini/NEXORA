@@ -27,7 +27,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Core lifecycle | [x] | [x] | `runtime::lifecycle` |
 | Module lifecycle | [x] | [x] | `runtime::module` |
 | Job / threading model | [x] | [x] | `runtime::jobs` |
-| Resource ownership | [x] | [ ] | `NEXORA MEMORY AND RESOURCE OWNERSHIP.md` |
+| Resource ownership | [x] | [~] | the asset cache is built — byte budget, priority, last use, pinning, eviction, counters, `Arc` so eviction never takes a value from its holder (`engine/resource`, ADR-0015); per-subsystem budgets for the other memory classes are not |
 | Time model | [x] | [x] | `foundation::time` |
 | Spatial model | [x] | [x] | `foundation::spatial` |
 | Registry / ID rules | [x] | [x] | `runtime::registry`, `foundation::ident` |
@@ -40,7 +40,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | RHI boundary | [x] | [ ] | no display or GPU to verify against (ADR-0005) |
 | Input boundary | [x] | [ ] | meaningless without a window |
 | Audio boundary | [x] | [ ] | — |
-| Asset lifecycle | [x] | [ ] | `RESOURCE AND ASSET SYSTEM.md` |
+| Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0015); the runtime cannot decode a PNG yet (DEBT-0037) and resource packs do not layer |
 | Streaming lifecycle | [x] | [ ] | chunks are loaded explicitly for now |
 | Headless mode | [x] | [x] | `nexora-headless` |
 
@@ -93,8 +93,8 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 
 | Contract | Defined | Built | Note |
 | --- | :---: | :---: | --- |
-| Content pipeline | [x] | [ ] | |
-| Asset provenance | [x] | [ ] | no assets ship yet |
+| Content pipeline | [x] | [~] | for surface materials: authored definition → recipe → generate → validate → PNG → batch by manifest → INDEX (`tools/texture-forge`, ADR-0013, ADR-0015); no other asset type has a pipeline |
+| Asset provenance | [x] | [~] | every generated material carries its class, tool, generator, recipe fingerprint and seed; the first generation is catalogued with a byte-level hash per asset and held to it by a test (`content/first-generation/CATALOG.md`); nothing has been reviewed for release, so nothing may ship |
 | Original-content policy | [x] | [x] | no third-party code or assets; algorithms implemented from published specifications (ADR-0002) |
 | Editor / runtime relationship | [x] | [ ] | |
 | Mod API versioning | [x] | [~] | version types exist; no mod API |
@@ -106,9 +106,28 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Save compatibility | [x] | [x] | `foundation::version`, ADR-0004 |
 | Crash / recovery strategy | [x] | [~] | detect, quarantine, atomic write and journal recovery are built and tested against the mandatory crash/corruption cases (ADR-0011); **the engine journals its own writes** and the slice rebuilds itself from checkpoint + journal, on a policy measured rather than guessed (Appendix E: an fsync is 303× an append); replay still reaches only resident chunks (DEBT-0024) |
 | Observability | [x] | [x] | `foundation::diagnostics` |
-| Testing strategy | [x] | [x] | 600 tests; unit, integration, property, determinism, corruption, plus 12 cross-stack conformance digests |
+| Testing strategy | [x] | [x] | 850+ tests; unit, integration, property, determinism, corruption, content-catalog, plus 12 cross-stack conformance digests |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
 | Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — the GPU stages cannot run here and no engine-scale comparison exists (DEBT-0008, ADR-0009) |
+
+## Phase status (2026-09-24)
+
+Two numbering schemes meet here, and they must not be confused.
+`NEXORA DEVELOPMENT ROADMAP.md` calls **Phase 0 the Architecture Freeze**, with
+one exit: *"nenhum blocker arquitetural crítico sem decisão registrada"*.
+ADR-0005 and the README use "Phase 0" for the **first implementation
+increment**, whose scope that ADR bounds. Only the roadmap's phases gate
+anything.
+
+| Roadmap phase | State | Evidence |
+| --- | --- | --- |
+| 0 — Architecture Freeze | **open, blocked by environment** | the Final gate below is not met: the benchmark cannot run its GPU stages or an engine-scale comparison here (DEBT-0008), and the RHI boundary has never met a renderer. Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
+| 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005) |
+| 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming exist; camera, input, render and player do not |
+
+Work continues on what can be verified headless — the roadmap's own rule is
+that a phase advances on its technical criteria, and the criteria that remain
+need hardware this environment does not have. Nothing here claims otherwise.
 
 ## Final gate
 
