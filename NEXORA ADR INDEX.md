@@ -68,3 +68,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0010](docs/adr/ADR-0010-commands-are-intent-and-carry-their-own-authority.md) | Comandos são intenção, e a fronteira é imposta pelo grafo de crates | ACCEPTED |
 | [0011](docs/adr/ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md) | Cauda truncada é crash; corrupção não é, e cada uma tem sua resposta | ACCEPTED |
 | [0012](docs/adr/ADR-0012-a-mesh-is-a-data-structure-not-a-picture.md) | Uma malha é uma estrutura de dados, não uma imagem | ACCEPTED |
+| [0013](docs/adr/ADR-0013-a-recipe-is-data-and-a-material-names-it.md) | Uma receita é dado, e um material a nomeia — schema 2 do documento de material | ACCEPTED |

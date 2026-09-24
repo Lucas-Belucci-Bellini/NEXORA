@@ -36,7 +36,7 @@ use crate::provenance::{
 use crate::texture::{MapRole, Resolution};
 
 /// Fields a material document may carry at the top level.
-const MATERIAL_FIELDS: [&str; 11] = [
+const MATERIAL_FIELDS: [&str; 12] = [
     "schema",
     "id",
     "name",
@@ -48,7 +48,11 @@ const MATERIAL_FIELDS: [&str; 11] = [
     "blend",
     "pbr",
     "maps",
+    "recipe",
 ];
+
+/// The first schema that carries `recipe`.
+const RECIPE_SCHEMA: u32 = 2;
 
 /// Render a material as a JSON document.
 #[must_use]
@@ -59,6 +63,12 @@ pub fn to_json(material: &SurfaceMaterial) -> Json {
         Json::Integer(i64::from(material.schema().0)),
     );
     fields.insert("id".to_owned(), Json::text(material.id().to_string()));
+    fields.insert(
+        "recipe".to_owned(),
+        material
+            .recipe()
+            .map_or(Json::Null, |recipe| Json::text(recipe.to_string())),
+    );
     fields.insert("name".to_owned(), Json::text(material.name()));
     fields.insert(
         "category".to_owned(),
@@ -199,6 +209,20 @@ pub fn from_json(document: &Json) -> Result<SurfaceMaterial> {
 
     for entry in document.field("maps")?.as_array()? {
         builder = builder.wants(MapRole::parse(entry.as_text()?)?);
+    }
+
+    // Version 1 predates the field, and a version 1 document that carries it
+    // is not one any build wrote. From version 2 it is required, null or not:
+    // the absence of a recipe is a statement, and it is written as one.
+    if schema.0 < RECIPE_SCHEMA {
+        if document.optional_field("recipe")?.is_some() {
+            return Err(unreadable("a schema 1 document cannot name a recipe")
+                .with_context("schema", schema.to_string()));
+        }
+    } else if let Json::Text(recipe) = document.field("recipe")? {
+        builder = builder.recipe(Identifier::parse(recipe)?);
+    } else if !matches!(document.field("recipe")?, Json::Null) {
+        return Err(unreadable("a recipe is an identifier or null"));
     }
 
     builder.build()
@@ -779,6 +803,102 @@ mod tests {
             let text = to_text(&rich_material()).replace("\"0xdeadbeefcafef00d\"", bad);
             assert!(from_text(&text).is_err(), "seed {bad} must be refused");
         }
+    }
+
+    #[test]
+    fn a_recipe_round_trips_and_changes_the_appearance() {
+        let plain = rich_material();
+        let with_recipe = SurfaceMaterial::builder(
+            plain.id().clone(),
+            plain.category(),
+            plain.resolution(),
+            plain.provenance().clone(),
+        )
+        .recipe(id("nexora:recipe/wood/dark_oak"))
+        .build()
+        .unwrap();
+
+        let text = to_text(&with_recipe);
+        assert!(
+            text.contains("\"recipe\": \"nexora:recipe/wood/dark_oak\""),
+            "{text}"
+        );
+        let restored = from_text(&text).expect("reads back");
+        assert_eq!(restored.recipe(), with_recipe.recipe());
+        assert_eq!(restored, with_recipe);
+
+        assert!(to_text(&plain).contains("\"recipe\": null"));
+        let bare = |recipe: Option<&str>| {
+            let builder = SurfaceMaterial::builder(
+                plain.id().clone(),
+                plain.category(),
+                plain.resolution(),
+                plain.provenance().clone(),
+            );
+            match recipe {
+                Some(raw) => builder.recipe(id(raw)),
+                None => builder,
+            }
+            .build()
+            .unwrap()
+            .appearance_hash()
+        };
+        assert_ne!(
+            bare(None),
+            bare(Some("nexora:recipe/wood/x")),
+            "naming a recipe is a change of appearance"
+        );
+        assert_ne!(
+            bare(Some("nexora:recipe/wood/x")),
+            bare(Some("nexora:recipe/wood/y")),
+            "and so is naming a different one"
+        );
+        assert_ne!(
+            plain.appearance_hash(),
+            SurfaceMaterial::builder(
+                plain.id().clone(),
+                plain.category(),
+                plain.resolution(),
+                plain.provenance().clone(),
+            )
+            .recipe(id("nexora:recipe/wood/x"))
+            .build()
+            .unwrap()
+            .appearance_hash(),
+            "naming a recipe is a change of appearance"
+        );
+    }
+
+    #[test]
+    fn a_schema_1_document_reads_as_a_material_with_no_recipe() {
+        // The checked-in definitions were written at version 1. They must keep
+        // loading, and keep hashing the same, or every generated material in
+        // the tree would be regenerated for nothing.
+        let mut document = to_json(&rich_material());
+        if let Json::Object(fields) = &mut document {
+            fields.insert("schema".to_owned(), Json::Integer(1));
+            fields.remove("recipe");
+        }
+        let restored = from_json(&document).expect("version 1 still reads");
+        assert!(restored.recipe().is_none());
+        assert_eq!(
+            restored.appearance_hash(),
+            rich_material().appearance_hash()
+        );
+
+        // Version 1 cannot carry the field; version 2 must.
+        if let Json::Object(fields) = &mut document {
+            fields.insert("recipe".to_owned(), Json::Null);
+        }
+        let err = from_json(&document).expect_err("schema 1 with a recipe");
+        assert!(err.to_string().contains("schema 1"), "{err}");
+
+        let mut current = to_json(&rich_material());
+        if let Json::Object(fields) = &mut current {
+            fields.remove("recipe");
+        }
+        let err = from_json(&current).expect_err("schema 2 without the field");
+        assert!(err.to_string().contains("recipe"), "{err}");
     }
 
     #[test]

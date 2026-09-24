@@ -37,6 +37,7 @@ use crate::layout;
 use crate::pbr::PbrPipeline;
 use crate::png;
 use crate::procedural::ProceduralGenerator;
+use crate::recipe_book::{RecipeBook, FINGERPRINT_PARAMETER};
 use crate::validator::Validator;
 
 /// How deep [`Forge::list`] will walk looking for materials.
@@ -152,6 +153,19 @@ impl Forge {
         })
     }
 
+    /// The same forge, resolving named recipes from a book.
+    #[must_use]
+    pub fn with_recipes(mut self, recipes: RecipeBook) -> Self {
+        self.generator = self.generator.with_recipes(recipes);
+        self
+    }
+
+    /// Where named recipes are read from.
+    #[must_use]
+    pub const fn recipes(&self) -> &RecipeBook {
+        self.generator.recipes()
+    }
+
     /// The output root.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -173,10 +187,15 @@ impl Forge {
         force: bool,
     ) -> Result<Outcome> {
         layout::check_naming(definition)?;
+        // Resolved before anything is compared or written: a definition that
+        // names a recipe the book does not have is an error, not a surface
+        // that happens to be "unchanged" because nothing could be checked.
+        let fingerprint = self.recipes().resolve(definition)?.fingerprint;
 
         let existing = self.read_definition(definition.id()).ok();
         if let Some(existing) = &existing {
             if existing.appearance_hash() == definition.appearance_hash()
+                && recorded_fingerprint(existing) == fingerprint
                 && self.all_maps_present(existing)
             {
                 return Ok(Outcome {
@@ -391,6 +410,17 @@ impl Forge {
         files.push((path, text.len()));
         Ok(files)
     }
+}
+
+/// The recipe fingerprint a written material's trace recorded, if any.
+fn recorded_fingerprint(material: &SurfaceMaterial) -> Option<u64> {
+    let raw = material
+        .provenance()
+        .generation
+        .as_ref()?
+        .parameters
+        .get(FINGERPRINT_PARAMETER)?;
+    u64::from_str_radix(raw.strip_prefix("0x")?, 16).ok()
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -656,6 +686,67 @@ mod tests {
             .expect_err("`..` must never become a directory");
         assert!(err.to_string().contains(".."), "{err}");
         assert!(!root.exists(), "nothing may be created for a refused name");
+    }
+
+    #[test]
+    fn editing_a_named_recipe_is_noticed_though_the_material_did_not_change() {
+        let root = scratch("recipe-out");
+        let recipes = scratch("recipe-book");
+        let file = recipes.join("nexora").join("wood").join("dark.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let recipe = crate::recipe_book::RecipeDocument {
+            id: id("nexora:recipe/wood/dark"),
+            category: MaterialCategory::Wood,
+            recipe: crate::recipe::Recipe::for_category(MaterialCategory::Wood).unwrap(),
+        };
+        std::fs::write(&file, crate::recipe_book::to_text(&recipe)).unwrap();
+
+        let forge = Forge::new(&root)
+            .unwrap()
+            .with_recipes(RecipeBook::at(&recipes));
+        let named = SurfaceMaterial::builder(
+            id("nexora:material/oak"),
+            MaterialCategory::Wood,
+            Resolution::square(16).unwrap(),
+            Provenance::authored("operator", "test"),
+        )
+        .recipe(id("nexora:recipe/wood/dark"))
+        .build()
+        .unwrap();
+
+        let first = forge.generate(&named, 7, false).unwrap();
+        assert_eq!(first.status, WriteStatus::Written);
+        let trace = first.material.provenance().generation.clone().unwrap();
+        assert_eq!(trace.preset, Some(id("nexora:recipe/wood/dark")));
+        assert!(trace.parameters.contains_key(FINGERPRINT_PARAMETER));
+        assert_eq!(
+            forge.generate(&named, 7, false).unwrap().status,
+            WriteStatus::Unchanged
+        );
+
+        // The recipe file is edited; the material definition is not.
+        let mut edited = recipe.clone();
+        edited.recipe.levels = 3;
+        std::fs::write(&file, crate::recipe_book::to_text(&edited)).unwrap();
+        assert_eq!(
+            forge.generate(&named, 7, false).unwrap().status,
+            WriteStatus::Refused,
+            "an edited recipe is a different surface"
+        );
+        assert_eq!(
+            forge.generate(&named, 7, true).unwrap().status,
+            WriteStatus::Replaced
+        );
+
+        // And a recipe that is not in the book is an error, not "unchanged".
+        std::fs::remove_file(&file).unwrap();
+        let err = forge
+            .generate(&named, 7, false)
+            .expect_err("a missing recipe");
+        assert!(err.to_string().contains("recipe"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&recipes);
     }
 
     #[test]

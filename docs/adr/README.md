@@ -22,3 +22,4 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0010](ADR-0010-commands-are-intent-and-carry-their-own-authority.md) | Commands are intent, and the crate graph enforces the boundary | ACCEPTED |
 | [0011](ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md) | A torn tail is a crash; corruption is not, and each has its own answer | ACCEPTED |
 | [0012](ADR-0012-a-mesh-is-a-data-structure-not-a-picture.md) | A mesh is a data structure, not a picture | ACCEPTED |
+| [0013](ADR-0013-a-recipe-is-data-and-a-material-names-it.md) | A recipe is data, and a material names it | ACCEPTED |

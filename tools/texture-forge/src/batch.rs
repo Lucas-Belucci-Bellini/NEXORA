@@ -137,6 +137,8 @@ impl Policy {
 /// One definition a manifest names, read and ready to generate.
 #[derive(Debug, Clone)]
 pub struct Entry {
+    /// Its position in the manifest's list, from zero.
+    pub index: usize,
     /// The file it was read from.
     pub source: PathBuf,
     /// The definition.
@@ -242,7 +244,7 @@ impl Plan {
                 .and_then(|value| value.as_text().ok())
                 .unwrap_or("")
                 .to_owned();
-            match plan.read_entry(node, base) {
+            match plan.read_entry(index, node, base) {
                 Ok(entry) => {
                     let id = entry.definition.id().clone();
                     if let Some((first, first_path)) = claimed.get(&id) {
@@ -274,13 +276,39 @@ impl Plan {
         self.problems.is_empty()
     }
 
+    /// Every entry whose recipe the forge cannot resolve.
+    ///
+    /// Separate from [`Plan::problems`] because it depends on the forge's
+    /// recipe book, which the manifest does not choose. Checked by
+    /// [`Plan::run`] before anything is written, for the same reason the
+    /// manifest is: a batch that stops at entry forty over a missing recipe
+    /// has already written thirty-nine.
+    #[must_use]
+    pub fn unresolved(&self, forge: &Forge) -> Vec<Problem> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                forge
+                    .recipes()
+                    .resolve(&entry.definition)
+                    .err()
+                    .map(|error| Problem {
+                        index: entry.index,
+                        definition: entry.source.display().to_string(),
+                        error,
+                    })
+            })
+            .collect()
+    }
+
     /// Generate every entry, in manifest order.
     ///
     /// # Errors
     ///
-    /// Returns an error, and writes nothing, when the plan has problems. A
-    /// material that fails or is refused once the run has started is not an
-    /// error: it is recorded in the report and the run continues.
+    /// Returns an error, and writes nothing, when the plan has problems or
+    /// names a recipe the forge cannot resolve. A material that fails or is
+    /// refused once the run has started is not an error: it is recorded in
+    /// the report and the run continues.
     pub fn run(&self, forge: &Forge, force: bool) -> Result<BatchReport> {
         if !self.is_valid() {
             return Err(
@@ -288,6 +316,14 @@ impl Plan {
                     .with_context("manifest", self.name.clone())
                     .with_context("problems", self.problems.len().to_string()),
             );
+        }
+        let unresolved = self.unresolved(forge);
+        if !unresolved.is_empty() {
+            return Err(invalid(
+                "the manifest names recipes that cannot be resolved, so nothing was generated",
+            )
+            .with_context("manifest", self.name.clone())
+            .with_context("problems", unresolved.len().to_string()));
         }
         let mut report = BatchReport::default();
         for entry in &self.entries {
@@ -301,7 +337,7 @@ impl Plan {
         Ok(report)
     }
 
-    fn read_entry(&self, node: &Json, base: &Path) -> Result<Entry> {
+    fn read_entry(&self, index: usize, node: &Json, base: &Path) -> Result<Entry> {
         reject_unknown(node, &ENTRY_FIELDS, "materials[]")?;
         let written = node.field("definition")?.as_text()?;
         let source = base.join(contained(written)?);
@@ -328,6 +364,7 @@ impl Plan {
             return Err(error);
         }
         Ok(Entry {
+            index,
             source,
             definition,
             seed,
@@ -844,6 +881,45 @@ mod tests {
         assert!(forced.succeeded());
         assert_eq!(forced.tally().replaced, 1);
         assert_eq!(forced.tally().unchanged, 1);
+
+        let _ = std::fs::remove_dir_all(&content);
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    #[test]
+    fn a_missing_recipe_stops_the_batch_before_anything_is_written() {
+        let content = scratch("recipe-content");
+        let out = scratch("recipe-out");
+        author(
+            &content,
+            "a.json",
+            &definition("nexora:material/a", 16, &[], 0.9),
+        );
+        let named = SurfaceMaterial::builder(
+            Identifier::parse("nexora:material/b").unwrap(),
+            MaterialCategory::Stone,
+            Resolution::square(16).unwrap(),
+            Provenance::authored("operator", "test"),
+        )
+        .recipe(Identifier::parse("nexora:recipe/stone/absent").unwrap())
+        .build()
+        .unwrap();
+        author(&content, "b.json", &named);
+
+        let plan = Plan::from_text(&manifest("null", &["a.json", "b.json"]), &content).unwrap();
+        assert!(plan.is_valid(), "the manifest itself is fine");
+
+        let forge = Forge::new(&out).unwrap();
+        let unresolved = plan.unresolved(&forge);
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].index, 1);
+
+        let err = plan.run(&forge, false).expect_err("stops");
+        assert!(err.to_string().contains("recipes"), "{err}");
+        assert!(
+            forge.list().unwrap().is_empty(),
+            "not even entry 0 was written"
+        );
 
         let _ = std::fs::remove_dir_all(&content);
         let _ = std::fs::remove_dir_all(&out);

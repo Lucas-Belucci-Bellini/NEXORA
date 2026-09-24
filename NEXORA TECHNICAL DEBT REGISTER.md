@@ -907,4 +907,9 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   preset da categoria.
 - **TRIGGER:** a primeira família 16×16 catalogada pelo caminho procedural.
 - **TARGET STAGE:** Phase 1 (conteúdo da primeira geração)
-- **STATUS:** OPEN
+- **STATUS:** RESOLVED — [ADR-0013](docs/adr/ADR-0013-a-recipe-is-data-and-a-material-names-it.md).
+  Receitas são documentos em `content/recipes/`, nomeados pelo campo `recipe`
+  do schema 2 do material. Prova: `recipe_book::tests` (receita pálida
+  renderiza pálida; caminho, categoria e identificador errados são recusados),
+  `forge::tests::editing_a_named_recipe_is_noticed_though_the_material_did_not_change`
+  e `batch::tests::a_missing_recipe_stops_the_batch_before_anything_is_written`.

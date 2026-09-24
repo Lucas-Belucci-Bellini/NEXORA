@@ -17,9 +17,13 @@ use nexora_foundation::ident::Identifier;
 use nexora_texture_forge::batch::Plan;
 use nexora_texture_forge::forge::Forge;
 use nexora_texture_forge::layout;
+use nexora_texture_forge::recipe_book::RecipeBook;
 
 /// Where materials are written when `--out` is not given.
 const DEFAULT_ROOT: &str = "assets/materials";
+
+/// Where named recipes are read from when `--recipes` is not given.
+const DEFAULT_RECIPES: &str = "content/recipes";
 
 fn main() -> ExitCode {
     let command = match parse_args() {
@@ -54,7 +58,8 @@ fn usage() -> String {
      \x20 batch    <manifest.json>     generate every material a manifest lists\n\
      \n\
      options:\n\
-     \x20 --out <dir>     where materials live (default: assets/materials)\n\
+          \x20 --out <dir>     where materials live (default: assets/materials)\n\
+     \x20 --recipes <dir> where named recipes live (default: content/recipes)\n\
      \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0);\n\
      \x20                 not accepted by batch, whose manifest owns the seed\n\
      \x20 --force         replace a material that is already written\n\
@@ -71,6 +76,7 @@ enum Command {
     Generate {
         definition: PathBuf,
         root: PathBuf,
+        recipes: PathBuf,
         seed: u64,
         force: bool,
     },
@@ -88,6 +94,7 @@ enum Command {
     Batch {
         manifest: PathBuf,
         root: PathBuf,
+        recipes: PathBuf,
         force: bool,
     },
 }
@@ -105,6 +112,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
 
     let mut positional: Option<String> = None;
     let mut root = PathBuf::from(DEFAULT_ROOT);
+    let mut recipes = PathBuf::from(DEFAULT_RECIPES);
     let mut seed = 0u64;
     let mut seed_given = false;
     let mut force = false;
@@ -117,6 +125,12 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
             }
             "--out" => {
                 root = PathBuf::from(args.next().ok_or_else(|| "--out needs a path".to_owned())?);
+            }
+            "--recipes" => {
+                recipes = PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "--recipes needs a path".to_owned())?,
+                );
             }
             "--seed" => {
                 let raw = args
@@ -147,6 +161,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
         "generate" => Ok(Some(Command::Generate {
             definition: PathBuf::from(needed("a definition file")?),
             root,
+            recipes,
             seed,
             force,
         })),
@@ -174,6 +189,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
             Ok(Some(Command::Batch {
                 manifest: PathBuf::from(needed("a manifest file")?),
                 root,
+                recipes,
                 force,
             }))
         }
@@ -198,21 +214,29 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Generate {
             definition,
             root,
+            recipes,
             seed,
             force,
-        } => generate(&definition, root, seed, force),
+        } => generate(&definition, root, recipes, seed, force),
         Command::Validate { id, root } => validate(&id, root),
         Command::Inspect { id, root } => inspect(&id, root),
         Command::List { root } => list(root),
         Command::Batch {
             manifest,
             root,
+            recipes,
             force,
-        } => batch(&manifest, root, force),
+        } => batch(&manifest, root, recipes, force),
     }
 }
 
-fn generate(path: &PathBuf, root: PathBuf, seed: u64, force: bool) -> Result<ExitCode> {
+fn generate(
+    path: &PathBuf,
+    root: PathBuf,
+    recipes: PathBuf,
+    seed: u64,
+    force: bool,
+) -> Result<ExitCode> {
     let text = std::fs::read_to_string(path).map_err(|cause| {
         nexora_foundation::error::Error::new(
             nexora_foundation::error::Domain::Content,
@@ -224,7 +248,7 @@ fn generate(path: &PathBuf, root: PathBuf, seed: u64, force: bool) -> Result<Exi
     })?;
     let definition = document::from_text(&text)?;
 
-    let forge = Forge::new(root)?;
+    let forge = Forge::new(root)?.with_recipes(RecipeBook::at(recipes));
     let outcome = forge.generate(&definition, seed, force)?;
 
     println!("{} {}", outcome.status.as_str(), outcome.material.id());
@@ -271,6 +295,12 @@ fn inspect(id: &Identifier, root: PathBuf) -> Result<ExitCode> {
     println!("{}", definition.id());
     println!("  name         {}", definition.name());
     println!("  category     {}", definition.category().as_str());
+    println!(
+        "  recipe       {}",
+        definition
+            .recipe()
+            .map_or_else(|| "(category default)".to_owned(), ToString::to_string)
+    );
     println!("  revision     {}", definition.revision());
     println!(
         "  resolution   {}x{}",
@@ -370,7 +400,7 @@ fn list(root: PathBuf) -> Result<ExitCode> {
     })
 }
 
-fn batch(manifest: &Path, root: PathBuf, force: bool) -> Result<ExitCode> {
+fn batch(manifest: &Path, root: PathBuf, recipes: PathBuf, force: bool) -> Result<ExitCode> {
     let plan = Plan::load(manifest)?;
     if !plan.is_valid() {
         for problem in &plan.problems {
@@ -387,7 +417,22 @@ fn batch(manifest: &Path, root: PathBuf, force: bool) -> Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
 
-    let forge = Forge::new(root)?;
+    let forge = Forge::new(root)?.with_recipes(RecipeBook::at(recipes));
+    let unresolved = plan.unresolved(&forge);
+    if !unresolved.is_empty() {
+        for problem in &unresolved {
+            eprintln!(
+                "invalid  entry {} ({}): {}",
+                problem.index, problem.definition, problem.error
+            );
+        }
+        eprintln!(
+            "texture-forge: {} names {} recipe(s) that cannot be resolved; nothing was generated",
+            manifest.display(),
+            unresolved.len()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
     let report = plan.run(&forge, force)?;
     for entry in &report.entries {
         println!("{:<9} {}", entry.status(), entry.id);

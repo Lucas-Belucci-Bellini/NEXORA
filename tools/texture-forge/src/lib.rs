@@ -35,6 +35,7 @@ pub mod png;
 pub mod procedural;
 pub mod raster;
 pub mod recipe;
+pub mod recipe_book;
 pub mod validator;
 
 pub use batch::{BatchReport, Plan, Policy, Tally};
@@ -46,4 +47,5 @@ pub use png::{adler32, decode as decode_png, encode as encode_png, Decoded};
 pub use procedural::{ProceduralGenerator, AUTHOR, PROCEDURAL_GENERATOR, PROCEDURAL_VERSION, TOOL};
 pub use raster::Canvas;
 pub use recipe::Recipe;
+pub use recipe_book::{RecipeBook, RecipeDocument};
 pub use validator::{seam_ratio, Validator};
