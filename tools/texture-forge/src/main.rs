@@ -6,7 +6,7 @@
 //! binary in this workspace, because ADR-0002 forbids a dependency and a
 //! handful of flags does not need one.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use nexora_asset::document;
@@ -14,6 +14,7 @@ use nexora_asset::texture::MapRole;
 use nexora_asset::validation::Verdict;
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
+use nexora_texture_forge::batch::Plan;
 use nexora_texture_forge::forge::Forge;
 use nexora_texture_forge::layout;
 
@@ -50,10 +51,12 @@ fn usage() -> String {
      \x20 validate <material-id>       check what is on disk for a material\n\
      \x20 inspect  <material-id>       print a material's definition and origin\n\
      \x20 list                         every material written under the root\n\
+     \x20 batch    <manifest.json>     generate every material a manifest lists\n\
      \n\
      options:\n\
      \x20 --out <dir>     where materials live (default: assets/materials)\n\
-     \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0)\n\
+     \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0);\n\
+     \x20                 not accepted by batch, whose manifest owns the seed\n\
      \x20 --force         replace a material that is already written\n\
      \x20 --help          show this message\n\
      \n\
@@ -82,6 +85,11 @@ enum Command {
     List {
         root: PathBuf,
     },
+    Batch {
+        manifest: PathBuf,
+        root: PathBuf,
+        force: bool,
+    },
 }
 
 fn parse_args() -> std::result::Result<Option<Command>, String> {
@@ -98,6 +106,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     let mut positional: Option<String> = None;
     let mut root = PathBuf::from(DEFAULT_ROOT);
     let mut seed = 0u64;
+    let mut seed_given = false;
     let mut force = false;
 
     while let Some(argument) = args.next() {
@@ -114,6 +123,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
                     .next()
                     .ok_or_else(|| "--seed needs a value".to_owned())?;
                 seed = parse_seed(&raw)?;
+                seed_given = true;
             }
             "--force" => force = true,
             other if other.starts_with('-') => {
@@ -154,6 +164,19 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
             }
             Ok(Some(Command::List { root }))
         }
+        "batch" => {
+            // A seed on the command line would make the run depend on
+            // something that is not in the repository, which is the one thing
+            // a manifest exists to prevent.
+            if seed_given {
+                return Err("`batch` takes its seed from the manifest, not --seed".to_owned());
+            }
+            Ok(Some(Command::Batch {
+                manifest: PathBuf::from(needed("a manifest file")?),
+                root,
+                force,
+            }))
+        }
         unknown => Err(format!("unknown command `{unknown}`")),
     }
 }
@@ -181,6 +204,11 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Validate { id, root } => validate(&id, root),
         Command::Inspect { id, root } => inspect(&id, root),
         Command::List { root } => list(root),
+        Command::Batch {
+            manifest,
+            root,
+            force,
+        } => batch(&manifest, root, force),
     }
 }
 
@@ -336,6 +364,44 @@ fn list(root: PathBuf) -> Result<ExitCode> {
         eprintln!("unreadable: {} -- {error}", path.display());
     }
     Ok(if listing.unreadable.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn batch(manifest: &Path, root: PathBuf, force: bool) -> Result<ExitCode> {
+    let plan = Plan::load(manifest)?;
+    if !plan.is_valid() {
+        for problem in &plan.problems {
+            eprintln!(
+                "invalid  entry {} ({}): {}",
+                problem.index, problem.definition, problem.error
+            );
+        }
+        eprintln!(
+            "texture-forge: {} has {} problem(s); nothing was generated",
+            manifest.display(),
+            plan.problems.len()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+
+    let forge = Forge::new(root)?;
+    let report = plan.run(&forge, force)?;
+    for entry in &report.entries {
+        println!("{:<9} {}", entry.status(), entry.id);
+        match &entry.result {
+            Ok(outcome) => {
+                if let Some(refusal) = &outcome.refusal {
+                    eprintln!("  {refusal}");
+                }
+            }
+            Err(cause) => eprintln!("  {} -- {cause}", entry.source.display()),
+        }
+    }
+    println!("batch {}: {}", plan.name, report.tally());
+    Ok(if report.succeeded() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

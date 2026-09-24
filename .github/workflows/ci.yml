@@ -83,12 +83,13 @@ jobs:
       # material from a checked-in definition, then read it back off disk and
       # validate it. A tool that writes something it cannot then read is the
       # failure this stage exists to catch.
+      #
+      # Generation goes through the checked-in manifest, so CI builds exactly
+      # the list the repository declares -- with the seed the manifest owns.
       - name: Smoke test the texture forge
         run: |
-          for definition in content/materials/*.json; do
-            ./target/release/nexora-texture-forge generate "$definition" \
-              --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE
-          done
+          ./target/release/nexora-texture-forge batch content/materials/manifest.json \
+            --out "${RUNNER_TEMP}/materials"
           ./target/release/nexora-texture-forge list --out "${RUNNER_TEMP}/materials"
           ./target/release/nexora-texture-forge validate nexora:material/stone_rough \
             --out "${RUNNER_TEMP}/materials"
@@ -96,6 +97,11 @@ jobs:
             --out "${RUNNER_TEMP}/materials"
           # Generating again must change nothing: the run is deterministic, and
           # a second pass that rewrites files would mean it is not.
+          ./target/release/nexora-texture-forge batch content/materials/manifest.json \
+            --out "${RUNNER_TEMP}/materials" \
+            | grep -q '^batch .*: 0 written, [0-9]* unchanged, 0 replaced, 0 refused, 0 failed$'
+          # And a single generate with the manifest's seed must agree with the
+          # batch byte for byte: two paths to one material, one answer.
           ./target/release/nexora-texture-forge generate content/materials/stone_rough.json \
             --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE | grep -q '^unchanged'
 

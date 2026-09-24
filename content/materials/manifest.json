@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "name": "nexora-authored",
+  "seed": "0x0000000000c0ffee",
+  "policy": null,
+  "materials": [
+    { "definition": "dark_oak_plank.json", "seed": null },
+    { "definition": "stone_rough.json", "seed": null }
+  ]
+}

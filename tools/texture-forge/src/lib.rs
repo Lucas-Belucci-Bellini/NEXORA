@@ -24,6 +24,7 @@
 //! inspiration may be studied; implementation, assets and distinctive protected
 //! expression must be independently created"*.
 
+pub mod batch;
 pub mod color;
 pub mod deflate;
 pub mod forge;
@@ -36,6 +37,7 @@ pub mod raster;
 pub mod recipe;
 pub mod validator;
 
+pub use batch::{BatchReport, Plan, Policy, Tally};
 pub use color::{Ramp, Rgba};
 pub use forge::{Forge, Listing, Outcome, WriteStatus};
 pub use noise::Noise;

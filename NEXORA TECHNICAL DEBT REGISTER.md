@@ -880,3 +880,31 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `Cutout` (folhagem) no conteúdo.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
+### DEBT-0036 — Uma definição não escolhe paleta: dezesseis pedras são uma pedra com dezesseis sementes
+
+- **SYSTEM:** `tools/texture-forge::recipe`, `engine/asset::document`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o gerador procedural escolhe a receita (rampa de cor,
+  ruído, rachaduras, faixas) por `Recipe::for_category(definition.category())`
+  e por nada mais. O documento de material não tem campo em que uma receita,
+  uma paleta ou um preset possa ser nomeado. Apareceu ao fechar a FASE 7: o
+  batch já sabe impor a primeira geração (`policy` 16×16, só albedo), mas não
+  há o que catalogar por ele que seja *diferente* dentro de uma família.
+- **IMPACT:** a issue #5 pede dezesseis pedras "visualmente distinguíveis" —
+  granito claro, basalto, ardósia, mármore escuro. Hoje as dezesseis sairiam
+  como a mesma pedra cinza mosqueada, variando só na posição dos grãos. O
+  mesmo vale para as 24 areias (#7), as 48 minérios (#6) e toda família
+  procedural das issues #15–#26.
+- **RISK:** médio. Não quebra nada que existe; impede o caminho procedural de
+  produzir o catálogo 16×16, e empurra o operador para o caminho de geração
+  externa (#4) — que é legítimo, mas precisa do caminho de importação que a
+  auditoria (§4.6) deliberadamente deixou para depois.
+- **PROPOSED REMEDIATION:** um campo `recipe` opcional no documento de material
+  (schema 2, com migração do 1: ausente = a receita da categoria, que é o
+  comportamento de hoje) nomeando um preset por `Identifier`
+  (`nexora:recipe/granite_light`) e, dentro dele, a rampa de cor e os pesos de
+  ruído. `GenerationTrace.preset` já existe e já é gravado — hoje sempre com o
+  preset da categoria.
+- **TRIGGER:** a primeira família 16×16 catalogada pelo caminho procedural.
+- **TARGET STAGE:** Phase 1 (conteúdo da primeira geração)
+- **STATUS:** OPEN
