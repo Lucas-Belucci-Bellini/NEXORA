@@ -1,0 +1,40 @@
+{
+  "blend": "opaque",
+  "category": "stone",
+  "id": "nexora:material/stone/ancient_stone",
+  "maps": [],
+  "name": "Ancient Stone",
+  "pbr": {
+    "height_strength": 0.5,
+    "metallic": 0.0,
+    "normal_strength": 1.0,
+    "roughness": 0.9
+  },
+  "physical_scale": {
+    "metres_per_tile": 1.0
+  },
+  "provenance": {
+    "author": "NEXORA",
+    "class": "original",
+    "content_hash": "0x0000000000000000",
+    "generation": null,
+    "license": null,
+    "modification": "unmodified",
+    "notes": "First generation, issue #5 prompt 16 (Pedra antiga). Aged masonry-like rock with muted erosion. Drawn procedurally by the texture forge from nexora:recipe/stone/ancient_stone: a reproducible generation rule, not an image made from the prompt.",
+    "recorded_at": "2026-09-24T12:00:00Z",
+    "release": "draft",
+    "reviewed_at": null,
+    "reviewer": null,
+    "source_repository": null,
+    "source_tool": "hand-written",
+    "status": "nexora_original"
+  },
+  "recipe": "nexora:recipe/stone/ancient_stone",
+  "resolution": {
+    "height": 16,
+    "width": 16
+  },
+  "revision": 1,
+  "schema": 2,
+  "seamless": true
+}

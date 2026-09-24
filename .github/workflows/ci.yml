@@ -104,6 +104,16 @@ jobs:
           # batch byte for byte: two paths to one material, one answer.
           ./target/release/nexora-texture-forge generate content/materials/stone_rough.json \
             --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE | grep -q '^unchanged'
+          # The first visual generation: 16x16, albedo only, every stone drawn
+          # from its own recipe. The manifest's policy refuses anything else,
+          # and the byte-level check against CATALOG.md runs in `cargo test`.
+          ./target/release/nexora-texture-forge batch content/first-generation/manifest.json \
+            --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes
+          ./target/release/nexora-texture-forge validate nexora:material/stone/basalt \
+            --out "${RUNNER_TEMP}/first-generation"
+          ./target/release/nexora-texture-forge batch content/first-generation/manifest.json \
+            --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes \
+            | grep -q '^batch .*: 0 written, 16 unchanged, 0 replaced, 0 refused, 0 failed$'
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its

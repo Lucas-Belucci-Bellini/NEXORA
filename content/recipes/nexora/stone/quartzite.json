@@ -1,0 +1,29 @@
+{
+  "category": "stone",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/stone/quartzite",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.3,
+    "octaves": 3,
+    "strength": 0.7
+  },
+  "ramp": [
+    "#aeb0b2",
+    "#c4c6c8",
+    "#d7d9da",
+    "#e8e9ea",
+    "#f7f8f8"
+  ],
+  "relief": 0.35,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.3,
+    "density": 0.4
+  },
+  "strips": null
+}

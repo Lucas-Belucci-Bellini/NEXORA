@@ -1,0 +1,29 @@
+{
+  "category": "stone",
+  "contrast": 2.0,
+  "courses": {
+    "columns": 2,
+    "jitter": 0.2,
+    "mortar": 0.1,
+    "rows": 4
+  },
+  "id": "nexora:recipe/stone/ancient_stone",
+  "levels": 4,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.3,
+    "octaves": 3,
+    "strength": 0.8
+  },
+  "ramp": [
+    "#5a5246",
+    "#6d6456",
+    "#817868",
+    "#968d7c"
+  ],
+  "relief": 0.45,
+  "schema": 1,
+  "speckle": null,
+  "strips": null
+}

@@ -1,0 +1,29 @@
+{
+  "category": "stone",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/stone/granite_light",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.0,
+    "octaves": 3,
+    "strength": 0.6
+  },
+  "ramp": [
+    "#8e8a84",
+    "#a8a39b",
+    "#bfbab1",
+    "#d4cfc6",
+    "#e6e2da"
+  ],
+  "relief": 0.4,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.25,
+    "density": 0.35
+  },
+  "strips": null
+}

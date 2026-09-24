@@ -1,0 +1,28 @@
+{
+  "category": "stone",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/stone/limestone_aged",
+  "levels": 4,
+  "mottle": {
+    "cells_x": 3,
+    "cells_y": 3,
+    "cracks": 0.35,
+    "octaves": 4,
+    "strength": 1.0
+  },
+  "ramp": [
+    "#8f8672",
+    "#a39a85",
+    "#b8af99",
+    "#ccc4ae"
+  ],
+  "relief": 0.4,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.2,
+    "density": 0.15
+  },
+  "strips": null
+}

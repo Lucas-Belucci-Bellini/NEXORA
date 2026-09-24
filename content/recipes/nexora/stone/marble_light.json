@@ -1,0 +1,25 @@
+{
+  "category": "stone",
+  "contrast": 1.6,
+  "courses": null,
+  "id": "nexora:recipe/stone/marble_light",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 2,
+    "cells_y": 2,
+    "cracks": 0.4,
+    "octaves": 4,
+    "strength": 1.0
+  },
+  "ramp": [
+    "#9c9a96",
+    "#bebcb7",
+    "#d6d4cf",
+    "#e6e4df",
+    "#f2f0ec"
+  ],
+  "relief": 0.25,
+  "schema": 1,
+  "speckle": null,
+  "strips": null
+}

@@ -45,5 +45,6 @@ are all reported together, and a manifest with any of them generates nothing.
 ```
 
 The two definitions here predate that rule — 64×64 with derived PBR maps, the
-forge's own test surfaces — so this manifest's policy is `null`. A
-first-generation catalog belongs in its own manifest, with the policy above.
+forge's own test surfaces — so this manifest's policy is `null`. The
+first-generation catalog has its own manifest, with the policy above, in
+[`../first-generation/`](../first-generation/CATALOG.md).

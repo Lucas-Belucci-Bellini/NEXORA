@@ -1,0 +1,28 @@
+{
+  "category": "stone",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/stone/brittle_stone",
+  "levels": 4,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.7,
+    "octaves": 4,
+    "strength": 0.8
+  },
+  "ramp": [
+    "#9a958d",
+    "#b0aba2",
+    "#c5c0b7",
+    "#d8d4cc"
+  ],
+  "relief": 0.45,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.2,
+    "density": 0.15
+  },
+  "strips": null
+}

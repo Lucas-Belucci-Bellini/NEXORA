@@ -1,0 +1,29 @@
+{
+  "category": "stone",
+  "contrast": 2.2,
+  "courses": null,
+  "id": "nexora:recipe/stone/mossy_stone",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 3,
+    "cells_y": 3,
+    "cracks": 0.25,
+    "octaves": 4,
+    "strength": 1.0
+  },
+  "ramp": [
+    "#2f3a26",
+    "#4a5a34",
+    "#5f6660",
+    "#7a7e78",
+    "#94968f"
+  ],
+  "relief": 0.5,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.2,
+    "density": 0.1
+  },
+  "strips": null
+}
