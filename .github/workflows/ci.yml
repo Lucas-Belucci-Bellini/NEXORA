@@ -69,6 +69,12 @@ jobs:
       - name: Smoke test the headless vertical slice
         run: |
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv"
+          # And with the first visual generation's blocks: each of the sixteen
+          # stones must register, show its own surface in a mesh, and survive
+          # the save, the reload and the journal replay as a probe.
+          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-content.nxsv" \
+            --content content/first-generation/blocks.json \
+            | grep -q '^content blocks     16 (16 surfaces in the mesh)$'
 
       # The benchmark harness is code too: run a minimal pass so it cannot rot.
       # Deliberately NOT gated on timings - a shared runner's numbers would
@@ -136,6 +142,11 @@ jobs:
           ./target/release/nexora-headless --quiet --seed 987654321 --threads 8 \
             --save "${RUNNER_TEMP}/det-b.nxsv"
           cmp "${RUNNER_TEMP}/det-a.nxsv" "${RUNNER_TEMP}/det-b.nxsv"
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 1 \
+            --content content/first-generation/blocks.json --save "${RUNNER_TEMP}/det-c.nxsv"
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 8 \
+            --content content/first-generation/blocks.json --save "${RUNNER_TEMP}/det-d.nxsv"
+          cmp "${RUNNER_TEMP}/det-c.nxsv" "${RUNNER_TEMP}/det-d.nxsv"
 
   docs:
     name: rustdoc

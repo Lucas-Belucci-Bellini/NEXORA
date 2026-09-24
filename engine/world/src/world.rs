@@ -191,6 +191,28 @@ impl World {
     ///
     /// Returns an error when block registration fails.
     pub fn create(descriptor: WorldDescriptor, calendar: CalendarConfig) -> Result<Self> {
+        Self::create_with(descriptor, calendar, &[])
+    }
+
+    /// Create a world with block content registered after the built-in set.
+    ///
+    /// `Block System.md` §50: official content uses exactly the API a mod
+    /// does. The four built-ins stay because terrain generation and air's
+    /// runtime id depend on them; everything else arrives here, in the order
+    /// given, which is what keeps runtime ids stable for a given content list.
+    /// Runtime ids never reach a save (`Registry System.md` §12), so a
+    /// different list changes nothing on disk that a load cannot remap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a content block collides with a built-in or with
+    /// another content block — the registry refuses duplicates rather than
+    /// letting the later one win.
+    pub fn create_with(
+        descriptor: WorldDescriptor,
+        calendar: CalendarConfig,
+        content: &[(Identifier, BlockDefinition)],
+    ) -> Result<Self> {
         let mut blocks = Registry::new(Identifier::parse("nexora:registry/block")?);
 
         // Air must be runtime id 0: section storage answers "is this empty"
@@ -212,6 +234,9 @@ impl World {
             Identifier::parse("nexora:block/grass")?,
             BlockDefinition { solid: true },
         )?;
+        for (id, definition) in content {
+            blocks.register(id.clone(), definition.clone())?;
+        }
         blocks.freeze();
 
         Ok(Self {
@@ -234,7 +259,21 @@ impl World {
         calendar: CalendarConfig,
         now: WorldTime,
     ) -> Result<Self> {
-        let mut world = Self::create(descriptor, calendar)?;
+        Self::resumed_with(descriptor, calendar, now, &[])
+    }
+
+    /// Rebuild a world at a persisted time, with block content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when block registration fails.
+    pub fn resumed_with(
+        descriptor: WorldDescriptor,
+        calendar: CalendarConfig,
+        now: WorldTime,
+        content: &[(Identifier, BlockDefinition)],
+    ) -> Result<Self> {
+        let mut world = Self::create_with(descriptor, calendar, content)?;
         world.clock = WorldClock::resumed_at(calendar, now);
         Ok(world)
     }
@@ -893,5 +932,37 @@ mod tests {
         assert!(WorldBounds::DEFAULT.validate().is_ok());
         assert!(WorldBounds::DEFAULT.contains_y(0));
         assert!(!WorldBounds::DEFAULT.contains_y(100_000));
+    }
+
+    #[test]
+    fn content_blocks_follow_the_built_ins_and_cannot_replace_them() {
+        let descriptor = || WorldDescriptor::new("content", 1).unwrap();
+        let basalt = Identifier::parse("nexora:block/stone/basalt").unwrap();
+        let slate = Identifier::parse("nexora:block/stone/slate").unwrap();
+        let world = World::create_with(
+            descriptor(),
+            CalendarConfig::earthlike(),
+            &[
+                (basalt.clone(), BlockDefinition { solid: true }),
+                (slate.clone(), BlockDefinition { solid: true }),
+            ],
+        )
+        .unwrap();
+        // Built-ins keep their ids; content follows in the order given.
+        assert_eq!(block(&world, "nexora:block/air"), AIR);
+        assert_eq!(block(&world, "nexora:block/grass"), BlockStateId(3));
+        assert_eq!(world.block_id(&basalt).unwrap(), BlockStateId(4));
+        assert_eq!(world.block_id(&slate).unwrap(), BlockStateId(5));
+
+        let err = World::create_with(
+            descriptor(),
+            CalendarConfig::earthlike(),
+            &[(
+                Identifier::parse("nexora:block/stone").unwrap(),
+                BlockDefinition { solid: false },
+            )],
+        )
+        .expect_err("content cannot redefine a built-in");
+        assert!(err.to_string().contains("nexora:block/stone"), "{err}");
     }
 }

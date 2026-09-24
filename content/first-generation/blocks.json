@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "materials": [
+    "stone/granite_light.json",
+    "stone/granite_dark.json",
+    "stone/limestone.json",
+    "stone/sandstone_rocky.json",
+    "stone/slate.json",
+    "stone/basalt.json",
+    "stone/volcanic_rock.json",
+    "stone/marble_light.json",
+    "stone/marble_dark.json",
+    "stone/quartzite.json",
+    "stone/ferruginous_stone.json",
+    "stone/limestone_aged.json",
+    "stone/mossy_stone.json",
+    "stone/brittle_stone.json",
+    "stone/mountain_stone.json",
+    "stone/ancient_stone.json"
+  ],
+  "blocks": [
+    {
+      "id": "nexora:block/stone/granite_light",
+      "solid": true,
+      "surface": "nexora:material/stone/granite_light"
+    },
+    {
+      "id": "nexora:block/stone/granite_dark",
+      "solid": true,
+      "surface": "nexora:material/stone/granite_dark"
+    },
+    {
+      "id": "nexora:block/stone/limestone",
+      "solid": true,
+      "surface": "nexora:material/stone/limestone"
+    },
+    {
+      "id": "nexora:block/stone/sandstone_rocky",
+      "solid": true,
+      "surface": "nexora:material/stone/sandstone_rocky"
+    },
+    {
+      "id": "nexora:block/stone/slate",
+      "solid": true,
+      "surface": "nexora:material/stone/slate"
+    },
+    {
+      "id": "nexora:block/stone/basalt",
+      "solid": true,
+      "surface": "nexora:material/stone/basalt"
+    },
+    {
+      "id": "nexora:block/stone/volcanic_rock",
+      "solid": true,
+      "surface": "nexora:material/stone/volcanic_rock"
+    },
+    {
+      "id": "nexora:block/stone/marble_light",
+      "solid": true,
+      "surface": "nexora:material/stone/marble_light"
+    },
+    {
+      "id": "nexora:block/stone/marble_dark",
+      "solid": true,
+      "surface": "nexora:material/stone/marble_dark"
+    },
+    {
+      "id": "nexora:block/stone/quartzite",
+      "solid": true,
+      "surface": "nexora:material/stone/quartzite"
+    },
+    {
+      "id": "nexora:block/stone/ferruginous_stone",
+      "solid": true,
+      "surface": "nexora:material/stone/ferruginous_stone"
+    },
+    {
+      "id": "nexora:block/stone/limestone_aged",
+      "solid": true,
+      "surface": "nexora:material/stone/limestone_aged"
+    },
+    {
+      "id": "nexora:block/stone/mossy_stone",
+      "solid": true,
+      "surface": "nexora:material/stone/mossy_stone"
+    },
+    {
+      "id": "nexora:block/stone/brittle_stone",
+      "solid": true,
+      "surface": "nexora:material/stone/brittle_stone"
+    },
+    {
+      "id": "nexora:block/stone/mountain_stone",
+      "solid": true,
+      "surface": "nexora:material/stone/mountain_stone"
+    },
+    {
+      "id": "nexora:block/stone/ancient_stone",
+      "solid": true,
+      "surface": "nexora:material/stone/ancient_stone"
+    }
+  ]
+}

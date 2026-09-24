@@ -27,6 +27,7 @@
 //! by runtime id, so a save that came back with plausible-looking integers
 //! pointing at the wrong content still fails.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -38,6 +39,9 @@ use nexora_foundation::spatial::{BlockPos, ChunkCoord};
 use nexora_foundation::time::{CalendarConfig, TimeScale, WorldDuration, WorldTime};
 use std::path::Path;
 
+use nexora_mesh::mesh::SurfaceId;
+use nexora_mesh::mesh_region;
+use nexora_mesh::view::Extent;
 use nexora_persistence::journal::{self, Journal, SnapshotId};
 use nexora_persistence::SaveContainer;
 use nexora_physics::body::BodyDescriptor;
@@ -49,13 +53,16 @@ use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
-use nexora_simulation::{PhysicsModule, RetainedChunks, WorldResidency, WorldVoxels};
+use nexora_simulation::{
+    BlockContent, PhysicsModule, RetainedChunks, WorldResidency, WorldSurfaces, WorldVoxels,
+    UNMAPPED_SURFACE,
+};
 use nexora_streaming::budget::StreamingBudget;
 use nexora_streaming::interest::{InterestId, InterestSource, LodRadii};
 use nexora_streaming::system::StreamingSystem;
 use nexora_world::persist;
 use nexora_world::voxel::BlockStateId;
-use nexora_world::world::{World, WorldDescriptor};
+use nexora_world::world::{BlockDefinition, World, WorldDescriptor};
 
 /// How the slice should be run.
 #[derive(Debug, Clone)]
@@ -70,6 +77,13 @@ pub struct SliceConfig {
     pub worker_threads: usize,
     /// Whether to emit diagnostics to standard error.
     pub verbose: bool,
+    /// A block content document to register, place and verify, if any.
+    ///
+    /// Optional so that the slice's own numbers stay what the README records
+    /// when no content is given; with it, every content block crosses the
+    /// same save, reload and recovery boundaries as the slice's own edits,
+    /// and is checked through the mesher.
+    pub content: Option<PathBuf>,
 }
 
 impl Default for SliceConfig {
@@ -80,6 +94,7 @@ impl Default for SliceConfig {
             save_path: PathBuf::from("run/world.nxsv"),
             worker_threads: 4,
             verbose: true,
+            content: None,
         }
     }
 }
@@ -139,6 +154,10 @@ pub struct SliceReport {
     pub commands_refused: usize,
     /// Probes checked after reloading.
     pub probes_verified: usize,
+    /// Content blocks registered from the content document.
+    pub content_blocks: usize,
+    /// Distinct surfaces those blocks showed in a mesh of the placed row.
+    pub content_surfaces: usize,
     /// Lifecycle phases entered, in order.
     pub phases: Vec<&'static str>,
 }
@@ -257,9 +276,18 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     log(&diagnostics, "engine modules initialized");
 
     // --- world -------------------------------------------------------------
+    let content = config
+        .content
+        .as_deref()
+        .map(BlockContent::load)
+        .transpose()?;
+    let content_blocks = content
+        .as_ref()
+        .map(BlockContent::block_definitions)
+        .unwrap_or_default();
     let descriptor = WorldDescriptor::new("nexora-slice", config.seed)?;
     let world_id = descriptor.id.0;
-    let mut world = World::create(descriptor, CalendarConfig::earthlike())?;
+    let mut world = World::create_with(descriptor, CalendarConfig::earthlike(), &content_blocks)?;
     lifecycle.advance_to(Phase::WorldAttach)?;
     world.bring_online()?;
     lifecycle.advance_to(Phase::SimulationRunning)?;
@@ -291,7 +319,12 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     log(&diagnostics, "checkpoint taken, journal open");
 
     // --- mutation ----------------------------------------------------------
-    let probes = apply_edits(&mut world, &coords)?;
+    let content_ids: Vec<Identifier> = content_blocks.iter().map(|(id, _)| id.clone()).collect();
+    let probes = apply_edits(&mut world, &coords, &content_ids)?;
+    let content_surfaces = match &content {
+        Some(content) => verify_content_surfaces(&world, content)?,
+        None => 0,
+    };
     let blocks_edited = probes.len();
     diagnostics
         .counters()
@@ -368,7 +401,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
 
     // --- reopen and verify -------------------------------------------------
     let reopened = SaveContainer::read(&config.save_path)?;
-    let restored = persist::load(&reopened)?;
+    let restored = persist::load_with(&reopened, &content_blocks)?;
 
     if restored.clock().now() != saved_time {
         return Err(mismatch("world time did not survive the save")
@@ -410,6 +443,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         checkpoint_id,
         &journal_path,
         &probes,
+        &content_blocks,
         &diagnostics,
     )?;
     drop(journal);
@@ -439,6 +473,8 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         streaming_retained_peak: streaming.retained_peak,
         streaming_evicted: streaming.evicted,
         probes_verified: probes.len(),
+        content_blocks: content_blocks.len(),
+        content_surfaces,
         phases: lifecycle
             .history()
             .iter()
@@ -543,6 +579,7 @@ fn verify_recovery(
     checkpoint_id: SnapshotId,
     journal_path: &Path,
     probes: &[Probe],
+    content: &[(Identifier, BlockDefinition)],
     diagnostics: &Diagnostics,
 ) -> Result<usize> {
     let replay = journal::replay(journal_path, checkpoint_id)?;
@@ -552,7 +589,7 @@ fn verify_recovery(
     }
 
     let container = SaveContainer::decode(checkpoint)?;
-    let mut rebuilt = persist::load(&container)?;
+    let mut rebuilt = persist::load_with(&container, content)?;
     let report = nexora_world::recovery::apply(&mut rebuilt, &replay)?;
 
     if !report.skipped.is_empty() {
@@ -717,7 +754,60 @@ fn run_command_stage(world: World, diagnostics: &Diagnostics) -> Result<(World, 
     Ok((world, CommandOutcome { accepted, refused }))
 }
 
-fn apply_edits(world: &mut World, coords: &[ChunkCoord]) -> Result<Vec<Probe>> {
+/// Where content block `index` is placed: a row in the origin column, high
+/// enough to be above any terrain and below the slice's own top-of-world edit.
+fn content_position(index: usize) -> BlockPos {
+    let index = index as i64;
+    BlockPos::new(index % 16, CONTENT_ROW_Y, 2 + 2 * (index / 16))
+}
+
+/// The height of the content row.
+const CONTENT_ROW_Y: i64 = 220;
+
+/// Mesh the placed content row and require every content block to show its
+/// own surface: none unmapped, none sharing, none missing from the mesh.
+fn verify_content_surfaces(world: &World, content: &BlockContent) -> Result<usize> {
+    let materials = content.material_registry()?;
+    let table = content.surface_table(world, &materials)?;
+    let expected: BTreeSet<SurfaceId> = content
+        .blocks()
+        .iter()
+        .map(|block| {
+            let state = world.block_id(&block.id)?;
+            table
+                .surface_of(state.0)
+                .filter(|surface| *surface != UNMAPPED_SURFACE)
+                .ok_or_else(|| {
+                    mismatch("a content block has no surface")
+                        .with_context("block", block.id.to_string())
+                })
+        })
+        .collect::<Result<_>>()?;
+    if expected.len() != content.blocks().len() {
+        return Err(mismatch("two content blocks share a surface")
+            .with_context("blocks", content.blocks().len().to_string())
+            .with_context("surfaces", expected.len().to_string()));
+    }
+
+    let rows = content.blocks().len().div_ceil(16) as u32;
+    let extent = Extent::new(
+        BlockPos::new(0, CONTENT_ROW_Y - 1, 1),
+        [16, 3, 2 * rows + 1],
+    )?;
+    let mesh = mesh_region(&WorldSurfaces::new(world, table), extent);
+    let shown: BTreeSet<SurfaceId> = mesh.quads.iter().map(|quad| quad.surface).collect();
+    if let Some(missing) = expected.iter().find(|surface| !shown.contains(surface)) {
+        return Err(mismatch("a placed content block did not reach the mesh")
+            .with_context("surface", missing.0.to_string()));
+    }
+    Ok(expected.len())
+}
+
+fn apply_edits(
+    world: &mut World,
+    coords: &[ChunkCoord],
+    content: &[Identifier],
+) -> Result<Vec<Probe>> {
     let air = Identifier::parse("nexora:block/air")?;
     let stone = Identifier::parse("nexora:block/stone")?;
     let grass = Identifier::parse("nexora:block/grass")?;
@@ -746,6 +836,11 @@ fn apply_edits(world: &mut World, coords: &[ChunkCoord]) -> Result<Vec<Probe>> {
     }
     // The very top of the world, in the origin column.
     edits.push((BlockPos::new(0, bounds.max_y, 0), &grass));
+    // Every content block, in a row in the origin column. Probes like the
+    // rest, so each one must survive the save, the reload and the journal.
+    for (index, identifier) in content.iter().enumerate() {
+        edits.push((content_position(index), identifier));
+    }
 
     let mut probes = Vec::with_capacity(edits.len());
     for (position, identifier) in edits {
@@ -826,6 +921,12 @@ pub fn format_report(report: &SliceReport) -> String {
         "chunks retained    {} (peak, edits that cannot be regenerated)\n",
         report.streaming_retained_peak
     ));
+    if report.content_blocks > 0 {
+        out.push_str(&format!(
+            "content blocks     {} ({} surfaces in the mesh)\n",
+            report.content_blocks, report.content_surfaces
+        ));
+    }
     out.push_str(&format!("probes verified    {}\n", report.probes_verified));
     out.push_str(&format!("lifecycle phases   {}\n", report.phases.len()));
     out.push_str(&format!(

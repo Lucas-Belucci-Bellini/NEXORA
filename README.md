@@ -70,7 +70,14 @@ proof that streaming evicted 120 columns without losing an edit.
 
 ```bash
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
+cargo run -p nexora-headless -- --content content/first-generation/blocks.json
 ```
+
+The second run adds the first visual generation — the sixteen 16×16 stones of
+[`content/first-generation/`](content/first-generation/CATALOG.md) — as blocks,
+through the same content path a mod would use. Each one must show its own
+surface in a mesh and survive the save, the reload and the journal replay, or
+the run fails: `content blocks 16 (16 surfaces in the mesh)`, `probes verified 92`.
 
 ## Measuring it
 
