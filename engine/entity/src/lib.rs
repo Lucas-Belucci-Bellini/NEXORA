@@ -36,6 +36,7 @@
 pub mod components;
 pub mod events;
 pub mod id;
+pub mod index;
 pub mod persist;
 pub mod query;
 pub mod store;
@@ -43,5 +44,6 @@ pub mod store;
 pub use components::{Bounds, Lifecycle, PersistencePolicy, TagSet, Transform, Velocity};
 pub use events::{EntityDespawned, EntitySpawned};
 pub use id::{EntityId, EntityTypeId, PersistentEntityId};
+pub use index::{CellCoord, CellRect, SpatialIndex};
 pub use query::{EntityFilter, Nearby, Query};
 pub use store::{EntityStore, SpawnContext, SpawnReason};

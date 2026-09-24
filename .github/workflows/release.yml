@@ -1,0 +1,183 @@
+name: release
+
+# Builds the downloadable archives and publishes them as a GitHub Release.
+#
+# `NEXORA BUILD CI AND RELEASE ARCHITECTURE.md` asks that a release be
+# reproducible and verifiable rather than a file someone uploaded. Two rules
+# follow from that and are enforced here:
+#
+#   1. **Nothing is published that was not run.** Every platform runs the
+#      vertical slice against the exact binary it is about to package, and the
+#      slice exits non-zero if the world does not survive its own save. A build
+#      that compiles and cannot run is the failure this catches.
+#   2. **Every archive ships its checksum**, and the release carries one
+#      SHA256SUMS covering all of them, so a download can be verified without
+#      trusting the page that linked it.
+#
+# Cutting a release is `git tag vX.Y.Z && git push origin vX.Y.Z`; see
+# `docs/RELEASING.md`. `workflow_dispatch` runs everything except the publish,
+# so the pipeline can be exercised without creating a tag — but only once this
+# file is on the default branch, because that is the only place GitHub looks for
+# dispatchable workflows. Until then this has never run; see `docs/RELEASING.md`.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# The publish job needs to create a release; nothing else writes.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            runner: ubuntu-latest
+            archive: tar
+          - label: windows-x86_64
+            runner: windows-latest
+            archive: zip
+          - label: macos-aarch64
+            runner: macos-latest
+            archive: tar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ matrix.label }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (release)
+        run: cargo build --workspace --release
+
+      # Rule 1: run what is about to be packaged. The slice returns non-zero
+      # unless the world it built comes back intact from its own save.
+      - name: Run the vertical slice against the binary being shipped
+        shell: bash
+        run: |
+          ./target/release/nexora-headless --radius 2 \
+            --save "${RUNNER_TEMP}/release-world.nxsv"
+
+      - name: Check the tools start and answer
+        shell: bash
+        run: |
+          ./target/release/nexora-benchmark --smoke \
+            --scratch "${RUNNER_TEMP}/bench" > /dev/null
+          ./target/release/nexora-texture-forge generate \
+            content/materials/stone_rough.json \
+            --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE > /dev/null
+
+      - name: Stage the archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # workflow_dispatch has no tag; name the artifact after the commit so
+          # a dry run is never mistaken for a release build.
+          case "${GITHUB_REF_TYPE}" in
+            tag) ;;
+            *) version="0.0.0-dev+${GITHUB_SHA::7}" ;;
+          esac
+          stem="nexora-${version}-${{ matrix.label }}"
+          echo "NEXORA_STEM=${stem}" >> "${GITHUB_ENV}"
+
+          mkdir -p "staging/${stem}"
+          suffix=""
+          [ "${{ matrix.archive }}" = "zip" ] && suffix=".exe"
+          for binary in nexora-headless nexora-benchmark nexora-texture-forge; do
+            cp "target/release/${binary}${suffix}" "staging/${stem}/"
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE "staging/${stem}/"
+          # The definitions the texture forge reads, so the tool in the archive
+          # has something to generate from without cloning the repository.
+          cp -r content "staging/${stem}/content"
+
+      - name: Pack and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd staging
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            archive="${NEXORA_STEM}.zip"
+            7z a -tzip "${archive}" "${NEXORA_STEM}" > /dev/null
+          else
+            archive="${NEXORA_STEM}.tar.gz"
+            tar -czf "${archive}" "${NEXORA_STEM}"
+          fi
+          # shasum is present on every runner; sha256sum is not (macOS).
+          shasum -a 256 "${archive}" > "${archive}.sha256"
+          cat "${archive}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: |
+            staging/*.tar.gz
+            staging/*.zip
+            staging/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only a tag publishes. A dispatch run has proved the pipeline and stops.
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect the archives and one SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+            -exec cp {} release/ \;
+          # One file covering every archive, so `shasum -c SHA256SUMS` verifies
+          # the whole release rather than one download at a time.
+          find artifacts -type f -name '*.sha256' -exec cat {} + \
+            | sed 's#  .*/#  #' | sort -k2 > release/SHA256SUMS
+          cat release/SHA256SUMS
+          test -s release/SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The preamble says what the archives are and how to verify them,
+          # which is the same every release; `--generate-notes` appends what
+          # actually changed. `--verify-tag` refuses to invent a tag that the
+          # repository does not have.
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "NEXORA ${GITHUB_REF_NAME}" \
+            --notes-file docs/release-preamble.md \
+            --generate-notes \
+            --verify-tag

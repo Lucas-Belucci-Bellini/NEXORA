@@ -378,6 +378,57 @@ pub struct License {
     pub commercial_use_allowed: bool,
 }
 
+/// How the pixels are produced.
+///
+/// The three from the brief §4. This is recorded rather than inferred: an
+/// asset's origin must be answerable without reading the generator's source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Backend {
+    /// An algorithm, from parameters. Reproducible from the trace alone.
+    Procedural,
+    /// A model. Reproducible only as far as the model is.
+    Ai,
+    /// A model's output shaped by an algorithm, or the reverse.
+    Hybrid,
+}
+
+impl Backend {
+    /// Every backend, in a stable order.
+    pub const ALL: [Self; 3] = [Self::Procedural, Self::Ai, Self::Hybrid];
+
+    /// Stable lowercase name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Procedural => "procedural",
+            Self::Ai => "ai",
+            Self::Hybrid => "hybrid",
+        }
+    }
+
+    /// Parse the stable name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is not a known backend.
+    pub fn parse(raw: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|backend| backend.as_str() == raw)
+            .ok_or_else(|| rule("backend is not recognised").with_context("value", raw.to_owned()))
+    }
+
+    /// Whether output from this backend is reproducible from its trace alone.
+    ///
+    /// Only the procedural one is. Recording that difference is what stops a
+    /// model's output being treated as though re-running the tool would bring
+    /// it back.
+    #[must_use]
+    pub const fn is_reproducible_from_trace(self) -> bool {
+        matches!(self, Self::Procedural)
+    }
+}
+
 /// How a generated asset was produced.
 ///
 /// Answers the question the brief marks as the important one: *"how was this
@@ -387,6 +438,14 @@ pub struct License {
 pub struct GenerationTrace {
     /// Which generator ran, e.g. `nexora:generator/procedural`.
     pub generator: Identifier,
+    /// How it produced the pixels.
+    ///
+    /// A field rather than an entry in [`Self::parameters`], because
+    /// [`Backend::is_reproducible_from_trace`] decides whether this record is
+    /// enough to rebuild the asset, and whether the asset may ship without a
+    /// person looking at it. A fact that load-bearing is not a string in a map
+    /// that any generator may forget to write.
+    pub backend: Backend,
     /// That generator's algorithm version.
     pub generator_version: ContentGeneratorVersion,
     /// Which pipeline transformed its output, if any.
@@ -418,6 +477,7 @@ impl GenerationTrace {
     ) -> Self {
         Self {
             generator,
+            backend: Backend::Procedural,
             generator_version,
             pipeline: None,
             pipeline_version: None,

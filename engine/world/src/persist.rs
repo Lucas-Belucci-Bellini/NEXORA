@@ -40,7 +40,7 @@ const TAG_PALETTED: u8 = 1;
 /// Storage tag for a direct section.
 const TAG_DIRECT: u8 = 2;
 
-fn section_id(raw: &str) -> Result<Identifier> {
+pub(crate) fn section_id(raw: &str) -> Result<Identifier> {
     Identifier::parse(raw)
 }
 
@@ -104,7 +104,7 @@ pub fn load(container: &SaveContainer) -> Result<World> {
     Ok(world)
 }
 
-fn encode_header(world: &World) -> Vec<u8> {
+pub(crate) fn encode_header(world: &World) -> Vec<u8> {
     let descriptor = world.descriptor();
     let calendar = world.clock().calendar();
     let shape = descriptor.shape;
@@ -130,7 +130,7 @@ fn encode_header(world: &World) -> Vec<u8> {
     out.finish()
 }
 
-fn decode_header(bytes: &[u8]) -> Result<(WorldDescriptor, CalendarConfig, WorldTime)> {
+pub(crate) fn decode_header(bytes: &[u8]) -> Result<(WorldDescriptor, CalendarConfig, WorldTime)> {
     let mut reader = Reader::new(bytes);
 
     let id = WorldId(reader.u64()?);
@@ -169,7 +169,7 @@ fn decode_header(bytes: &[u8]) -> Result<(WorldDescriptor, CalendarConfig, World
     ))
 }
 
-fn encode_palette(world: &World) -> Result<Vec<u8>> {
+pub(crate) fn encode_palette(world: &World) -> Result<Vec<u8>> {
     let entries = world.blocks().len();
     let mut out = Writer::new();
     out.u32(entries as u32);
@@ -190,7 +190,7 @@ fn encode_palette(world: &World) -> Result<Vec<u8>> {
     Ok(out.finish())
 }
 
-fn decode_palette(bytes: &[u8]) -> Result<Vec<Identifier>> {
+pub(crate) fn decode_palette(bytes: &[u8]) -> Result<Vec<Identifier>> {
     let mut reader = Reader::new(bytes);
     let count = reader.u32()?;
     let mut palette = Vec::with_capacity(count as usize);
@@ -202,16 +202,34 @@ fn decode_palette(bytes: &[u8]) -> Result<Vec<Identifier>> {
 }
 
 fn encode_chunks(world: &World) -> Vec<u8> {
-    let coords = world.loaded_chunks();
-    let mut out = Writer::new();
-    out.u32(coords.len() as u32);
+    encode_chunks_of(world, &world.loaded_chunks())
+}
 
-    for coord in coords {
-        let Some(chunk) = world.chunk(coord) else {
-            continue;
-        };
-        out.i64(coord.x);
-        out.i64(coord.z);
+/// Encode exactly the named columns, in the order given.
+///
+/// The whole-world encoder is this one over every resident column, so a region
+/// file and a single-container save write chunk data through the same code and
+/// cannot drift into two formats.
+pub(crate) fn encode_chunks_of(world: &World, coords: &[ChunkCoord]) -> Vec<u8> {
+    // Resolve before counting. Writing a count and then skipping an absent
+    // column would declare more chunks than the section carries, which the
+    // reader would meet as a truncated stream rather than as a missing chunk.
+    let present: Vec<&Chunk> = coords.iter().filter_map(|&c| world.chunk(c)).collect();
+    encode_chunks_from(&present)
+}
+
+/// Encode chunks that are held directly, rather than looked up in a world.
+///
+/// A region file being merged holds columns the world does not: they were
+/// evicted, which is why they are on disk. Both encoders are this one, so the
+/// two paths cannot drift into two formats.
+pub(crate) fn encode_chunks_from(chunks: &[&Chunk]) -> Vec<u8> {
+    let mut out = Writer::new();
+    out.u32(chunks.len() as u32);
+
+    for &chunk in chunks {
+        out.i64(chunk.coord().x);
+        out.i64(chunk.coord().z);
 
         let indices = chunk.section_indices();
         out.u32(indices.len() as u32);
@@ -254,7 +272,11 @@ fn encode_chunks(world: &World) -> Vec<u8> {
     out.finish()
 }
 
-fn decode_chunks(bytes: &[u8], shape: ChunkShape, remap: &[BlockStateId]) -> Result<Vec<Chunk>> {
+pub(crate) fn decode_chunks(
+    bytes: &[u8],
+    shape: ChunkShape,
+    remap: &[BlockStateId],
+) -> Result<Vec<Chunk>> {
     let translate = |saved: BlockStateId| -> Result<BlockStateId> {
         remap.get(saved.0 as usize).copied().ok_or_else(|| {
             Error::new(
@@ -336,7 +358,9 @@ fn decode_chunks(bytes: &[u8], shape: ChunkShape, remap: &[BlockStateId]) -> Res
         // A chunk read from storage starts life already loaded and clean.
         chunk.force_state(ChunkState::Loaded);
         chunk.mark_clean();
-        chunk.take_journal();
+        // Not `take_journal`: these entries describe how the chunk was rebuilt
+        // from the save, not what happened to the world. Nothing consumes them.
+        chunk.clear_journal();
         chunks.push(chunk);
     }
 

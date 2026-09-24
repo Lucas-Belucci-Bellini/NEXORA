@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "name": "temperate forest",
+  "namespace": "nexora",
+  "prefix": "temperate_forest",
+  "author": "operator",
+  "seed": "0x7f0235e1",
+  "defaults": {
+    "resolution": { "width": 64, "height": 64 },
+    "physical_scale": { "metres_per_tile": 1.0 },
+    "seamless": true,
+    "blend": "opaque",
+    "pbr": {
+      "metallic": 0.0,
+      "roughness": 0.85,
+      "normal_strength": 1.0,
+      "height_strength": 1.0
+    },
+    "maps": ["normal", "roughness", "height", "ambient_occlusion"]
+  },
+  "materials": [
+    {
+      "name": "oak_bark",
+      "category": "wood",
+      "notes": "vertical strips, deep grooves; the bark reading of the wood recipe"
+    },
+    {
+      "name": "oak_plank",
+      "category": "wood",
+      "pbr": { "roughness": 0.7 }
+    },
+    {
+      "name": "forest_soil",
+      "category": "soil"
+    },
+    {
+      "name": "mossy_stone",
+      "category": "stone",
+      "pbr": { "roughness": 0.95 }
+    },
+    {
+      "name": "granite",
+      "category": "stone",
+      "pbr": { "roughness": 0.6 }
+    },
+    {
+      "name": "clay_brick",
+      "category": "brick",
+      "resolution": { "width": 128, "height": 128 }
+    },
+    {
+      "name": "leaf_canopy",
+      "category": "vegetation",
+      "blend": "cutout",
+      "pbr": { "roughness": 0.9 }
+    },
+    {
+      "name": "iron_plate",
+      "category": "metal",
+      "pbr": { "metallic": 1.0, "roughness": 0.35 }
+    }
+  ]
+}

@@ -73,11 +73,35 @@ pub trait VoxelSource {
     fn is_solid(&self, position: BlockPos) -> bool {
         self.shape_at(position).is_solid()
     }
+
+    /// A value that changes whenever any answer this source gives could have
+    /// changed, or `None` when the source cannot say.
+    ///
+    /// It exists so a caller can remember that a region was clear instead of
+    /// re-proving it every step. Two rules make that safe:
+    ///
+    /// * **`None` is the default**, and it means "assume everything changed".
+    ///   A source that does not opt in behaves exactly as it did before this
+    ///   method existed — every check runs, every step.
+    /// * **Bumping too often is free; bumping too rarely is a defect.** A
+    ///   source that moves the value when nothing changed costs a skipped
+    ///   optimisation. One that fails to move it when a cell changed lets a
+    ///   body stand inside a block that appeared around it.
+    ///
+    /// So the safe direction is the lazy one, and the dangerous direction
+    /// requires deliberately implementing this method and being wrong.
+    fn revision(&self) -> Option<u64> {
+        None
+    }
 }
 
 impl<T: VoxelSource + ?Sized> VoxelSource for &T {
     fn shape_at(&self, position: BlockPos) -> VoxelShape {
         (**self).shape_at(position)
+    }
+
+    fn revision(&self) -> Option<u64> {
+        (**self).revision()
     }
 }
 
