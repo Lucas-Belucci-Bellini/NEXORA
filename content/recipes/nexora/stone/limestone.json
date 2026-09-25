@@ -1,0 +1,28 @@
+{
+  "category": "stone",
+  "contrast": 1.8,
+  "courses": null,
+  "id": "nexora:recipe/stone/limestone",
+  "levels": 4,
+  "mottle": {
+    "cells_x": 3,
+    "cells_y": 3,
+    "cracks": 0.0,
+    "octaves": 3,
+    "strength": 0.8
+  },
+  "ramp": [
+    "#b9b19a",
+    "#c9c2ab",
+    "#d8d2bd",
+    "#e5e0cd"
+  ],
+  "relief": 0.35,
+  "schema": 1,
+  "speckle": {
+    "cells": 8,
+    "contrast": 0.18,
+    "density": 0.1
+  },
+  "strips": null
+}

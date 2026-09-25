@@ -19,6 +19,7 @@
 //! | [`time`] | `TIME AND CALENDAR SYSTEM.md` - the authoritative world clock |
 //! | [`rng`] | `NEXORA WORLD GENERATION SEED AND REPRODUCIBILITY.md` - determinism |
 //! | [`diagnostics`] | `DIAGNOSTICS AND OBSERVABILITY.md` - structured telemetry |
+//! | [`memory`] | `NEXORA MEMORY AND RESOURCE OWNERSHIP.md` - budgets per pool |
 //! | [`config`] | `CONFIGURATION AND SETTINGS SYSTEM.md` - layered settings |
 //!
 //! ## What does not live here
@@ -32,6 +33,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod hashing;
 pub mod ident;
+pub mod memory;
 pub mod rng;
 pub mod spatial;
 pub mod time;

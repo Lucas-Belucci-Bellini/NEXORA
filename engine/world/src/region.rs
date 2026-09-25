@@ -40,6 +40,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
+use nexora_foundation::ident::Identifier;
 use nexora_foundation::spatial::{ChunkCoord, RegionCoord, RegionShape};
 use nexora_persistence::codec::{Reader, Writer};
 use nexora_persistence::SaveContainer;
@@ -47,7 +48,7 @@ use nexora_persistence::SaveContainer;
 use crate::chunk::Chunk;
 use crate::persist::{self, SECTION_BLOCK_PALETTE, SECTION_CHUNKS, SECTION_WORLD_HEADER};
 use crate::voxel::BlockStateId;
-use crate::world::World;
+use crate::world::{BlockDefinition, World};
 
 /// File name of the world header inside a region store.
 pub const HEADER_FILE: &str = "world.nxsv";
@@ -223,12 +224,26 @@ impl RegionStore {
     /// file fails verification, or when a region names block content this
     /// build does not register.
     pub fn read(&self) -> Result<World> {
+        self.read_with(&[])
+    }
+
+    /// [`RegionStore::read`], with block content registered.
+    ///
+    /// The region-store twin of `persist::load_with` (ADR-0020): content
+    /// enters through the same door on every load path, or a world that
+    /// saves stones as regions could not read them back.
+    ///
+    /// # Errors
+    ///
+    /// See [`RegionStore::read`]; a block the regions name that neither the
+    /// built-ins nor `content` register is refused by name.
+    pub fn read_with(&self, content: &[(Identifier, BlockDefinition)]) -> Result<World> {
         let header = SaveContainer::read(&self.header_path())?;
         header.compatibility()?;
         self.compare_shape(&header)?;
         let (descriptor, calendar, now) =
             persist::decode_header(header.require(&persist::section_id(SECTION_WORLD_HEADER)?)?)?;
-        let mut world = World::resumed(descriptor, calendar, now)?;
+        let mut world = World::resumed_with(descriptor, calendar, now, content)?;
 
         for region in self.regions_on_disk()? {
             for chunk in self.read_region(&world, region)? {
@@ -1018,6 +1033,40 @@ mod tests {
         assert!(
             write_error.to_string().contains("extent"),
             "got: {write_error}"
+        );
+    }
+
+    #[test]
+    fn content_blocks_read_back_from_regions_and_their_absence_is_named() {
+        let basalt = Identifier::parse("nexora:block/stone/basalt").unwrap();
+        let content = [(basalt.clone(), BlockDefinition { solid: true })];
+        let mut world = World::create_with(
+            WorldDescriptor::new("region-content", 3).unwrap(),
+            CalendarConfig::earthlike(),
+            &content,
+        )
+        .unwrap();
+        world.bring_online().unwrap();
+        world.load_or_generate(ChunkCoord::new(0, 0)).unwrap();
+        let state = world.block_id(&basalt).unwrap();
+        let at = BlockPos::new(3, 100, 3);
+        world.set_block(at, state).unwrap();
+
+        let dir = TempDir::new("content");
+        let store = RegionStore::with_shape(&dir.0, small_regions());
+        store.write_all(&mut world).unwrap();
+
+        let reopened = store.read_with(&content).expect("the content is present");
+        assert_eq!(
+            reopened.get_block(at).unwrap(),
+            reopened.block_id(&basalt).unwrap()
+        );
+
+        // A build without the content refuses by name, as `persist::load` does.
+        let err = store.read().expect_err("basalt is not a built-in");
+        assert!(
+            err.to_string().contains("nexora:block/stone/basalt"),
+            "{err}"
         );
     }
 }

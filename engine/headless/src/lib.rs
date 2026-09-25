@@ -15,6 +15,7 @@
 //!   -> save
 //!   -> shut down in reverse order
 //!   -> reopen, load, and verify the state survived
+//!   -> check every memory pool at rest: none over its ceiling, none leaking
 //! ```
 //!
 //! **There is no window and no renderer here, by design.** The RHI boundary is
@@ -27,6 +28,7 @@
 //! by runtime id, so a save that came back with plausible-looking integers
 //! pointing at the wrong content still fails.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -35,36 +37,53 @@ use std::time::{Duration, Instant};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, Record, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
+use nexora_foundation::memory::{
+    MemoryBudget, MemoryClass, MemoryLedger, MemoryPool, MemoryReport, PoolSpec, Pressure,
+};
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, RegionShape};
 use nexora_foundation::time::{
     CalendarConfig, TimeScale, WorldDuration, WorldTime, DEFAULT_TICKS_PER_SECOND,
 };
 use std::path::Path;
 
+use nexora_asset::texture::MapRole;
+use nexora_command::identity::{Actor, Source};
+use nexora_foundation::version::QueryVersion;
+use nexora_image::TextureLoader;
+use nexora_mesh::mesh::SurfaceId;
+use nexora_mesh::mesh_region;
+use nexora_mesh::view::Extent;
 use nexora_persistence::journal::{self, Journal, SnapshotId};
 use nexora_persistence::SaveContainer;
 use nexora_physics::body::BodyDescriptor;
 use nexora_physics::collision::overlaps_solid;
 use nexora_physics::math::Vec3;
 use nexora_physics::world::PhysicsWorld;
+use nexora_query::{QueryRequest, QueryService, QueryStats};
+use nexora_resource::ResourceManager;
 use nexora_runtime::frame::{FrameBudget, FrameLoop, FrameSchedule, FrameStage};
 use nexora_runtime::input::{
     ActionDefinition, ActionKind, AxisTuning, Binding, ButtonCode, DeviceId, DeviceKind,
-    InputFrame, InputSystem, ResponseCurve, Signal, Source,
+    InputFrame, InputSystem, ResponseCurve, Signal, Source as InputSource,
 };
 use nexora_runtime::jobs::{CancellationToken, JobOutcome, JobSystem, Priority};
 use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
-use nexora_simulation::{PhysicsModule, RetainedChunks, WorldResidency, WorldVoxels};
+use nexora_simulation::queries::WORLD_QUERY_VERSION;
+use nexora_simulation::WorldQueries;
+use nexora_simulation::{
+    BlockContent, PhysicsModule, RetainedChunks, WorldResidency, WorldSurfaces, WorldVoxels,
+    UNMAPPED_SURFACE,
+};
 use nexora_streaming::budget::StreamingBudget;
 use nexora_streaming::interest::{InterestId, InterestSource, LodRadii};
 use nexora_streaming::system::StreamingSystem;
 use nexora_world::persist;
 use nexora_world::region::RegionStore;
 use nexora_world::voxel::BlockStateId;
-use nexora_world::world::{World, WorldDescriptor};
+use nexora_world::world::{BlockDefinition, World, WorldDescriptor};
 
 /// How the slice should be run.
 #[derive(Debug, Clone)]
@@ -79,6 +98,17 @@ pub struct SliceConfig {
     pub worker_threads: usize,
     /// Whether to emit diagnostics to standard error.
     pub verbose: bool,
+    /// A block content document to register, place and verify, if any.
+    ///
+    /// Optional so that the slice's own numbers stay what the README records
+    /// when no content is given; with it, every content block crosses the
+    /// same save, reload and recovery boundaries as the slice's own edits,
+    /// and is checked through the mesher.
+    pub content: Option<PathBuf>,
+    /// A resource root (with its `resources.json`) holding the content's
+    /// textures, if any. Requires `content`: every content block's texture is
+    /// then resolved by identifier, verified against the index and decoded.
+    pub resources: Option<PathBuf>,
 }
 
 impl Default for SliceConfig {
@@ -89,6 +119,8 @@ impl Default for SliceConfig {
             save_path: PathBuf::from("run/world.nxsv"),
             worker_threads: 4,
             verbose: true,
+            content: None,
+            resources: None,
         }
     }
 }
@@ -180,6 +212,19 @@ pub struct SliceReport {
     pub commands_refused: usize,
     /// Probes checked after reloading.
     pub probes_verified: usize,
+    /// Queries answered: every probe is read back through `nexora:block_at`.
+    pub queries_answered: u64,
+    /// Queries refused. Non-zero on purpose, like `commands_refused`.
+    pub queries_refused: u64,
+    /// Content blocks registered from the content document.
+    pub content_blocks: usize,
+    /// Distinct surfaces those blocks showed in a mesh of the placed row.
+    pub content_surfaces: usize,
+    /// Content textures resolved, verified and decoded through the resource
+    /// system.
+    pub content_textures: usize,
+    /// Every memory pool the slice opened, at the end of the run.
+    pub memory: MemoryReport,
     /// Lifecycle phases entered, in order.
     pub phases: Vec<&'static str>,
 }
@@ -298,9 +343,18 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     log(&diagnostics, "engine modules initialized");
 
     // --- world -------------------------------------------------------------
+    let content = config
+        .content
+        .as_deref()
+        .map(BlockContent::load)
+        .transpose()?;
+    let content_blocks = content
+        .as_ref()
+        .map(BlockContent::block_definitions)
+        .unwrap_or_default();
     let descriptor = WorldDescriptor::new("nexora-slice", config.seed)?;
     let world_id = descriptor.id.0;
-    let mut world = World::create(descriptor, CalendarConfig::earthlike())?;
+    let mut world = World::create_with(descriptor, CalendarConfig::earthlike(), &content_blocks)?;
     lifecycle.advance_to(Phase::WorldAttach)?;
     world.bring_online()?;
     lifecycle.advance_to(Phase::SimulationRunning)?;
@@ -311,9 +365,11 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         .flat_map(|x| (-config.radius..=config.radius).map(move |z| ChunkCoord::new(x, z)))
         .collect();
     let chunks_generated = coords.len();
+    let memory = SliceMemory::open(chunks_generated as u64, config.resources.is_some())?;
 
     let generated = generate_in_parallel(world, &coords, config.worker_threads, &diagnostics)?;
     world = generated;
+    memory.world.record(world.storage_bytes() as u64);
     diagnostics
         .counters()
         .add("chunks.generated", chunks_generated as u64);
@@ -332,7 +388,28 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     log(&diagnostics, "checkpoint taken, journal open");
 
     // --- mutation ----------------------------------------------------------
-    let probes = apply_edits(&mut world, &coords)?;
+    let content_ids: Vec<Identifier> = content_blocks.iter().map(|(id, _)| id.clone()).collect();
+    let probes = apply_edits(&mut world, &coords, &content_ids)?;
+    memory.world.record(world.storage_bytes() as u64);
+    let content_surfaces = match &content {
+        Some(content) => verify_content_surfaces(&world, content)?,
+        None => 0,
+    };
+    let content_textures = match (&content, &config.resources) {
+        (Some(content), Some(root)) => {
+            let pool = memory
+                .textures
+                .as_ref()
+                .ok_or_else(|| mismatch("the texture pool was not opened"))?;
+            load_content_textures(content, root, pool, &diagnostics)?
+        }
+        (None, Some(_)) => {
+            return Err(mismatch(
+                "a resource root was given without content to look up",
+            ))
+        }
+        _ => 0,
+    };
     let blocks_edited = probes.len();
     diagnostics
         .counters()
@@ -366,7 +443,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     // walk touches is regenerable except the columns edited above, so this is
     // where "logical identity survives eviction" either holds or does not - and
     // the reload verification at the end of the slice is what checks it.
-    let streaming = stream_a_walk(&mut world, config, &diagnostics)?;
+    let streaming = stream_a_walk(&mut world, config, &memory, &diagnostics)?;
     diagnostics
         .counters()
         .add("streaming.generated", streaming.generated);
@@ -378,6 +455,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     let ticks_advanced = world.clock().now().since(before).ticks();
 
     let storage_bytes = world.storage_bytes();
+    memory.world.record(storage_bytes as u64);
     let non_air_blocks: u64 = world
         .loaded_chunks()
         .iter()
@@ -419,11 +497,13 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     modules.shutdown_all(&module_context);
     lifecycle.advance_through(Phase::ProcessExit)?;
     drop(world);
+    memory.world.record(0);
     log(&diagnostics, "runtime shut down");
 
     // --- reopen and verify -------------------------------------------------
     let reopened = SaveContainer::read(&config.save_path)?;
-    let mut restored = persist::load(&reopened)?;
+    let mut restored = persist::load_with(&reopened, &content_blocks)?;
+    memory.world.record(restored.storage_bytes() as u64);
 
     if restored.clock().now() != saved_time {
         return Err(mismatch("world time did not survive the save")
@@ -439,12 +519,29 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         return Err(mismatch("world identity did not survive the save"));
     }
 
+    // Read back through the query contract, as any other system would: the
+    // slice is a consumer of the world like the rest, not a privileged one.
+    let mut query_service = QueryService::new()?;
+    let world_queries = WorldQueries::register(&mut query_service)?;
+    query_service.freeze();
+    let server = Actor::server();
     for probe in &probes {
-        let found = restored.get_block(probe.position)?;
-        let found_id = restored.block_identifier(found).ok_or_else(|| {
-            mismatch("a restored block state has no registered identifier")
-                .with_context("position", describe(probe.position))
-        })?;
+        let found_id = query_service
+            .ask(
+                &world_queries.block_at,
+                &restored,
+                &QueryRequest {
+                    actor: &server,
+                    source: Source::Local,
+                    version: WORLD_QUERY_VERSION,
+                    input: probe.position,
+                },
+            )
+            .map_err(|failure| {
+                mismatch("a probe could not be read back through the query contract")
+                    .with_context("position", describe(probe.position))
+                    .with_context("failure", failure.to_string())
+            })?;
         if found_id != probe.expected {
             return Err(mismatch("a block changed across the save/load boundary")
                 .with_context("position", describe(probe.position))
@@ -452,6 +549,42 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
                 .with_context("found", found_id.to_string()));
         }
     }
+    // Two questions the contract must turn away, for the reason the command
+    // stage refuses three: a gate only ever shown opening has not been shown
+    // to close. A player asking to scan far more than a query may, and a
+    // client built against a version of the contract that does not exist.
+    let player = Actor::player(1);
+    let refusals = [
+        query_service
+            .ask(
+                &world_queries.blocks_in_region,
+                &restored,
+                &QueryRequest {
+                    actor: &player,
+                    source: Source::Network,
+                    version: WORLD_QUERY_VERSION,
+                    input: (BlockPos::new(0, 0, 0), BlockPos::new(63, 63, 63)),
+                },
+            )
+            .err(),
+        query_service
+            .ask(
+                &world_queries.world_time,
+                &restored,
+                &QueryRequest {
+                    actor: &player,
+                    source: Source::Network,
+                    version: QueryVersion(WORLD_QUERY_VERSION.0 + 1),
+                    input: (),
+                },
+            )
+            .err(),
+    ];
+    if refusals.iter().any(Option::is_none) {
+        return Err(mismatch("a query that must be refused was answered"));
+    }
+    let query_stats = query_service.stats();
+    query_service.publish(diagnostics.counters(), QueryStats::default());
     log(&diagnostics, "reload verified");
 
     // --- region store --------------------------------------------------------
@@ -459,7 +592,13 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     // of one file for everything, so a save can leave alone what did not move.
     // Run on the world just read back, which is clean, so "nothing is dirty" is
     // a fact about the world rather than an arrangement of the stage.
-    let regions = region_stage(&mut restored, config, &probes, &diagnostics)?;
+    let regions = region_stage(
+        &mut restored,
+        config,
+        &probes,
+        &content_blocks,
+        &diagnostics,
+    )?;
     log(&diagnostics, "region store verified");
 
     // --- recovery ------------------------------------------------------------
@@ -473,10 +612,17 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         checkpoint_id,
         &journal_path,
         &probes,
+        &content_blocks,
         &diagnostics,
     )?;
     drop(journal);
     log(&diagnostics, "recovery verified");
+
+    // --- memory --------------------------------------------------------------
+    // Every stage is over, so this is a point at rest: what must have drained
+    // has to have drained, and no pool may have gone over its ceiling.
+    let memory = memory.verify()?;
+    log(&diagnostics, "memory budgets held");
 
     Ok(SliceReport {
         world_id,
@@ -514,6 +660,12 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         streaming_region_writes: streaming.region_writes,
         streaming_read_back: streaming.read_back,
         probes_verified: probes.len(),
+        queries_answered: query_stats.answered,
+        queries_refused: query_stats.refused,
+        content_blocks: content_blocks.len(),
+        content_surfaces,
+        content_textures,
+        memory,
         phases: lifecycle
             .history()
             .iter()
@@ -621,6 +773,7 @@ fn verify_recovery(
     checkpoint_id: SnapshotId,
     journal_path: &Path,
     probes: &[Probe],
+    content: &[(Identifier, BlockDefinition)],
     diagnostics: &Diagnostics,
 ) -> Result<usize> {
     let replay = journal::replay(journal_path, checkpoint_id)?;
@@ -630,7 +783,7 @@ fn verify_recovery(
     }
 
     let container = SaveContainer::decode(checkpoint)?;
-    let mut rebuilt = persist::load(&container)?;
+    let mut rebuilt = persist::load_with(&container, content)?;
     let report = nexora_world::recovery::apply(&mut rebuilt, &replay)?;
 
     if !report.skipped.is_empty() {
@@ -795,7 +948,191 @@ fn run_command_stage(world: World, diagnostics: &Diagnostics) -> Result<(World, 
     Ok((world, CommandOutcome { accepted, refused }))
 }
 
-fn apply_edits(world: &mut World, coords: &[ChunkCoord]) -> Result<Vec<Probe>> {
+/// Where content block `index` is placed: a row in the origin column, high
+/// enough to be above any terrain and below the slice's own top-of-world edit.
+fn content_position(index: usize) -> BlockPos {
+    let index = index as i64;
+    BlockPos::new(index % 16, CONTENT_ROW_Y, 2 + 2 * (index / 16))
+}
+
+/// The height of the content row.
+const CONTENT_ROW_Y: i64 = 220;
+
+/// Mesh the placed content row and require every content block to show its
+/// own surface: none unmapped, none sharing, none missing from the mesh.
+fn verify_content_surfaces(world: &World, content: &BlockContent) -> Result<usize> {
+    let materials = content.material_registry()?;
+    let table = content.surface_table(world, &materials)?;
+    let expected: BTreeSet<SurfaceId> = content
+        .blocks()
+        .iter()
+        .map(|block| {
+            let state = world.block_id(&block.id)?;
+            table
+                .surface_of(state.0)
+                .filter(|surface| *surface != UNMAPPED_SURFACE)
+                .ok_or_else(|| {
+                    mismatch("a content block has no surface")
+                        .with_context("block", block.id.to_string())
+                })
+        })
+        .collect::<Result<_>>()?;
+    if expected.len() != content.blocks().len() {
+        return Err(mismatch("two content blocks share a surface")
+            .with_context("blocks", content.blocks().len().to_string())
+            .with_context("surfaces", expected.len().to_string()));
+    }
+
+    let rows = content.blocks().len().div_ceil(16) as u32;
+    let extent = Extent::new(
+        BlockPos::new(0, CONTENT_ROW_Y - 1, 1),
+        [16, 3, 2 * rows + 1],
+    )?;
+    let mesh = mesh_region(&WorldSurfaces::new(world, table), extent);
+    // Every layer: a stone belongs in the opaque one, but "reached the mesh"
+    // is the property checked here, and the layer split is the mesher's own
+    // tested business (RENDER-10, DEBT-0035).
+    let shown: BTreeSet<SurfaceId> = mesh
+        .iter()
+        .flat_map(|(_, layer)| layer.quads.iter().map(|quad| quad.surface))
+        .collect();
+    if let Some(missing) = expected.iter().find(|surface| !shown.contains(surface)) {
+        return Err(mismatch("a placed content block did not reach the mesh")
+            .with_context("surface", missing.0.to_string()));
+    }
+    Ok(expected.len())
+}
+
+/// The decoded-texture budget the slice runs with: sixteen first-generation
+/// albedos are 16 KiB of pixels, so this holds them all without eviction and
+/// leaves no room for anything larger to hide in.
+const TEXTURE_BUDGET: u64 = 64 * 1024;
+
+/// Voxel storage per column, as `[target, warning, critical, emergency]`
+/// (`NEXORA PERFORMANCE BUDGETS.md`).
+///
+/// Measured, not guessed: a generated and edited column costs 28.7-32.1 KiB at
+/// every radius from 0 to 6 and every seed tried, and the figure is a property
+/// of the data structures -- the same on any machine, unlike a timing. Target
+/// is the worst measured column with a quarter to spare; the ceiling is one
+/// 32x32x32 section stored without a palette (128 KiB), the point at which
+/// palettes have stopped paying for themselves and the storage model, not the
+/// budget, is what failed.
+const COLUMN_BUDGET: [u64; 4] = [40 << 10, 48 << 10, 64 << 10, 128 << 10];
+
+/// The slice's memory pools, one per owner (`NEXORA MEMORY AND RESOURCE
+/// OWNERSHIP.md`, ADR-0024).
+struct SliceMemory {
+    ledger: MemoryLedger,
+    /// Chunks resident in the world. Streaming enforces this pool's ceiling.
+    world: Arc<MemoryPool>,
+    /// Edited chunks held outside the world until they can be written back.
+    /// Must be empty before the save, or the save is written without them.
+    retained: Arc<MemoryPool>,
+    /// Decoded textures in the resource cache, when the slice loads them.
+    textures: Option<Arc<MemoryPool>>,
+}
+
+impl SliceMemory {
+    fn open(columns: u64, textures: bool) -> Result<Self> {
+        let ledger = MemoryLedger::new();
+        let [target, warning, critical, emergency] = COLUMN_BUDGET.map(|b| b * columns);
+        let budget = MemoryBudget::new(target, warning, critical, emergency)?;
+        let world = ledger.register(PoolSpec::new("world.chunks", MemoryClass::World, budget))?;
+        // Edited columns evicted by a tick are held in memory until the end
+        // of that tick, when they spill to their region files (DEBT-0020).
+        // The slice edits every column it generates, so the per-column
+        // figures apply, scaled to the whole area: a bound, not an estimate.
+        let retained = ledger.register(
+            PoolSpec::new("world.retained", MemoryClass::World, budget).drains_at_rest(),
+        )?;
+        // Opened only when the slice loads textures: a pool nobody records
+        // into is refused by `verify` as a wiring mistake.
+        let textures = if textures {
+            Some(
+                ledger.register(
+                    PoolSpec::new(
+                        "resource.textures",
+                        MemoryClass::Streaming,
+                        MemoryBudget::capacity(TEXTURE_BUDGET)?,
+                    )
+                    .drains_at_rest(),
+                )?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            ledger,
+            world,
+            retained,
+            textures,
+        })
+    }
+
+    /// Check the ledger at rest, and hand back its report.
+    fn verify(self) -> Result<MemoryReport> {
+        let leaks = self.ledger.suspected_leaks();
+        if !leaks.is_empty() {
+            return Err(mismatch("a memory pool that must drain at rest did not")
+                .with_context("pools", leaks.join(", ")));
+        }
+        let report = self.ledger.report();
+        if let Some(pool) = report
+            .pools
+            .iter()
+            .find(|pool| pool.worst == Pressure::Emergency)
+        {
+            return Err(mismatch("a memory pool went over its ceiling")
+                .with_context("pool", pool.name)
+                .with_context("high_water", pool.high_water.to_string())
+                .with_context("ceiling", pool.budget.emergency().to_string()));
+        }
+        if let Some(pool) = report.pools.iter().find(|pool| pool.records == 0) {
+            return Err(mismatch("a memory pool was opened and never recorded into")
+                .with_context("pool", pool.name));
+        }
+        Ok(report)
+    }
+}
+
+/// Resolve every content block's albedo by identifier, verify it against the
+/// resource index, and decode it -- the runtime reaching its own textures
+/// without the tool that wrote them (ADR-0021, ADR-0022).
+fn load_content_textures(
+    content: &BlockContent,
+    root: &Path,
+    pool: &Arc<MemoryPool>,
+    diagnostics: &Diagnostics,
+) -> Result<usize> {
+    let mut resources = ResourceManager::open(root, TEXTURE_BUDGET)?;
+    resources.cache_mut().attach(Arc::clone(pool))?;
+    // Cross-system, before any load: the index must provide every map the
+    // content asks for, and a gap is reported whole rather than as whichever
+    // texture the loop below would have tripped over first.
+    resources.manifest().provides(content.materials())?;
+    let before = resources.cache().stats();
+    // The first visual generation is 16x16; anything larger is a content
+    // error, found here rather than in video memory.
+    let loader = TextureLoader::new(MapRole::Albedo).at_most(16);
+    for material in content.materials() {
+        let id = material.map_asset_id(MapRole::Albedo)?;
+        let handle = resources.resolve(&id, &loader)?;
+        let map = resources.load(&handle, &loader)?;
+        if map.resolution() != material.resolution() {
+            return Err(mismatch("a texture is not the size its material declares")
+                .with_context("texture", id.to_string()));
+        }
+    }
+    resources.cache().publish(diagnostics.counters(), before);
+    Ok(content.materials().len())
+}
+
+fn apply_edits(
+    world: &mut World,
+    coords: &[ChunkCoord],
+    content: &[Identifier],
+) -> Result<Vec<Probe>> {
     let air = Identifier::parse("nexora:block/air")?;
     let stone = Identifier::parse("nexora:block/stone")?;
     let grass = Identifier::parse("nexora:block/grass")?;
@@ -824,6 +1161,11 @@ fn apply_edits(world: &mut World, coords: &[ChunkCoord]) -> Result<Vec<Probe>> {
     }
     // The very top of the world, in the origin column.
     edits.push((BlockPos::new(0, bounds.max_y, 0), &grass));
+    // Every content block, in a row in the origin column. Probes like the
+    // rest, so each one must survive the save, the reload and the journal.
+    for (index, identifier) in content.iter().enumerate() {
+        edits.push((content_position(index), identifier));
+    }
 
     let mut probes = Vec::with_capacity(edits.len());
     for (position, identifier) in edits {
@@ -876,6 +1218,10 @@ pub fn format_report(report: &SliceReport) -> String {
         report.commands_accepted, report.commands_refused
     ));
     out.push_str(&format!(
+        "queries            {} answered, {} refused\n",
+        report.queries_answered, report.queries_refused
+    ));
+    out.push_str(&format!(
         "journal            {} edits, {} probes recovered\n",
         report.journal_edits, report.recovered_probes
     ));
@@ -919,6 +1265,34 @@ pub fn format_report(report: &SliceReport) -> String {
         "chunks retained    {} (peak, edits that cannot be regenerated)\n",
         report.streaming_retained_peak
     ));
+    if report.content_blocks > 0 {
+        out.push_str(&format!(
+            "content blocks     {} ({} surfaces in the mesh)\n",
+            report.content_blocks, report.content_surfaces
+        ));
+    }
+    if report.content_textures > 0 {
+        out.push_str(&format!(
+            "content textures   {} (resolved, verified and decoded)\n",
+            report.content_textures
+        ));
+    }
+    out.push_str(&format!(
+        "memory             {} pools, worst {}, {} suspected leaks\n",
+        report.memory.pools.len(),
+        report.memory.worst().as_str(),
+        report.memory.suspected_leaks()
+    ));
+    for pool in &report.memory.pools {
+        out.push_str(&format!(
+            "                   {:<18} {:<9} {} now, {} peak, {} ceiling\n",
+            pool.name,
+            pool.class.as_str(),
+            pool.current,
+            pool.high_water,
+            pool.budget.emergency()
+        ));
+    }
     out.push_str(&format!(
         "retention spill    {} columns to {} region files, {} read back\n",
         report.streaming_spilled, report.streaming_region_writes, report.streaming_read_back
@@ -961,6 +1335,7 @@ fn region_stage(
     world: &mut World,
     config: &SliceConfig,
     probes: &[Probe],
+    content: &[(Identifier, BlockDefinition)],
     diagnostics: &Diagnostics,
 ) -> Result<RegionOutcome> {
     // Named after the save it mirrors, not just "regions": two slices writing
@@ -1017,7 +1392,7 @@ fn region_stage(
     }
 
     // A store half of which was written a save ago still reads back whole.
-    let reopened = store.read()?;
+    let reopened = store.read_with(content)?;
     for probe in probes {
         let found = reopened.get_block(probe.position)?;
         let found_id = reopened.block_identifier(found).ok_or_else(|| {
@@ -1118,7 +1493,7 @@ impl ScriptedWalk {
         input.bind(Binding::new(
             context.clone(),
             axis.clone(),
-            Source::button(DeviceKind::Keyboard, WALK_FORWARD),
+            InputSource::button(DeviceKind::Keyboard, WALK_FORWARD),
         ))?;
         // The back key is the same axis, inverted - which is why the walk needs
         // one action and not two, and why coming home is not a second code path.
@@ -1126,7 +1501,7 @@ impl ScriptedWalk {
             Binding::new(
                 context,
                 axis.clone(),
-                Source::button(DeviceKind::Keyboard, WALK_BACK),
+                InputSource::button(DeviceKind::Keyboard, WALK_BACK),
             )
             .with_tuning(AxisTuning::new(0.0, 1.0, ResponseCurve::Linear, true)?),
         )?;
@@ -1207,6 +1582,7 @@ impl ScriptedWalk {
 fn stream_a_walk(
     world: &mut World,
     config: &SliceConfig,
+    memory: &SliceMemory,
     diagnostics: &Diagnostics,
 ) -> Result<StreamingOutcome> {
     let radius = config.radius;
@@ -1221,9 +1597,12 @@ fn stream_a_walk(
     // whether the edits waited in memory or on disk.
     let spill = spill_store(config)?;
     let mut retained = RetainedChunks::backed_by(spill);
+    // Chunk memory belongs to the world's pool; streaming decides residency,
+    // so it enforces that pool's ceiling rather than keeping a count of its own.
     let budget = StreamingBudget {
         activations: 8,
         evictions: 16,
+        max_bytes: memory.world.budget().emergency(),
         ..StreamingBudget::UNLIMITED
     };
 
@@ -1303,11 +1682,16 @@ fn stream_a_walk(
                 simulated += step;
                 evicted += report.evicted;
                 retained_peak = retained_peak.max(retained.len());
+                // What this tick evicted is held in memory until the flush
+                // below, so the pool sees it here -- and sees it gone after.
+                memory.retained.record(retained.storage_bytes() as u64);
                 // End of tick: whatever this tick evicted goes to its region
                 // file now, so the held set does not grow across the walk.
                 let flush = retained.flush_to_store(world)?;
                 spilled += flush.columns;
                 region_writes += flush.regions;
+                memory.world.record(world.storage_bytes() as u64);
+                memory.retained.record(retained.storage_bytes() as u64);
                 if report.is_quiet() {
                     settled = true;
                     break;
@@ -1358,6 +1742,8 @@ fn stream_a_walk(
     // Anything still held outside the world has to go back before the save, or
     // the save is written without it. See `nexora_simulation::residency`.
     let flushed = retained.flush_into(world)?;
+    memory.retained.record(retained.storage_bytes() as u64);
+    memory.world.record(world.storage_bytes() as u64);
     if !retained.is_empty() {
         return Err(Error::new(
             Domain::World,
@@ -1530,4 +1916,35 @@ fn simulate_physics(world: &World, diagnostics: &Diagnostics) -> Result<PhysicsO
 #[must_use]
 pub fn describe_time(time: WorldTime) -> String {
     format!("tick {}", time.ticks())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_slice_refuses_a_broken_ceiling_a_leak_and_an_unused_pool() {
+        let over = SliceMemory::open(1, false).unwrap();
+        over.world.record(COLUMN_BUDGET[3] + 1);
+        over.retained.record(0);
+        let err = over.verify().unwrap_err();
+        assert!(err.to_string().contains("ceiling"), "{err}");
+
+        let leak = SliceMemory::open(1, false).unwrap();
+        leak.world.record(1);
+        leak.retained.record(1);
+        let err = leak.verify().unwrap_err();
+        assert!(err.to_string().contains("drain"), "{err}");
+
+        let unused = SliceMemory::open(1, true).unwrap();
+        unused.world.record(1);
+        unused.retained.record(0);
+        let err = unused.verify().unwrap_err();
+        assert!(err.to_string().contains("never recorded"), "{err}");
+
+        let fine = SliceMemory::open(4, false).unwrap();
+        fine.world.record(4 * COLUMN_BUDGET[0]);
+        fine.retained.record(0);
+        assert_eq!(fine.verify().unwrap().worst(), Pressure::Nominal);
+    }
 }

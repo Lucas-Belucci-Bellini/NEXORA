@@ -1,0 +1,34 @@
+{
+  "category": "stone",
+  "contrast": 2.0,
+  "courses": {
+    "columns": 1,
+    "jitter": 0.2,
+    "mortar": 0.08,
+    "rows": 4
+  },
+  "id": "nexora:recipe/stone/sandstone_rocky",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 2,
+    "cracks": 0.0,
+    "octaves": 3,
+    "strength": 0.7
+  },
+  "ramp": [
+    "#8a6a45",
+    "#a07d53",
+    "#b89366",
+    "#cfaa7a",
+    "#e0c091"
+  ],
+  "relief": 0.45,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.15,
+    "density": 0.2
+  },
+  "strips": null
+}

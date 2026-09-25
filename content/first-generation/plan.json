@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "name": "nexora-first-generation",
+  "seed": "0x0000000000c0ffee",
+  "policy": {
+    "resolution": {
+      "width": 16,
+      "height": 16
+    },
+    "maps": []
+  },
+  "materials": [
+    {
+      "definition": "stone/granite_light.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/granite_dark.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/limestone.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/sandstone_rocky.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/slate.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/basalt.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/volcanic_rock.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/marble_light.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/marble_dark.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/quartzite.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/ferruginous_stone.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/limestone_aged.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/mossy_stone.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/brittle_stone.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/mountain_stone.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/ancient_stone.json",
+      "seed": null
+    }
+  ]
+}

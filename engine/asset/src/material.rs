@@ -30,7 +30,16 @@ use crate::provenance::Provenance;
 use crate::texture::{MapRole, Resolution};
 
 /// Schema version this build writes and reads.
-pub const MATERIAL_SCHEMA_VERSION: MaterialSchemaVersion = MaterialSchemaVersion(2);
+///
+/// Version 2 made a generation record name the backend that produced it.
+/// Version 3 added `recipe`. Older documents are read as what they described:
+/// a version 1 generation came from the procedural backend, the only one that
+/// existed, and a document before version 3 names no recipe -- the category's
+/// own look.
+pub const MATERIAL_SCHEMA_VERSION: MaterialSchemaVersion = MaterialSchemaVersion(3);
+
+/// Path prefix a recipe identifier conventionally uses.
+pub const RECIPE_PATH_PREFIX: &str = "recipe/";
 
 /// Path prefix a material identifier conventionally uses.
 pub const MATERIAL_PATH_PREFIX: &str = "material/";
@@ -333,6 +342,7 @@ pub struct SurfaceMaterial {
     blend: BlendMode,
     pbr: PbrParameters,
     wanted_maps: Vec<MapRole>,
+    recipe: Option<Identifier>,
     provenance: Provenance,
 }
 
@@ -356,6 +366,7 @@ impl SurfaceMaterial {
             blend: BlendMode::Opaque,
             pbr: PbrParameters::DEFAULT,
             wanted_maps: Vec::new(),
+            recipe: None,
             provenance,
         }
     }
@@ -424,6 +435,17 @@ impl SurfaceMaterial {
     #[must_use]
     pub fn wanted_maps(&self) -> &[MapRole] {
         &self.wanted_maps
+    }
+
+    /// The recipe that says what this material looks like, when it names one.
+    ///
+    /// A reference, never the recipe itself: how stone is drawn is art
+    /// direction, and art direction lives in the tool that draws it. `None`
+    /// means the category's own recipe — which is what every material meant
+    /// before this field existed, and why a version 1 document reads as `None`.
+    #[must_use]
+    pub const fn recipe(&self) -> Option<&Identifier> {
+        self.recipe.as_ref()
     }
 
     /// Where it came from.
@@ -512,6 +534,13 @@ impl SurfaceMaterial {
         for role in &self.wanted_maps {
             hasher.write_str(role.as_str());
         }
+        // Only when present, so a material without a recipe hashes exactly as
+        // it did before recipes existed: its seed, and therefore its pixels,
+        // do not move under it.
+        if let Some(recipe) = &self.recipe {
+            hasher.write_str("recipe");
+            hasher.write_str(&recipe.to_string());
+        }
         hasher.finish()
     }
 }
@@ -529,6 +558,7 @@ pub struct SurfaceMaterialBuilder {
     blend: BlendMode,
     pbr: PbrParameters,
     wanted_maps: Vec<MapRole>,
+    recipe: Option<Identifier>,
     provenance: Provenance,
 }
 
@@ -584,6 +614,13 @@ impl SurfaceMaterialBuilder {
         self
     }
 
+    /// Name the recipe that draws this material. Defaults to the category's.
+    #[must_use]
+    pub fn recipe(mut self, recipe: Identifier) -> Self {
+        self.recipe = Some(recipe);
+        self
+    }
+
     /// Finish, validating everything.
     ///
     /// # Errors
@@ -625,6 +662,7 @@ impl SurfaceMaterialBuilder {
             blend: self.blend,
             pbr,
             wanted_maps,
+            recipe: self.recipe,
             provenance: self.provenance,
         };
 

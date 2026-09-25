@@ -1,0 +1,19 @@
+[package]
+name = "nexora-image"
+description = "NEXORA image decoding: the formats the runtime reads, and their resource loaders."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Foundation for checksums and errors, asset for the texture types, resource
+# for the loader contract. The encoder is not here: the runtime never writes
+# a texture, so the half that does stays in the tool.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-asset.workspace = true
+nexora-resource.workspace = true
+
+[lints]
+workspace = true

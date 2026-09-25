@@ -837,10 +837,29 @@ pub const MAX_INFLATED_BYTES: usize = 64 * 1024 * 1024;
 /// disagree, refers to a distance further back than the output so far, or
 /// would expand past [`MAX_INFLATED_BYTES`].
 pub fn inflate(data: &[u8]) -> Result<Vec<u8>> {
+    inflate_bounded(data, MAX_INFLATED_BYTES)
+}
+
+/// Decompress a raw deflate stream, refusing to produce more than `limit`
+/// bytes.
+///
+/// The bound a caller should pass is the size the container *declares*: a PNG
+/// header states its dimensions, so the scanlines it can legitimately hold
+/// are known before a single bit is inflated. That turns the "decompression
+/// ratio" check of `RESOURCE AND ASSET SYSTEM.md` from a guess into an exact
+/// limit -- a stream that expands one byte past what its header promised stops
+/// there, instead of at a global ceiling sixty-four mebibytes away.
+///
+/// # Errors
+///
+/// As [`inflate`], with `limit` in place of [`MAX_INFLATED_BYTES`]. A limit
+/// above [`MAX_INFLATED_BYTES`] is clamped to it.
+pub fn inflate_bounded(data: &[u8], limit: usize) -> Result<Vec<u8>> {
     let mut reader = BitReader {
         data,
         at: 0,
         bit: 0,
+        limit: limit.min(MAX_INFLATED_BYTES),
     };
     let mut out = Vec::new();
 
@@ -866,6 +885,8 @@ struct BitReader<'a> {
     data: &'a [u8],
     at: usize,
     bit: u32,
+    /// The most bytes this stream may expand to.
+    limit: usize,
 }
 
 impl BitReader<'_> {
@@ -915,7 +936,7 @@ impl BitReader<'_> {
             .data
             .get(self.at..self.at + len as usize)
             .ok_or_else(|| damaged("a stored block is shorter than it claims"))?;
-        grow(out, len as usize)?;
+        grow(out, len as usize, self.limit)?;
         out.extend_from_slice(body);
         self.at += len as usize;
         Ok(())
@@ -1009,7 +1030,7 @@ impl BitReader<'_> {
                 return Ok(());
             }
             if symbol < 256 {
-                grow(out, 1)?;
+                grow(out, 1, self.limit)?;
                 out.push(symbol as u8);
                 continue;
             }
@@ -1032,7 +1053,7 @@ impl BitReader<'_> {
                     .with_context("available", out.len().to_string()));
             }
 
-            grow(out, length)?;
+            grow(out, length, self.limit)?;
             let start = out.len() - span;
             for offset in 0..length {
                 // Copied one byte at a time on purpose: a match may overlap
@@ -1129,10 +1150,10 @@ impl Huffman {
 }
 
 /// Refuse before growing the output past the cap.
-fn grow(out: &[u8], by: usize) -> Result<()> {
-    if out.len() + by > MAX_INFLATED_BYTES {
+fn grow(out: &[u8], by: usize, limit: usize) -> Result<()> {
+    if out.len() + by > limit {
         return Err(damaged("the stream expands past the decompression limit")
-            .with_context("limit", MAX_INFLATED_BYTES.to_string()));
+            .with_context("limit", limit.to_string()));
     }
     Ok(())
 }
@@ -1732,5 +1753,22 @@ mod tests {
             assert_eq!(u32::from(declared_bits), bits, "distance {distance}");
             assert_eq!(usize::from(base) + extra as usize, distance);
         }
+    }
+
+    #[test]
+    fn a_stream_is_stopped_at_its_declared_size_not_at_the_global_ceiling() {
+        // 700 bytes of 0x42, from zlib.
+        assert_eq!(inflate_bounded(ZLIB_LONG_RUN, 700).unwrap().len(), 700);
+        let err = inflate_bounded(ZLIB_LONG_RUN, 699).expect_err("one byte past what was declared");
+        assert!(err.to_string().contains("decompression limit"), "{err}");
+        assert!(err.to_string().contains("699"), "{err}");
+        assert_eq!(err.recovery(), Recovery::Quarantine);
+        // Dynamic blocks are held to the same bound.
+        let skewed = skewed_plaintext().len();
+        assert_eq!(
+            inflate_bounded(ZLIB_DYNAMIC_SKEWED, skewed).unwrap().len(),
+            skewed
+        );
+        assert!(inflate_bounded(ZLIB_DYNAMIC_SKEWED, skewed - 1).is_err());
     }
 }

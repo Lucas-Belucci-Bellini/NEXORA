@@ -17,6 +17,7 @@ nexora-runtime.workspace = true
 nexora-asset.workspace = true
 nexora-world.workspace = true
 nexora-command.workspace = true
+nexora-query.workspace = true
 nexora-mesh.workspace = true
 nexora-physics.workspace = true
 nexora-streaming.workspace = true

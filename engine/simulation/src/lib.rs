@@ -16,11 +16,15 @@
 //! declared — Cargo enforces the layering rather than a reviewer noticing it.
 
 pub mod commands;
+pub mod content;
+pub mod queries;
 pub mod residency;
 pub mod surfaces;
 pub mod terrain;
 
 pub use commands::{BreakBlockHandler, PlaceBlockHandler};
+pub use content::{BlockContent, ContentBlock};
+pub use queries::WorldQueries;
 pub use residency::{FlushReport, RetainedChunks, WorldResidency};
 pub use surfaces::{SurfaceTable, SurfaceTableBuilder, WorldSurfaces, UNMAPPED_SURFACE};
 pub use terrain::{PhysicsModule, WorldVoxels};

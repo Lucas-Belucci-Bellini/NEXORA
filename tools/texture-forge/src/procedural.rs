@@ -1,6 +1,6 @@
 //! The procedural generator.
 //!
-//! Implements [`TextureGenerator`] over [`Recipe`]. It is the first backend and
+//! Implements [`TextureGenerator`] over [`Recipe`](crate::recipe::Recipe). It is the first backend and
 //! the only one that is fully reproducible from its own provenance: given the
 //! material, the seed and the generator version, the pixels can be rebuilt
 //! exactly, forever, with no model and no network.
@@ -46,7 +46,7 @@ use nexora_foundation::hashing::Fnv1a64;
 use nexora_foundation::ident::Identifier;
 use nexora_foundation::version::ContentGeneratorVersion;
 
-use crate::recipe::Recipe;
+use crate::recipe_book::{RecipeBook, Resolved, FINGERPRINT_PARAMETER};
 
 /// The procedural generator's stable identifier.
 pub const PROCEDURAL_GENERATOR: &str = "nexora:generator/procedural";
@@ -68,6 +68,7 @@ pub const AUTHOR: &str = "NEXORA";
 #[derive(Debug, Clone)]
 pub struct ProceduralGenerator {
     id: Identifier,
+    recipes: RecipeBook,
 }
 
 impl ProceduralGenerator {
@@ -80,7 +81,21 @@ impl ProceduralGenerator {
     pub fn new() -> Result<Self> {
         Ok(Self {
             id: Identifier::parse(PROCEDURAL_GENERATOR)?,
+            recipes: RecipeBook::empty(),
         })
+    }
+
+    /// The same generator, reading named recipes from a book.
+    #[must_use]
+    pub fn with_recipes(mut self, recipes: RecipeBook) -> Self {
+        self.recipes = recipes;
+        self
+    }
+
+    /// Where named recipes are read from.
+    #[must_use]
+    pub const fn recipes(&self) -> &RecipeBook {
+        &self.recipes
     }
 
     /// The seed this request actually renders with.
@@ -170,6 +185,7 @@ impl ProceduralGenerator {
         &self,
         definition: &SurfaceMaterial,
         request: &GenerationRequest,
+        resolved: &Resolved,
     ) -> Result<Provenance> {
         let mut parameters: BTreeMap<String, String> = BTreeMap::new();
         parameters.insert(
@@ -196,6 +212,14 @@ impl ProceduralGenerator {
         for (key, value) in &request.parameters {
             parameters.insert(key.clone(), value.clone());
         }
+        // Recorded so a later run can tell that the recipe file moved even
+        // though the material, which names it only by identifier, did not.
+        if let Some(fingerprint) = resolved.fingerprint {
+            parameters.insert(
+                FINGERPRINT_PARAMETER.to_owned(),
+                format!("{fingerprint:#018x}"),
+            );
+        }
 
         if let GenerationMode::Variant { index, .. } = &request.mode {
             parameters.insert("variant_index".to_owned(), index.to_string());
@@ -206,10 +230,7 @@ impl ProceduralGenerator {
         // a later repair reads back.
         let mut trace =
             GenerationTrace::new(self.id.clone(), PROCEDURAL_VERSION, self.seed_for(request)?)
-                .from_preset(Identifier::nexora(&format!(
-                    "preset/{}",
-                    definition.category().as_str()
-                ))?);
+                .from_preset(resolved.preset.clone());
         trace.backend = Backend::Procedural;
         trace.parameters = parameters;
         if let GenerationMode::Variant { of, .. } | GenerationMode::Repair { of } = &request.mode {
@@ -263,9 +284,9 @@ impl TextureGenerator for ProceduralGenerator {
 
     fn generate(&self, request: &GenerationRequest) -> Result<GeneratedMaterial> {
         let definition = request.definition.clone();
-        let recipe = Recipe::for_category(definition.category())?;
+        let resolved = self.recipes.resolve(&definition)?;
         let seed = self.seed_for(request)?;
-        let canvas = recipe.render(definition.resolution(), seed);
+        let canvas = resolved.recipe.render(definition.resolution(), seed);
 
         let mut maps = MapSet::new();
         for role in produced_roles(request) {
@@ -282,7 +303,7 @@ impl TextureGenerator for ProceduralGenerator {
             maps.insert(map)?;
         }
 
-        let attributed = definition.revised(self.trace(&definition, request)?)?;
+        let attributed = definition.revised(self.trace(&definition, request, &resolved)?)?;
         GeneratedMaterial::assemble(self, attributed, maps)
     }
 }

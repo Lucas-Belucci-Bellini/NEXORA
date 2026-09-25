@@ -1,0 +1,18 @@
+[package]
+name = "nexora-resource"
+description = "NEXORA resource system: manifest, resolver, loaders, bounded cache and handles."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Foundation for identifiers, hashing and errors; asset for the strict JSON
+# reader the manifest is written in. Nothing that knows what a world, a block
+# or a renderer is: resources are addressed and loaded for whoever asks.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-asset.workspace = true
+
+[lints]
+workspace = true

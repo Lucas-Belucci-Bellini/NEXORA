@@ -54,6 +54,8 @@ pub enum Domain {
     Command,
     /// Devices, actions, bindings and the intent they produce.
     Input,
+    /// Query definition, permission and budgets.
+    Query,
 }
 
 impl Domain {
@@ -78,6 +80,7 @@ impl Domain {
             Self::Physics => "physics",
             Self::Command => "command",
             Self::Input => "input",
+            Self::Query => "query",
         }
     }
 }

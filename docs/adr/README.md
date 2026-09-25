@@ -28,3 +28,9 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0016](ADR-0016-a-job-result-can-be-forgotten-and-says-so.md) | A job result can be forgotten, and the pool says so rather than guessing | ACCEPTED |
 | [0017](ADR-0017-a-frame-is-time-the-host-hands-in.md) | A frame is time the host hands in, and the stages account for it | ACCEPTED |
 | [0018](ADR-0018-input-is-intent-the-host-hands-in.md) | Input is intent the host hands in, and a context consumes a source | ACCEPTED |
+| [0019](ADR-0019-a-recipe-is-data-and-a-material-names-it.md) | A recipe is data, and a material names it | ACCEPTED |
+| [0020](ADR-0020-content-blocks-enter-through-the-api-a-mod-uses.md) | Content blocks enter through the API a mod uses | ACCEPTED |
+| [0021](ADR-0021-resources-are-verified-before-they-are-decoded.md) | Resources are indexed, and verified before they are decoded | ACCEPTED |
+| [0022](ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md) | One PNG decoder, and it lives in the engine | ACCEPTED |
+| [0023](ADR-0023-queries-are-reads-and-a-contract.md) | Queries are reads, and a contract | ACCEPTED |
+| [0024](ADR-0024-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memory is accounted by its owner, in one ledger | ACCEPTED |

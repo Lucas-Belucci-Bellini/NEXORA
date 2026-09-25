@@ -68,3 +68,15 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0010](docs/adr/ADR-0010-commands-are-intent-and-carry-their-own-authority.md) | Comandos são intenção, e a fronteira é imposta pelo grafo de crates | ACCEPTED |
 | [0011](docs/adr/ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md) | Cauda truncada é crash; corrupção não é, e cada uma tem sua resposta | ACCEPTED |
 | [0012](docs/adr/ADR-0012-a-mesh-is-a-data-structure-not-a-picture.md) | Uma malha é uma estrutura de dados, não uma imagem | ACCEPTED |
+| [0013](docs/adr/ADR-0013-recovery-finishes-when-a-column-arrives.md) | Recuperação não é um instante: termina quando a coluna chega | ACCEPTED |
+| [0014](docs/adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md) | Um arquivo de região é autoritativo para a sua região | ACCEPTED |
+| [0015](docs/adr/ADR-0015-a-spatial-index-is-a-loose-grid-and-a-query-may-decline-it.md) | O índice espacial é uma grade frouxa, e uma consulta pode recusá-lo | ACCEPTED |
+| [0016](docs/adr/ADR-0016-a-job-result-can-be-forgotten-and-says-so.md) | Um resultado de job pode ser esquecido, e o pool diz isso | ACCEPTED |
+| [0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md) | Um quadro é tempo que o host entrega, e os estágios prestam contas dele | ACCEPTED |
+| [0018](docs/adr/ADR-0018-input-is-intent-the-host-hands-in.md) | Input é intenção que o host entrega, e um contexto consome a fonte | ACCEPTED |
+| [0019](docs/adr/ADR-0019-a-recipe-is-data-and-a-material-names-it.md) | Uma receita é dado, e um material a nomeia — schema 3 do documento de material | ACCEPTED |
+| [0020](docs/adr/ADR-0020-content-blocks-enter-through-the-api-a-mod-uses.md) | Blocos de conteúdo entram pela mesma API que um mod usa | ACCEPTED |
+| [0021](docs/adr/ADR-0021-resources-are-verified-before-they-are-decoded.md) | Recursos são indexados e verificados antes de serem decodificados | ACCEPTED |
+| [0022](docs/adr/ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md) | Um único decodificador PNG, e ele mora no engine | ACCEPTED |
+| [0023](docs/adr/ADR-0023-queries-are-reads-and-a-contract.md) | Queries são leituras, e um contrato | ACCEPTED |
+| [0024](docs/adr/ADR-0024-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memória é contabilizada pelo dono, num livro-razão só | ACCEPTED |

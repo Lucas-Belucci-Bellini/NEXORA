@@ -1837,3 +1837,67 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o sistema de fluidos, ou o primeiro shader de água.
 - **TARGET STAGE:** Phase 2/3
 - **STATUS:** OPEN
+
+### DEBT-0044 — Uma definição não escolhe paleta: dezesseis pedras são uma pedra com dezesseis sementes
+
+- **SYSTEM:** `tools/texture-forge::recipe`, `engine/asset::document`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o gerador procedural escolhe a receita (rampa de cor,
+  ruído, rachaduras, faixas) por `Recipe::for_category(definition.category())`
+  e por nada mais. O documento de material não tem campo em que uma receita,
+  uma paleta ou um preset possa ser nomeado. Apareceu ao fechar a FASE 7: o
+  batch já sabe impor a primeira geração (`policy` 16×16, só albedo), mas não
+  há o que catalogar por ele que seja *diferente* dentro de uma família.
+- **IMPACT:** a issue #5 pede dezesseis pedras "visualmente distinguíveis" —
+  granito claro, basalto, ardósia, mármore escuro. Hoje as dezesseis sairiam
+  como a mesma pedra cinza mosqueada, variando só na posição dos grãos. O
+  mesmo vale para as 24 areias (#7), as 48 minérios (#6) e toda família
+  procedural das issues #15–#26.
+- **RISK:** médio. Não quebra nada que existe; impede o caminho procedural de
+  produzir o catálogo 16×16, e empurra o operador para o caminho de geração
+  externa (#4) — que é legítimo, mas precisa do caminho de importação que a
+  auditoria (§4.6) deliberadamente deixou para depois.
+- **PROPOSED REMEDIATION:** um campo `recipe` opcional no documento de material
+  (schema 3 — o 2 é o `backend` do `main` —, com migração do 1 e do 2: ausente = a receita da categoria, que é o
+  comportamento de hoje) nomeando um preset por `Identifier`
+  (`nexora:recipe/granite_light`) e, dentro dele, a rampa de cor e os pesos de
+  ruído. `GenerationTrace.preset` já existe e já é gravado — hoje sempre com o
+  preset da categoria.
+- **TRIGGER:** a primeira família 16×16 catalogada pelo caminho procedural.
+- **TARGET STAGE:** Phase 1 (conteúdo da primeira geração)
+- **STATUS:** RESOLVED — [ADR-0019](docs/adr/ADR-0019-a-recipe-is-data-and-a-material-names-it.md).
+  Receitas são documentos em `content/recipes/`, nomeados pelo campo `recipe`
+  do schema 3 do material. Prova: `recipe_book::tests` (receita pálida
+  renderiza pálida; caminho, categoria e identificador errados são recusados),
+  `forge::tests::editing_a_named_recipe_is_noticed_though_the_material_did_not_change`
+  e `batch::tests::a_missing_recipe_stops_the_batch_before_anything_is_written`.
+
+### DEBT-0045 — O runtime carrega textura como bytes, porque o decodificador PNG mora no forge
+
+- **SYSTEM:** `engine/resource`, `tools/texture-forge::png`, `tools/texture-forge::deflate`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o `ResourceManager` (ADR-0021) resolve, verifica e faz cache
+  de uma textura, mas só existe um loader de bytes para ela: o único
+  decodificador PNG (e o inflate que ele usa) está em `tools/texture-forge`,
+  misturado com o codificador, e o engine não pode depender de uma ferramenta.
+- **IMPACT:** o runtime prova que tem os bytes certos de uma textura, mas não
+  consegue transformá-los em `TextureMap`. Nada consome pixels hoje (não há
+  renderizador), então o custo ainda é zero — e deixa de ser no primeiro
+  consumidor.
+- **RISK:** médio. A tentação no primeiro renderizador será copiar o
+  decodificador para o engine, e aí haverá dois — exatamente o que a regra do
+  Vanguard/NEXORA contra duas implementações do mesmo cálculo proíbe.
+- **PROPOSED REMEDIATION:** mover `png::decode` e `deflate::inflate` (e os
+  testes deles) para uma crate de engine sobre `nexora-asset`, reexportar no
+  forge, e escrever um `TextureLoader` que devolve `TextureMap` com limites de
+  dimensão e de razão de descompressão (a *Security* do documento de recursos).
+- **TRIGGER:** o primeiro consumidor de pixels no runtime (renderizador,
+  validação de conteúdo em runtime, ou ícone de UI).
+- **TARGET STAGE:** Phase 1 (Resource System)
+- **STATUS:** RESOLVED — [ADR-0022](docs/adr/ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md).
+  `engine/image` tem o `png::decode` e o `TextureLoader`, e infla com o
+  `nexora_foundation::deflate::inflate_bounded` (limitado pelo tamanho que o
+  cabeçalho declara, nos três tipos de bloco — o inflater próprio da imagem
+  saiu no merge de 2026-09-25); o forge reexporta, e há um decodificador só. Prova: `engine/image` (PNGs montados à mão, sem o
+  encoder), `first_generation::the_runtime_reaches_every_first_generation_texture_by_identifier`
+  e o slice headless com `--resources` no CI.

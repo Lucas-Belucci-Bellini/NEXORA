@@ -22,7 +22,7 @@ use nexora_persistence::SaveContainer;
 
 use crate::chunk::{Chunk, ChunkState};
 use crate::voxel::{BlockStateId, Section, SectionParts};
-use crate::world::{World, WorldBounds, WorldDescriptor, WorldId};
+use crate::world::{BlockDefinition, World, WorldBounds, WorldDescriptor, WorldId};
 
 /// Section holding world identity, seed, bounds, clock and calendar.
 pub const SECTION_WORLD_HEADER: &str = "nexora:save/world_header";
@@ -65,11 +65,26 @@ pub fn save(world: &World) -> Result<SaveContainer> {
 /// Returns an error when a section is missing, malformed, or references content
 /// that is not registered in this build.
 pub fn load(container: &SaveContainer) -> Result<World> {
+    load_with(container, &[])
+}
+
+/// Rebuild a world from a save container, with block content registered.
+///
+/// The content must include every block the save names beyond the built-ins;
+/// one it does not is refused by name, exactly as a missing mod would be.
+///
+/// # Errors
+///
+/// See [`load`].
+pub fn load_with(
+    container: &SaveContainer,
+    content: &[(Identifier, BlockDefinition)],
+) -> Result<World> {
     container.compatibility()?;
 
     let (descriptor, calendar, now) =
         decode_header(container.require(&section_id(SECTION_WORLD_HEADER)?)?)?;
-    let mut world = World::resumed(descriptor, calendar, now)?;
+    let mut world = World::resumed_with(descriptor, calendar, now, content)?;
 
     let saved_palette = decode_palette(container.require(&section_id(SECTION_BLOCK_PALETTE)?)?)?;
 
@@ -628,5 +643,35 @@ mod tests {
         let restored = load(&save(&world).unwrap()).unwrap();
         assert_eq!(restored.chunk_count(), 0);
         assert_eq!(restored.descriptor(), world.descriptor());
+    }
+
+    #[test]
+    fn content_blocks_round_trip_and_a_save_without_its_content_is_refused() {
+        let basalt = Identifier::parse("nexora:block/stone/basalt").unwrap();
+        let content = [(basalt.clone(), BlockDefinition { solid: true })];
+
+        let mut world = World::create_with(
+            WorldDescriptor::new("content-test", 3).unwrap(),
+            CalendarConfig::earthlike(),
+            &content,
+        )
+        .unwrap();
+        world.bring_online().unwrap();
+        world.load_or_generate(ChunkCoord::new(0, 0)).unwrap();
+        let state = world.block_id(&basalt).unwrap();
+        let at = BlockPos::new(3, 100, 3);
+        world.set_block(at, state).unwrap();
+
+        let container = save(&world).unwrap();
+        let restored = load_with(&container, &content).expect("the content is present");
+        assert_eq!(restored.get_block(at).unwrap(), state);
+
+        // The same save, opened by a build without the content: refused, with
+        // the block's name, the way a missing mod would be.
+        let err = load(&container).expect_err("basalt is not a built-in");
+        assert!(
+            err.to_string().contains("nexora:block/stone/basalt"),
+            "{err}"
+        );
     }
 }

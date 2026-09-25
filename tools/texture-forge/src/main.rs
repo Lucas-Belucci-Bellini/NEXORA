@@ -6,7 +6,7 @@
 //! binary in this workspace, because ADR-0002 forbids a dependency and a
 //! handful of flags does not need one.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use nexora_asset::document;
@@ -15,12 +15,18 @@ use nexora_asset::texture::MapRole;
 use nexora_asset::validation::Verdict;
 use nexora_foundation::error::Result;
 use nexora_foundation::ident::Identifier;
+use nexora_resource::manifest::MANIFEST_FILE;
 use nexora_texture_forge::forge::{Forge, Outcome, WriteStatus};
 use nexora_texture_forge::layout;
 use nexora_texture_forge::manifest;
+use nexora_texture_forge::plan::Plan;
+use nexora_texture_forge::recipe_book::RecipeBook;
 
 /// Where materials are written when `--out` is not given.
 const DEFAULT_ROOT: &str = "assets/materials";
+
+/// Where named recipes are read from when `--recipes` is not given.
+const DEFAULT_RECIPES: &str = "content/recipes";
 
 fn main() -> ExitCode {
     let command = match parse_args() {
@@ -50,6 +56,9 @@ fn usage() -> String {
      commands:\n\
      \x20 generate <definition.json>   realise a material and write it\n\
      \x20 batch    <manifest.json>     realise every material a manifest declares\n\
+     \x20 build    <plan.json>         realise the definitions a build plan lists,\n\
+     \x20                              under its policy, then index\n\
+     \x20 index                        write resources.json for the runtime\n\
      \x20 variant  <definition.json>    another material like one already written\n\
      \x20 repair   <material-id>        restore maps that are lost or corrupt\n\
      \x20 validate <material-id>       check what is on disk for a material\n\
@@ -58,8 +67,10 @@ fn usage() -> String {
      \n\
      options:\n\
      \x20 --out <dir>     where materials live (default: assets/materials)\n\
+     \x20 --recipes <dir> where named recipes live (default: content/recipes)\n\
      \x20 --seed <value>  generation seed, decimal or 0x-prefixed (default: 0;\n\
-     \x20                 `batch` takes the manifest's seed instead)\n\
+     \x20                 `batch` takes the manifest's seed instead, and\n\
+     \x20                 `build` refuses it: the plan owns its seeds)\n\
      \x20 --force         replace a material that is already written\n\
      \x20 --of <material-id>  the material a variant is varied from (required)\n\
      \x20 --index <n>     which variant, counted from one (default: 1)\n\
@@ -92,6 +103,14 @@ enum Command {
         manifest: PathBuf,
         setup: Setup,
         force: bool,
+    },
+    Build {
+        plan: PathBuf,
+        setup: Setup,
+        force: bool,
+    },
+    Index {
+        root: PathBuf,
     },
     Generate {
         definition: PathBuf,
@@ -126,6 +145,8 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
     let mut positional: Option<String> = None;
     let mut root = PathBuf::from(DEFAULT_ROOT);
     let mut seed = 0u64;
+    let mut seed_given = false;
+    let mut recipes = PathBuf::from(DEFAULT_RECIPES);
     let mut force = false;
     let mut of: Option<String> = None;
     let mut index = 1u32;
@@ -146,6 +167,13 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
                     .next()
                     .ok_or_else(|| "--seed needs a value".to_owned())?;
                 seed = parse_seed(&raw)?;
+                seed_given = true;
+            }
+            "--recipes" => {
+                recipes = PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "--recipes needs a path".to_owned())?,
+                );
             }
             "--force" => force = true,
             "--no-preview" => preview = false,
@@ -191,6 +219,7 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
 
     let setup = Setup {
         root: root.clone(),
+        recipes,
         preview,
         backend,
     };
@@ -219,6 +248,25 @@ fn parse_args() -> std::result::Result<Option<Command>, String> {
             setup,
             force,
         })),
+        "build" => {
+            // A seed on the command line would make the run depend on
+            // something that is not in the repository, which is the one thing
+            // a build plan exists to prevent.
+            if seed_given {
+                return Err("`build` takes its seeds from the plan, not --seed".to_owned());
+            }
+            Ok(Some(Command::Build {
+                plan: PathBuf::from(needed("a build plan")?),
+                setup,
+                force,
+            }))
+        }
+        "index" => {
+            if positional.is_some() {
+                return Err("`index` takes no argument".to_owned());
+            }
+            Ok(Some(Command::Index { root }))
+        }
         "generate" => Ok(Some(Command::Generate {
             definition: PathBuf::from(needed("a definition file")?),
             setup,
@@ -271,6 +319,8 @@ fn run(command: Command) -> Result<ExitCode> {
             setup,
             force,
         } => batch(&manifest, setup, force),
+        Command::Build { plan, setup, force } => build(&plan, setup, force),
+        Command::Index { root } => index(root),
         Command::Generate {
             definition,
             setup,
@@ -283,12 +333,13 @@ fn run(command: Command) -> Result<ExitCode> {
     }
 }
 
-/// How to build the forge, gathered because these three always travel
-/// together: where materials live, whether to render previews, and which
-/// backend generates.
+/// How to build the forge, gathered because these always travel together:
+/// where materials live, where named recipes live, whether to render
+/// previews, and which backend generates.
 #[derive(Debug, Clone)]
 struct Setup {
     root: PathBuf,
+    recipes: PathBuf,
     preview: bool,
     backend: Backend,
 }
@@ -300,7 +351,7 @@ struct Setup {
 /// never quietly served by the procedural one, because a caller who asked for
 /// a model and silently got noise would ship the noise.
 fn forge(setup: Setup) -> Result<Forge> {
-    let built = Forge::new(setup.root)?;
+    let built = Forge::new(setup.root)?.with_recipes(RecipeBook::at(setup.recipes));
     let built = match setup.backend {
         Backend::Procedural => built,
         other => {
@@ -410,6 +461,86 @@ fn batch(path: &PathBuf, setup: Setup, force: bool) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Realise a build plan: every definition it lists, with the seed it gives,
+/// under its policy -- then write the index, so the runtime is never handed
+/// an index of a half-generated tree.
+fn build(path: &Path, setup: Setup, force: bool) -> Result<ExitCode> {
+    let plan = Plan::load(path)?;
+    if !plan.is_valid() {
+        for problem in &plan.problems {
+            eprintln!(
+                "invalid  entry {} ({}): {}",
+                problem.index, problem.definition, problem.error
+            );
+        }
+        eprintln!(
+            "texture-forge: {} has {} problem(s); nothing was generated",
+            path.display(),
+            plan.problems.len()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+
+    // A policy that lists what may be written lists maps; a preview is not
+    // one of them, and at twice the edge it would be the only file breaking
+    // the plan's resolution.
+    let setup = Setup {
+        preview: setup.preview && plan.policy.allows_previews(),
+        ..setup
+    };
+    let forge = forge(setup)?;
+    let unresolved = plan.unresolved(&forge);
+    if !unresolved.is_empty() {
+        for problem in &unresolved {
+            eprintln!(
+                "invalid  entry {} ({}): {}",
+                problem.index, problem.definition, problem.error
+            );
+        }
+        eprintln!(
+            "texture-forge: {} names {} recipe(s) that cannot be resolved; nothing was generated",
+            path.display(),
+            unresolved.len()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    let report = plan.run(&forge, force)?;
+    for entry in &report.entries {
+        println!("{:<9} {}", entry.status(), entry.id);
+        match &entry.result {
+            Ok(outcome) => {
+                if let Some(refusal) = &outcome.refusal {
+                    eprintln!("  {refusal}");
+                }
+            }
+            Err(cause) => eprintln!("  {} -- {cause}", entry.source.display()),
+        }
+    }
+    println!("build {}: {}", plan.name, report.tally());
+    if !report.succeeded() {
+        return Ok(ExitCode::FAILURE);
+    }
+    let index = forge.write_index()?;
+    println!(
+        "index {} ({} resources)",
+        forge.root().join(MANIFEST_FILE).display(),
+        index.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The pipeline's INDEX stage on its own.
+fn index(root: PathBuf) -> Result<ExitCode> {
+    let forge = Forge::new(root)?;
+    let index = forge.write_index()?;
+    println!(
+        "index {} ({} resources)",
+        forge.root().join(MANIFEST_FILE).display(),
+        index.len()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn generate(path: &PathBuf, setup: Setup, seed: u64, force: bool) -> Result<ExitCode> {

@@ -1,0 +1,21 @@
+[package]
+name = "nexora-query"
+description = "NEXORA query system: reads, as a contract -- versioned, permitted, bounded and synchronous."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Foundation and runtime, like the command system -- and the command system
+# itself, for the one identity model: who is asking (`Actor`), through which
+# door (`Source`), and who may (`SourcePolicy`). A second definition of "an
+# actor" would be two answers to one question. Nothing that knows what a world
+# is: queries about the world are answered above, where the world is visible.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+nexora-command.workspace = true
+
+[lints]
+workspace = true

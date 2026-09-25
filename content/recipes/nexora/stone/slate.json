@@ -1,0 +1,29 @@
+{
+  "category": "stone",
+  "contrast": 2.0,
+  "courses": {
+    "columns": 1,
+    "jitter": 0.25,
+    "mortar": 0.06,
+    "rows": 8
+  },
+  "id": "nexora:recipe/stone/slate",
+  "levels": 4,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.2,
+    "octaves": 3,
+    "strength": 0.7
+  },
+  "ramp": [
+    "#2e3338",
+    "#3a4046",
+    "#474e55",
+    "#566068"
+  ],
+  "relief": 0.5,
+  "schema": 1,
+  "speckle": null,
+  "strips": null
+}

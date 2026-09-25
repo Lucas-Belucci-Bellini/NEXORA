@@ -68,7 +68,18 @@ jobs:
       # build if the world does not survive a save and reload.
       - name: Smoke test the headless vertical slice
         run: |
-          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv"
+          # Memory is gated, unlike time: a pool's bytes are a property of the
+          # data structures and come out the same on any runner (ADR-0024).
+          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv" \
+            | tee "${RUNNER_TEMP}/ci-world.txt"
+          grep '^memory             2 pools, worst nominal, 0 suspected leaks$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # And with the first visual generation's blocks: each of the sixteen
+          # stones must register, show its own surface in a mesh, and survive
+          # the save, the reload and the journal replay as a probe.
+          ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-content.nxsv" \
+            --content content/first-generation/blocks.json \
+            | grep '^content blocks     16 (16 surfaces in the mesh)$' > /dev/null
 
       # The benchmark harness is code too: run a minimal pass so it cannot rot.
       # Deliberately NOT gated on timings - a shared runner's numbers would
@@ -83,12 +94,17 @@ jobs:
       # material from a checked-in definition, then read it back off disk and
       # validate it. A tool that writes something it cannot then read is the
       # failure this stage exists to catch.
+      #
+      # `grep PATTERN > /dev/null`, never `grep -q`: the runner's bash uses
+      # `pipefail`, and `-q` closes the pipe at the first match, so a tool
+      # that prints one more line dies of SIGPIPE and fails the step.
+      #
+      # Generation goes through the checked-in build plan, so CI builds exactly
+      # the list the repository declares -- with the seed the plan owns.
       - name: Smoke test the texture forge
         run: |
-          for definition in content/materials/*.json; do
-            ./target/release/nexora-texture-forge generate "$definition" \
-              --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE
-          done
+          ./target/release/nexora-texture-forge build content/materials/plan.json \
+            --out "${RUNNER_TEMP}/materials"
           ./target/release/nexora-texture-forge list --out "${RUNNER_TEMP}/materials"
           # Every PNG the tool writes, read back by a decoder that is not ours.
           # This matters more since the compressor started emitting dynamic
@@ -136,15 +152,20 @@ jobs:
             --out "${RUNNER_TEMP}/materials"
           # Generating again must change nothing: the run is deterministic, and
           # a second pass that rewrites files would mean it is not.
+          ./target/release/nexora-texture-forge build content/materials/plan.json \
+            --out "${RUNNER_TEMP}/materials" \
+            | grep '^build .*: 0 written, [0-9]* unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
+          # And a single generate with the plan's seed must agree with the
+          # build byte for byte: two paths to one material, one answer.
           ./target/release/nexora-texture-forge generate content/materials/stone_rough.json \
-            --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE | grep -q '^unchanged'
+            --out "${RUNNER_TEMP}/materials" --seed 0xC0FFEE | grep '^unchanged' > /dev/null
           # And the same two properties for a whole manifest at once: every
           # entry produced on the first pass, nothing rewritten on the second.
           for manifest in content/manifests/*.json; do
             ./target/release/nexora-texture-forge batch "$manifest" \
               --out "${RUNNER_TEMP}/sets"
             ./target/release/nexora-texture-forge batch "$manifest" \
-              --out "${RUNNER_TEMP}/sets" | grep -q '0 written'
+              --out "${RUNNER_TEMP}/sets" | grep '0 written' > /dev/null
           done
           # A repair must give back the exact bytes that were lost, not a new
           # map of the same shape: a restored normal that does not match the
@@ -159,7 +180,7 @@ jobs:
           sha256sum --check --status "${RUNNER_TEMP}/before.sha"
           # And repairing something intact is a no-op, not a rewrite.
           ./target/release/nexora-texture-forge repair \
-            nexora:material/temperate_forest/granite --out "${RUNNER_TEMP}/sets" | grep -q '^intact'
+            nexora:material/temperate_forest/granite --out "${RUNNER_TEMP}/sets" | grep '^intact' > /dev/null
           # A lost preview is a lost file too, and comes back the same way.
           sha256sum "${granite}/preview.png" > "${RUNNER_TEMP}/preview.sha"
           rm "${granite}/preview.png"
@@ -186,6 +207,45 @@ jobs:
             content/materials/stone_rough.json --out "${RUNNER_TEMP}/never" \
             --backend nonsense || status=$?
           test "${status}" -eq 2
+          # The first visual generation: 16x16, albedo only, every stone drawn
+          # from its own recipe. The plan's policy refuses anything else,
+          # and the byte-level check against CATALOG.md runs in `cargo test`.
+          ./target/release/nexora-texture-forge build content/first-generation/plan.json \
+            --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes
+          ./target/release/nexora-texture-forge validate nexora:material/stone/basalt \
+            --out "${RUNNER_TEMP}/first-generation"
+          # The build ends with the pipeline's INDEX stage: the runtime's view
+          # of what was generated -- 16 textures and 16 materials.
+          grep -q '"id": "nexora:texture/stone/basalt/albedo"' \
+            "${RUNNER_TEMP}/first-generation/resources.json"
+          ./target/release/nexora-texture-forge build content/first-generation/plan.json \
+            --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes \
+            | grep '^build .*: 0 written, 16 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
+
+      # The runtime reading what the forge wrote: every first-generation
+      # block's texture resolved by identifier through the index the build
+      # just wrote, hash-checked, and decoded with a 16x16 limit.
+      - name: Smoke test the slice with the first generation's textures
+        run: |
+          ./target/release/nexora-headless --quiet --radius 1 --save "${RUNNER_TEMP}/ci-textures.nxsv" \
+            --content content/first-generation/blocks.json \
+            --resources "${RUNNER_TEMP}/first-generation" > "${RUNNER_TEMP}/ci-textures.txt"
+          grep '^content textures   16 (resolved, verified and decoded)$' \
+            "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
+          # The decoded textures are a third pool, and the cache that held them
+          # must have given its bytes back when the stage ended.
+          grep '^memory             3 pools, worst nominal, 0 suspected leaks$' \
+            "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
+
+      # The bridge to a real machine (docs/validation/local/): its rules are
+      # checked here, and a committed report must be well formed and must
+      # have come from a machine, not a container or a runner like this one.
+      # Stale is not a failure -- it is what a report becomes -- so `check`
+      # only fails on a malformed report.
+      - name: Check the local validation bridge
+        run: |
+          python3 scripts/local-validation.py self-test
+          python3 scripts/local-validation.py check --allow-missing
 
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its
@@ -213,6 +273,11 @@ jobs:
             --save "${RUNNER_TEMP}/det-b.nxsv"
           cmp "${RUNNER_TEMP}/det-a.nxsv" "${RUNNER_TEMP}/det-b.nxsv"
           diff -r "${RUNNER_TEMP}/det-a-regions" "${RUNNER_TEMP}/det-b-regions"
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 1 \
+            --content content/first-generation/blocks.json --save "${RUNNER_TEMP}/det-c.nxsv"
+          ./target/release/nexora-headless --quiet --seed 987654321 --threads 8 \
+            --content content/first-generation/blocks.json --save "${RUNNER_TEMP}/det-d.nxsv"
+          cmp "${RUNNER_TEMP}/det-c.nxsv" "${RUNNER_TEMP}/det-d.nxsv"
 
   docs:
     name: rustdoc
@@ -226,3 +291,50 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  # The operator's path, on the operator's platforms. `local-validation.py run`
+  # is what someone runs on a real machine to produce evidence
+  # (docs/validation/local/), and the container this repository is developed
+  # in is Linux: this is where "it works on Windows and macOS" is checked
+  # before anyone is asked to run it there. The report goes to the runner's
+  # temp directory -- a runner is not local hardware, and the script refuses
+  # to treat it as such.
+  platforms:
+    name: operator path on ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows
+            runner: windows-latest
+            python: python
+          - label: macos
+            runner: macos-latest
+            python: python3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: platforms-${{ matrix.label }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # The full report runs the test suite; nothing else runs it off Linux.
+      - name: Test on this platform
+        run: cargo test --workspace --all-targets
+
+      - name: Run the local validation script, quick mode
+        shell: bash
+        run: |
+          ${{ matrix.python }} scripts/local-validation.py self-test
+          ${{ matrix.python }} scripts/local-validation.py run --quick \
+            --out "${RUNNER_TEMP}/local-validation"
+          cat "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"

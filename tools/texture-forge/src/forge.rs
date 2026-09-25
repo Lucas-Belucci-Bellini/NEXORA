@@ -33,12 +33,18 @@ use nexora_asset::validation::TextureValidationResult;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
 
+use nexora_foundation::hashing::fnv1a64;
+use nexora_resource::manifest::{
+    Manifest as ResourceManifest, ManifestEntry, ResourceKind, MANIFEST_FILE,
+};
+
 use crate::layout;
 use crate::manifest::Manifest;
 use crate::pbr::PbrPipeline;
 use crate::png;
 use crate::preview::PreviewRenderer;
-use crate::procedural::ProceduralGenerator;
+use crate::procedural::{ProceduralGenerator, PROCEDURAL_GENERATOR};
+use crate::recipe_book::{RecipeBook, FINGERPRINT_PARAMETER};
 use crate::validator::Validator;
 
 /// How deep [`Forge::list`] will walk looking for materials.
@@ -223,6 +229,7 @@ impl BatchReport {
 pub struct Forge {
     root: PathBuf,
     generator: Box<dyn TextureGenerator>,
+    recipes: RecipeBook,
     pipeline: PbrPipeline,
     previews: PreviewRenderer,
     validator: Validator,
@@ -240,11 +247,37 @@ impl Forge {
         Ok(Self {
             root: root.into(),
             generator: Box::new(ProceduralGenerator::new()?),
+            recipes: RecipeBook::empty(),
             pipeline: PbrPipeline::new()?,
             previews: PreviewRenderer::new(),
             validator: Validator::new(),
             preview: true,
         })
+    }
+
+    /// The same forge, resolving named recipes from a book.
+    ///
+    /// Recipes are the procedural backend's art direction, so the book reaches
+    /// the generator only when that backend is the one installed; a forge
+    /// running another backend keeps the book for the `unchanged` check and
+    /// nothing else. Call it before [`Forge::with_generator`], not after.
+    #[must_use]
+    pub fn with_recipes(mut self, recipes: RecipeBook) -> Self {
+        if self.generator.backend() == Backend::Procedural
+            && self.generator.id().to_string() == PROCEDURAL_GENERATOR
+        {
+            if let Ok(procedural) = ProceduralGenerator::new() {
+                self.generator = Box::new(procedural.with_recipes(recipes.clone()));
+            }
+        }
+        self.recipes = recipes;
+        self
+    }
+
+    /// Where named recipes are read from.
+    #[must_use]
+    pub const fn recipes(&self) -> &RecipeBook {
+        &self.recipes
     }
 
     /// A forge that generates with something other than the procedural backend.
@@ -335,10 +368,15 @@ impl Forge {
         force: bool,
     ) -> Result<Outcome> {
         layout::check_naming(definition)?;
+        // Resolved before anything is compared or written: a definition that
+        // names a recipe the book does not have is an error, not a surface
+        // that happens to be "unchanged" because nothing could be checked.
+        let fingerprint = self.recipes().resolve(definition)?.fingerprint;
 
         let existing = self.read_definition(definition.id()).ok();
         if let Some(existing) = &existing {
             if existing.appearance_hash() == definition.appearance_hash()
+                && recorded_fingerprint(existing) == fingerprint
                 && self.all_files_present(existing)
             {
                 return Ok(Outcome {
@@ -648,6 +686,115 @@ impl Forge {
         Ok(listing)
     }
 
+    /// The runtime's view of everything under the root: the INDEX stage.
+    ///
+    /// `NEXORA CONTENT PIPELINE SPECIFICATION.md` ends at
+    /// `… → PACKAGE → INDEX → RUNTIME RESOURCE`. Every map file becomes a
+    /// texture resource under the identifier the material derives for it
+    /// (`nexora:texture/stone/basalt/albedo`), every definition a material
+    /// resource that depends on its maps, each with its exact size and hash.
+    /// Previews are left out: they are for people, not for the runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a definition under the root does not read — an
+    /// index that silently skipped it would tell the runtime the material does
+    /// not exist — when a file cannot be read or named, or when a material asks
+    /// for a map that is not on disk ([`ResourceManifest::provides`], every gap named).
+    pub fn index(&self) -> Result<ResourceManifest> {
+        let listing = self.list()?;
+        if let Some((path, error)) = listing.unreadable.into_iter().next() {
+            return Err(missing(
+                "a definition under the root does not read, so it cannot be indexed",
+            )
+            .with_context("path", path.display().to_string())
+            .with_source(error));
+        }
+        let mut entries = Vec::new();
+        for material in &listing.materials {
+            let mut maps = Vec::new();
+            for role in MapRole::ALL {
+                let file = layout::map_file(&self.root, material.id(), role);
+                if !file.is_file() {
+                    continue;
+                }
+                let texture = material.map_asset_id(role)?;
+                entries.push(self.entry(
+                    &file,
+                    texture.clone(),
+                    ResourceKind::Texture,
+                    Vec::new(),
+                )?);
+                maps.push(texture);
+            }
+            let definition = layout::definition_file(&self.root, material.id());
+            entries.push(self.entry(
+                &definition,
+                material.id().clone(),
+                ResourceKind::Material,
+                maps,
+            )?);
+        }
+        let manifest = ResourceManifest::new(entries)?;
+        // The index is built from the files that exist, so a material whose
+        // map was never written would be indexed without it -- and found out
+        // by the runtime, at the first load. Refuse it here, naming every gap.
+        manifest.provides(&listing.materials)?;
+        Ok(manifest)
+    }
+
+    /// Write [`Forge::index`] to `<root>/resources.json`, returning it.
+    ///
+    /// # Errors
+    ///
+    /// See [`Forge::index`]; also when the file cannot be written.
+    pub fn write_index(&self) -> Result<ResourceManifest> {
+        let manifest = self.index()?;
+        std::fs::create_dir_all(&self.root).map_err(|cause| {
+            unwritable("the output root could not be created")
+                .with_context("path", self.root.display().to_string())
+                .with_context("cause", cause.to_string())
+        })?;
+        write_file(
+            &self.root.join(MANIFEST_FILE),
+            manifest.to_text().as_bytes(),
+        )?;
+        Ok(manifest)
+    }
+
+    fn entry(
+        &self,
+        file: &Path,
+        id: Identifier,
+        kind: ResourceKind,
+        dependencies: Vec<Identifier>,
+    ) -> Result<ManifestEntry> {
+        let bytes = std::fs::read(file).map_err(|cause| {
+            missing("a file to index could not be read")
+                .with_context("path", file.display().to_string())
+                .with_context("cause", cause.to_string())
+        })?;
+        // Relative, with `/` whatever the host: the manifest is read on other
+        // machines, and it refuses anything else.
+        let relative = file
+            .strip_prefix(&self.root)
+            .map_err(|_| missing("an indexed file is outside the root"))?
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        Ok(ManifestEntry {
+            id,
+            kind,
+            path: relative,
+            size: bytes.len() as u64,
+            hash: fnv1a64(&bytes),
+            dependencies,
+            optional: false,
+            fallback: None,
+        })
+    }
+
     fn walk(&self, directory: &Path, depth: usize, listing: &mut Listing) {
         if depth > MAX_LIST_DEPTH {
             return;
@@ -787,6 +934,17 @@ impl Forge {
         files.push((path, text.len()));
         Ok(files)
     }
+}
+
+/// The recipe fingerprint a written material's trace recorded, if any.
+fn recorded_fingerprint(material: &SurfaceMaterial) -> Option<u64> {
+    let raw = material
+        .provenance()
+        .generation
+        .as_ref()?
+        .parameters
+        .get(FINGERPRINT_PARAMETER)?;
+    u64::from_str_radix(raw.strip_prefix("0x")?, 16).ok()
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -1054,6 +1212,134 @@ mod tests {
             .expect_err("`..` must never become a directory");
         assert!(err.to_string().contains(".."), "{err}");
         assert!(!root.exists(), "nothing may be created for a refused name");
+    }
+
+    #[test]
+    fn editing_a_named_recipe_is_noticed_though_the_material_did_not_change() {
+        let root = scratch("recipe-out");
+        let recipes = scratch("recipe-book");
+        let file = recipes.join("nexora").join("wood").join("dark.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let recipe = crate::recipe_book::RecipeDocument {
+            id: id("nexora:recipe/wood/dark"),
+            category: MaterialCategory::Wood,
+            recipe: crate::recipe::Recipe::for_category(MaterialCategory::Wood).unwrap(),
+        };
+        std::fs::write(&file, crate::recipe_book::to_text(&recipe)).unwrap();
+
+        let forge = Forge::new(&root)
+            .unwrap()
+            .with_recipes(RecipeBook::at(&recipes));
+        let named = SurfaceMaterial::builder(
+            id("nexora:material/oak"),
+            MaterialCategory::Wood,
+            Resolution::square(16).unwrap(),
+            Provenance::authored("operator", "test"),
+        )
+        .recipe(id("nexora:recipe/wood/dark"))
+        .build()
+        .unwrap();
+
+        let first = forge.generate(&named, 7, false).unwrap();
+        assert_eq!(first.status, WriteStatus::Written);
+        let trace = first.material.provenance().generation.clone().unwrap();
+        assert_eq!(trace.preset, Some(id("nexora:recipe/wood/dark")));
+        assert!(trace.parameters.contains_key(FINGERPRINT_PARAMETER));
+        assert_eq!(
+            forge.generate(&named, 7, false).unwrap().status,
+            WriteStatus::Unchanged
+        );
+
+        // The recipe file is edited; the material definition is not.
+        let mut edited = recipe.clone();
+        edited.recipe.levels = 3;
+        std::fs::write(&file, crate::recipe_book::to_text(&edited)).unwrap();
+        assert_eq!(
+            forge.generate(&named, 7, false).unwrap().status,
+            WriteStatus::Refused,
+            "an edited recipe is a different surface"
+        );
+        assert_eq!(
+            forge.generate(&named, 7, true).unwrap().status,
+            WriteStatus::Replaced
+        );
+
+        // And a recipe that is not in the book is an error, not "unchanged".
+        std::fs::remove_file(&file).unwrap();
+        let err = forge
+            .generate(&named, 7, false)
+            .expect_err("a missing recipe");
+        assert!(err.to_string().contains("recipe"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&recipes);
+    }
+
+    #[test]
+    fn an_index_missing_a_map_its_material_asks_for_is_refused() {
+        let root = scratch("index-gap");
+        let forge = Forge::new(&root).unwrap();
+        forge
+            .generate(&definition("nexora:material/oak", 0.8), 7, false)
+            .unwrap();
+        forge
+            .generate(&definition("nexora:material/pine", 0.8), 7, false)
+            .unwrap();
+        std::fs::remove_file(root.join("nexora/oak/albedo.png")).unwrap();
+        std::fs::remove_file(root.join("nexora/pine/normal.png")).unwrap();
+
+        let err = forge.write_index().expect_err("oak has no albedo");
+        let text = err.to_string();
+        assert!(text.contains("gaps=2"), "both gaps, not the first: {text}");
+        assert!(
+            text.contains("nexora:material/oak: no albedo map"),
+            "{text}"
+        );
+        assert!(
+            text.contains("nexora:material/pine: no normal map"),
+            "{text}"
+        );
+        assert!(
+            !root.join(MANIFEST_FILE).exists(),
+            "nothing is written for the runtime to trust"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_index_names_every_map_by_identifier_with_its_exact_hash() {
+        let root = scratch("index");
+        let forge = Forge::new(&root).unwrap();
+        forge
+            .generate(&definition("nexora:material/oak", 0.8), 7, false)
+            .unwrap();
+
+        let manifest = forge.write_index().expect("indexes");
+        // Albedo, height, normal, and the definition.
+        assert_eq!(manifest.len(), 4);
+        let albedo = manifest
+            .get(&id("nexora:texture/oak/albedo"))
+            .expect("the albedo is a texture resource");
+        assert_eq!(albedo.kind, ResourceKind::Texture);
+        assert_eq!(albedo.path, "nexora/oak/albedo.png");
+        let bytes = std::fs::read(root.join("nexora/oak/albedo.png")).unwrap();
+        assert_eq!(albedo.size, bytes.len() as u64);
+        assert_eq!(albedo.hash, fnv1a64(&bytes));
+
+        let material = manifest.get(&id("nexora:material/oak")).unwrap();
+        assert_eq!(material.kind, ResourceKind::Material);
+        assert_eq!(material.dependencies.len(), 3, "it depends on its maps");
+
+        let written = std::fs::read_to_string(root.join(MANIFEST_FILE)).unwrap();
+        assert_eq!(ResourceManifest::from_text(&written).unwrap(), manifest);
+
+        // A root holding a definition that does not read is not indexed.
+        let broken = root.join("nexora").join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(layout::DEFINITION_FILE), "{").unwrap();
+        assert!(forge.index().is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

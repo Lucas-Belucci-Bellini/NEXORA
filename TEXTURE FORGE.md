@@ -185,6 +185,9 @@ nexora-texture-forge <comando> [opções]
 
   generate <definition.json>   realiza um material e o escreve
   batch    <manifest.json>     realiza tudo que um manifesto declara
+  build    <plan.json>         realiza as definições que um plano lista, sob a
+                               política dele, e escreve o índice
+  index                        escreve resources.json para o runtime
   variant  <definition.json>   outro material parecido com um já escrito
   repair   <material-id>       restaura mapas perdidos ou corrompidos
   validate <material-id>       confere o que está no disco
@@ -192,6 +195,7 @@ nexora-texture-forge <comando> [opções]
   list                         tudo que está escrito sob a raiz
 
   --out <dir>          onde os materiais moram (padrão: assets/materials)
+  --recipes <dir>      onde as receitas nomeadas moram (padrão: content/recipes)
   --seed <valor>       semente, decimal ou 0x (padrão: 0)
   --force              substitui um material já escrito
   --of <material-id>   de qual material a variante deriva (obrigatório)

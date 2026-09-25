@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use nexora_foundation::memory::{MemoryClass, Pressure};
 use nexora_headless::{format_report, run_slice, SliceConfig};
 
 /// A scratch directory that removes itself.
@@ -371,6 +372,9 @@ fn the_report_renders_every_field() {
         "frames",
         "input",
         "chunks retained",
+        "memory",
+        "world.chunks",
+        "world.retained",
         "probes verified",
         "lifecycle phases",
     ] {
@@ -533,4 +537,89 @@ fn journalling_does_not_depend_on_the_worker_count_either() {
         std::fs::read(scratch.save("jr-b")).expect("save b"),
         "journalling made the save depend on the worker count"
     );
+}
+
+#[test]
+fn every_memory_pool_stays_inside_its_budget_and_drains_at_rest() {
+    let scratch = Scratch::new("memory");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+    let memory = &report.memory;
+
+    assert_eq!(
+        memory
+            .pools
+            .iter()
+            .map(|pool| pool.name)
+            .collect::<Vec<_>>(),
+        ["world.chunks", "world.retained"],
+        "no texture pool without textures"
+    );
+    assert_eq!(memory.worst(), Pressure::Nominal, "{memory:?}");
+    assert_eq!(memory.suspected_leaks(), 0);
+
+    let world = &memory.pools[0];
+    assert_eq!(world.class, MemoryClass::World);
+    assert_eq!(
+        world.current as usize, report.storage_bytes,
+        "the pool records what the world reports, and the reloaded world is the one it saved"
+    );
+    assert!(world.high_water >= world.current);
+
+    // Every edited column was held outside the world at some point, and all
+    // of it went back before the save.
+    let retained = &memory.pools[1];
+    assert_eq!(retained.current, 0);
+    assert!(retained.high_water > 0, "the walk retained edited columns");
+    assert!(retained.drains_at_rest);
+}
+
+#[test]
+fn a_resource_index_missing_what_the_content_asks_for_is_refused_whole() {
+    let scratch = Scratch::new("gaps");
+    let root = scratch.save("resources");
+    fs::create_dir_all(&root).unwrap();
+    // An index that is well-formed and provides nothing.
+    fs::write(
+        root.join("resources.json"),
+        "{\"schema\": 1, \"resources\": []}",
+    )
+    .unwrap();
+    let config = SliceConfig {
+        content: Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../content/first-generation/blocks.json"),
+        ),
+        resources: Some(root),
+        ..config(&scratch, "world.nxsv")
+    };
+
+    let err = run_slice(&config).expect_err("nothing the content needs is indexed");
+    let text = err.to_string();
+    // Sixteen materials and their sixteen albedos, all named, before any
+    // texture is opened -- not whichever one a loader reached first.
+    assert!(text.contains("gaps=32"), "{text}");
+    assert!(
+        text.contains("nexora:material/stone/basalt: no albedo map"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_first_generation_content_survives_every_stage() {
+    // Every path that reads a world back -- the save, the journal replay, the
+    // region store -- has to register the content, or a world that saves
+    // stones cannot open them. The region store was the one that did not.
+    let scratch = Scratch::new("content-stages");
+    let config = SliceConfig {
+        content: Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../content/first-generation/blocks.json"),
+        ),
+        ..config(&scratch, "world.nxsv")
+    };
+    let report = run_slice(&config).expect("the slice completes with content");
+    assert_eq!(report.content_blocks, 16);
+    assert_eq!(report.content_surfaces, 16);
+    assert_eq!(report.probes_verified, report.blocks_edited);
+    assert_eq!(report.recovered_probes, report.probes_verified);
 }

@@ -56,7 +56,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 1060 tests
+cargo test --workspace          # 1138 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -98,7 +98,14 @@ every edit ever made — and the save comes out byte-identical either way.
 
 ```bash
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
+cargo run -p nexora-headless -- --content content/first-generation/blocks.json
 ```
+
+The second run adds the first visual generation — the sixteen 16×16 stones of
+[`content/first-generation/`](content/first-generation/CATALOG.md) — as blocks,
+through the same content path a mod would use. Each one must show its own
+surface in a mesh and survive the save, the reload and the journal replay, or
+the run fails: `content blocks 16 (16 surfaces in the mesh)`, `probes verified 92`.
 
 ### Prebuilt binaries
 
@@ -109,6 +116,23 @@ binaries it is about to package on each platform**, and publishes the archives
 with a `SHA256SUMS` covering them. No release has been cut yet, so building
 from source is currently the only way to get it — which is the three commands
 above and no dependencies.
+
+### On your own machine: the local validation report
+
+The development container has no GPU and no display, so evidence from a real
+machine enters the repository as a report
+([`docs/validation/local/`](docs/validation/local/README.md)). With Rust
+(`rustup`), Git and Python 3 installed:
+
+```bash
+python3 scripts/local-validation.py run        # Windows: py scripts\local-validation.py run
+python3 scripts/local-validation.py check      # is the report still about HEAD?
+```
+
+It builds, tests, runs the slice with and without the first-generation
+content, builds the 16×16 set and decodes it, runs the CPU benchmark, and
+writes `docs/validation/local/NEXORA-LOCAL-VALIDATION.{json,md}` — without any
+hostname, user name, serial or absolute path. Commit those two files.
 
 ## Measuring it
 
@@ -164,7 +188,8 @@ violation fails the build rather than a review
 
 ```text
 engine/foundation    errors, versions, identifiers, space, time, determinism,
-                     diagnostics, configuration          (no dependencies at all)
+                     diagnostics, configuration, memory budgets (ADR-0024)
+                                                         (no dependencies at all)
 engine/persistence   versioned, checksummed, atomic save container
 engine/runtime       lifecycle, engine modules, registries, event bus, jobs,
                      the frame loop and its budget, input and its bindings
@@ -177,10 +202,16 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
 engine/command       intent: definitions, validation, dispatch, quotas
+engine/query         reads as a contract: versioned, permitted, bounded (ADR-0023)
 engine/asset         surface materials, texture maps, provenance, validation,
                      the generator and pipeline contracts
+engine/resource      resource manifest, integrity-checked loading, bounded
+                     cache and typed handles (ADR-0021)
+engine/mesh          greedy meshing into a data structure (ADR-0012)
+engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
-                     crate, so it lives outside engine/
+                     crate, so it lives outside engine/: recipes, generation,
+                     batch manifests, build plans, INDEX
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
 benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)
