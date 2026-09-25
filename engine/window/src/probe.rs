@@ -42,6 +42,8 @@ pub struct ProbeReport {
     pub captured: Option<Captured>,
     /// Frames the host completed.
     pub frames: u64,
+    /// Redraws on which the window was not taking frames yet.
+    pub waited: u64,
 }
 
 /// The first frame as the window received it.
@@ -87,6 +89,7 @@ pub fn run_probe(width: u32, height: u32, frames: u64) -> Result<ProbeReport> {
         conformance: state.conformance,
         captured: state.captured,
         frames: session.frames,
+        waited: session.waited,
     })
 }
 
@@ -157,7 +160,6 @@ impl Client for Probe {
         if !rhi.capabilities().presents {
             return Err(wrong("a backend opened on a window says it cannot present"));
         }
-        let report = conformance::run(rhi, &conformance_shaders())?;
         let target = rhi.create_texture(&TextureDesc {
             label: "window probe".into(),
             width: EDGE,
@@ -181,7 +183,7 @@ impl Client for Probe {
         rhi.wait(fence)?;
         self.state = Some(State {
             adapter: rhi.adapter().clone(),
-            conformance: report.passed.len(),
+            conformance: 0,
             target,
             shown: 0,
             captured: None,
@@ -196,7 +198,16 @@ impl Client for Probe {
             .as_mut()
             .ok_or_else(|| wrong("a frame before the window opened"))?;
         if state.shown == 0 {
-            if let Some(frame) = rhi.present_and_capture(state.target)? {
+            // A window may not take frames until it is on screen (macOS
+            // reports it occluded until then). Wait for the first frame that
+            // is shown, and only then hold the backend to the conformance
+            // suite, whose `present` case needs a window that takes frames.
+            let frame = match rhi.present_and_capture(state.target) {
+                Ok(frame) => frame,
+                Err(error) if error.recovery() == Recovery::Retry => return Ok(Flow::Wait),
+                Err(error) => return Err(error),
+            };
+            if let Some(frame) = frame {
                 let captured = check_frame(&frame)?;
                 if captured.checked == 0 || captured.matching != captured.checked {
                     return Err(wrong("the window did not show the target")
@@ -206,8 +217,13 @@ impl Client for Probe {
                 }
                 state.captured = Some(captured);
             }
+            state.conformance = conformance::run(rhi, &conformance_shaders())?.passed.len();
         } else {
-            rhi.present(state.target)?;
+            match rhi.present(state.target) {
+                Ok(()) => {}
+                Err(error) if error.recovery() == Recovery::Retry => return Ok(Flow::Wait),
+                Err(error) => return Err(error),
+            }
         }
         state.shown += 1;
         if state.shown < self.frames {

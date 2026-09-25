@@ -20,6 +20,7 @@
 pub mod probe;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_rhi_wgpu::WgpuRhi;
@@ -46,9 +47,20 @@ pub struct WindowSpec {
 pub enum Flow {
     /// Draw another frame.
     Continue,
+    /// Nothing was shown: the window is not taking frames yet (on macOS, a
+    /// window that is not visible yet cannot be drawn to). Not counted as a
+    /// frame; the host asks again, up to [`SHOW_TIMEOUT`] before any frame.
+    Wait,
     /// Close the window and return from [`run`].
     Exit,
 }
+
+/// How long the host sleeps before asking again after [`Flow::Wait`].
+const WAIT_STEP: Duration = Duration::from_millis(10);
+
+/// How long the host waits, after opening the window, for the client's
+/// first frame before it gives up and says the window never became visible.
+pub const SHOW_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What runs inside the window. The host calls it on the event loop's thread.
 pub trait Client {
@@ -85,6 +97,8 @@ pub struct Session {
     pub window: WindowFacts,
     /// Frames the client completed.
     pub frames: u64,
+    /// Redraws on which the window was not taking frames yet ([`Flow::Wait`]).
+    pub waited: u64,
     /// Whether the window was closed from outside (the user, the window
     /// system) rather than by the client.
     pub closed: bool,
@@ -127,7 +141,10 @@ pub fn run(spec: &WindowSpec, client: &mut dyn Client) -> Result<Session> {
         window: None,
         rhi: None,
         facts: None,
+        opened_at: None,
+        resume_at: None,
         frames: 0,
+        waited: 0,
         closed: false,
         failure: None,
     };
@@ -150,6 +167,7 @@ pub fn run(spec: &WindowSpec, client: &mut dyn Client) -> Result<Session> {
     Ok(Session {
         window,
         frames: host.frames,
+        waited: host.waited,
         closed: host.closed,
     })
 }
@@ -162,7 +180,11 @@ struct Host<'a> {
     rhi: Option<WgpuRhi>,
     window: Option<Arc<Window>>,
     facts: Option<WindowFacts>,
+    opened_at: Option<Instant>,
+    /// After [`Flow::Wait`]: when to ask for the next frame.
+    resume_at: Option<Instant>,
     frames: u64,
+    waited: u64,
     closed: bool,
     failure: Option<Error>,
 }
@@ -190,6 +212,7 @@ impl Host<'_> {
         let mut rhi = WgpuRhi::with_surface(Arc::clone(&window), size.width, size.height)?;
         self.client.opened(&mut rhi, &facts)?;
         window.request_redraw();
+        self.opened_at = Some(Instant::now());
         self.facts = Some(facts);
         self.rhi = Some(rhi);
         self.window = Some(window);
@@ -229,9 +252,14 @@ impl ApplicationHandler for Host<'_> {
             WindowEvent::RedrawRequested => match self.client.frame(rhi) {
                 Ok(Flow::Continue) => {
                     self.frames += 1;
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
+                    event_loop.set_control_flow(ControlFlow::Poll);
+                }
+                Ok(Flow::Wait) => {
+                    // Nothing to draw into: ask again shortly, not in a spin.
+                    self.waited += 1;
+                    let resume = Instant::now() + WAIT_STEP;
+                    self.resume_at = Some(resume);
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(resume));
                 }
                 Ok(Flow::Exit) => {
                     self.frames += 1;
@@ -241,5 +269,34 @@ impl ApplicationHandler for Host<'_> {
             },
             _ => {}
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        if let Some(opened_at) = self.opened_at {
+            if self.frames == 0 && opened_at.elapsed() > SHOW_TIMEOUT {
+                let error = Error::new(
+                    Domain::Platform,
+                    "window",
+                    "the window never became visible: no frame could be shown",
+                )
+                .with_recovery(Recovery::Retry)
+                .with_context("platform", platform())
+                .with_context("waited_redraws", self.waited.to_string())
+                .with_context("timeout_s", SHOW_TIMEOUT.as_secs().to_string());
+                self.fail(event_loop, error);
+                return;
+            }
+        }
+        if self.resume_at.is_some_and(|resume| Instant::now() < resume) {
+            return;
+        }
+        self.resume_at = None;
+        // Every pass of the loop asks for the next frame. Asking here rather
+        // than after a frame keeps asking while the window is not visible,
+        // which is when a platform may skip a redraw.
+        window.request_redraw();
     }
 }

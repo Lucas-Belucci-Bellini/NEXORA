@@ -29,8 +29,8 @@ fn main() -> ExitCode {
                 adapter.name, adapter.backend, adapter.kind
             );
             println!(
-                "window             {}x{} on {}",
-                report.window.width, report.window.height, report.window.platform
+                "window             {}x{} on {}, {} redraws waited for it to take frames",
+                report.window.width, report.window.height, report.window.platform, report.waited
             );
             println!(
                 "surface            {}x{} {}, {}",

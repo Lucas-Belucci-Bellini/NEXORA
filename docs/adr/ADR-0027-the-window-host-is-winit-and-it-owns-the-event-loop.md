@@ -84,6 +84,15 @@ window to `wgpu`, and `x11`.
 - **One rule moved into the shared checks**: a depth texture cannot be
   presented (`kit::presentable`). The null backend and `WgpuRhi` refuse it the
   same way, and the suite checks it.
+- **A window takes frames when it is on screen, not when it is created.** On
+  macOS, `wgpu` refuses a surface image while the window's occlusion state is
+  not *visible*, and a freshly created window is not visible yet. The first CI
+  run caught this (the conformance suite ran from `opened` and its `present`
+  case failed on macOS only). So a client can answer a redraw with
+  `Flow::Wait` ("nothing was shown"), which the host does not count as a
+  frame. It asks again 10 ms later, and fails with *"the window never became
+  visible"* if no frame is shown within `SHOW_TIMEOUT` (20 s). The probe runs
+  the conformance suite only after its first frame has been shown.
 - **No display is a failure, not a skip**, as ADR-0026 made no GPU. A machine
   without one declares it with `NEXORA_DISPLAY=none`.
 - Window errors get their own domain, `Domain::Platform`.
@@ -112,6 +121,10 @@ says `not readable on this surface` rather than claiming the check.
   65,536). Not tracking the present's fence fails the conformance case
   `present` ("a presented texture's memory outlives its handle until the frame
   is done").
+- Waiting, simulated by refusing the first five surface images: the probe
+  reports `5 redraws waited` and passes. Refusing all of them: it fails after
+  20 s with `the window never became visible`, having asked about 100 times a
+  second rather than spinning.
 - Without a display the probe and the test fail and say why (`neither
   WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set`). With
   `NEXORA_DISPLAY=none` the test reports that it did not run.
