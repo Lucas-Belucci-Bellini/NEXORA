@@ -16,7 +16,17 @@ git add docs/validation/local/ && git commit -m "NEXORA: local validation on <ma
 
 On Windows the interpreter is usually `py` or `python`, not `python3`:
 `py scripts\local-validation.py run`. Needs Rust through `rustup` (the pinned
-toolchain installs itself on first build), Git, and Python 3.8 or newer. The
+toolchain installs itself on first build), Git, and Python 3.8 or newer — and,
+**on Windows, the Visual Studio C++ Build Tools**, because Rust links there
+with Microsoft's `link.exe`:
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+`run` starts with a **preflight** that compiles a one-line program and stops in
+seconds, naming what to install, if the machine cannot build. It can also run
+alone: `py scripts\local-validation.py preflight`. The
 `platforms` job in CI runs `run --quick` on Windows and macOS runners, so this
 path is exercised on both before anyone is asked to use it.
 
@@ -85,3 +95,12 @@ output is kept as short tails with the repository root, the home directory and
 the run's temporary directory replaced by placeholders. The machine is
 described by class: OS, architecture, CPU model, core count, memory, GPU model
 and driver, toolchain versions, and whether it is a VM.
+
+## When it does not run
+
+| what you see | cause | fix |
+| --- | --- | --- |
+| ``linker `link.exe` not found`` | Windows without the C++ Build Tools | the `winget` line above, or "Desktop development with C++" in the Visual Studio Installer; then a **new** terminal. VS Code does not include it |
+| ``linker `cc` not found`` | macOS or Linux without a C toolchain | `xcode-select --install` / `sudo apt install build-essential` |
+| `` `cargo` is not on PATH `` | Rust not installed, or the terminal predates it | https://rustup.rs, then a new terminal |
+| `python3` not found (Windows) | the interpreter is `py` or `python` there | `py scripts\local-validation.py run` |
