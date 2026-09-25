@@ -52,20 +52,24 @@ not local evidence, and a committed one would claim hardware that was not there.
 | `forge_first_generation` | the forge builds the 16×16 set from its plan |
 | `headless_slice_textures` | the runtime resolves, verifies and decodes that set |
 | `rhi_native` | the native RHI backend on **this machine's GPU**: adapter, the nine conformance cases, a 16×16 upload and a draw, both read back (ADR-0026) |
+| `window` | a **real window** on this machine's display: its surface, the conformance cases with presentation on, 60 frames of a 16×16 target shown in it, the first read back from the surface where the platform allows (ADR-0027) |
 | `benchmark_cpu` | the full CPU benchmark, judged against every published budget. The first report that kept it closed DEBT-0013 (baseline Appendix I) |
 
 ## What it cannot validate yet, and says so
 
-Window, swapchain, presentation, a renderer, real input devices, client mode
-and the benchmark's GPU stages are recorded as `NOT_IMPLEMENTED`, never as
-passed and never as "not tested". The engine has no code for any of them yet,
-and a real GPU cannot validate code that does not exist. When one of them is
-built, it gets a check here, and only then can a report move it. The RHI, the
-GPU context, shaders and texture upload were on this list until ADR-0026 built
-them. They are now the `rhi_native` check.
+A renderer, real input devices, client mode and the benchmark's GPU stages are
+recorded as `NOT_IMPLEMENTED`, never as passed and never as "not tested". The
+engine has no code for any of them yet, and a real GPU cannot validate code
+that does not exist. When one of them is built, it gets a check here, and only
+then can a report move it. The RHI, the GPU context, shaders and texture upload
+were on this list until ADR-0026 built them; they are now the `rhi_native`
+check. The window, the swapchain and presentation were on it until ADR-0027;
+they are now the `window` check.
 
-A machine with no GPU at all says so with `NEXORA_GPU=none`: `rhi_native` is
-then recorded as `SKIPPED` with that reason, never as passed.
+A machine with no GPU at all says so with `NEXORA_GPU=none`: `rhi_native` and
+`window` are then recorded as `SKIPPED` with that reason, never as passed. A
+machine with no display says so with `NEXORA_DISPLAY=none`, and `window` is
+skipped the same way.
 
 ## Reading a report: `check`
 

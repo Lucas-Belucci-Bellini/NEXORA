@@ -108,7 +108,9 @@ validation script records `rhi_native` as `SKIPPED` with that reason.
   the event loop, and that is the host DEBT-0041 (a real clock) and DEBT-0043
   (real input devices) are waiting for. It is the next decision, and it is
   the first one that genuinely needs a display: presentation cannot be
-  verified on lavapipe without one.
+  verified on lavapipe without one. *Settled by ADR-0027 (2026-09-25):
+  `winit`, and a display for CI from Xvfb, so presentation is verified on
+  lavapipe after all.*
 - **The vertex format.** The contract has none yet; the renderer will bring
   one. Until then this backend reads a vertex as its position, up to four
   `f32` chosen by the stride, and ignores the rest. DEBT-0046 records this

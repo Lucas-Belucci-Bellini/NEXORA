@@ -225,3 +225,25 @@ fn device_memory_is_accounted_to_the_owner_pool() {
     rhi.destroy_texture(texture).unwrap();
     assert_eq!(pool.current(), 0);
 }
+
+#[test]
+fn without_a_window_the_backend_says_it_cannot_present_and_does_not() {
+    let Some(mut rhi) = backend() else { return };
+    assert!(!rhi.capabilities().presents);
+    assert!(rhi.surface().is_none());
+    let target = rhi
+        .create_texture(&TextureDesc {
+            label: "target".into(),
+            width: 4,
+            height: 4,
+            format: TextureFormat::Rgba8Unorm,
+            usage: Usage::RENDER_TARGET,
+        })
+        .unwrap();
+    let error = rhi.present(target).expect_err("no surface");
+    assert_eq!(error.recovery(), Recovery::DisableSubsystem);
+    assert!(rhi.present_and_capture(target).is_err());
+    assert!(rhi.resize(64, 64).is_err(), "nothing to resize");
+    rhi.destroy_texture(target).unwrap();
+    assert_eq!(rhi.allocated_bytes(), 0);
+}

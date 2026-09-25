@@ -21,9 +21,9 @@ use nexora_foundation::memory::MemoryPool;
 use crate::api::{BufferHandle, CommandList, Fence, PipelineHandle, Rhi, TextureHandle};
 use crate::desc::{
     check_buffer, check_pipeline, check_texture, refused, BufferDesc, Capabilities, PipelineDesc,
-    TextureDesc, TextureFormat, Usage,
+    TextureDesc, TextureFormat,
 };
-use crate::kit::{device_lost, no_surface, Accounting, Resources};
+use crate::kit::{device_lost, no_surface, presentable, Accounting, Resources};
 
 /// Default device memory: enough for any test, small enough to hit on purpose.
 const DEFAULT_MEMORY: u64 = 256 * 1024 * 1024;
@@ -241,11 +241,7 @@ impl Rhi for NullRhi {
 
     fn present(&mut self, texture: TextureHandle) -> Result<()> {
         self.alive()?;
-        let live = self.resources.texture(texture)?;
-        if !live.desc.usage.contains(Usage::RENDER_TARGET) {
-            return Err(refused("only a render target can be presented")
-                .with_context("label", &live.desc.label));
-        }
+        presentable(&self.resources.texture(texture)?.desc)?;
         Err(no_surface(self.caps.backend))
     }
 
@@ -274,7 +270,7 @@ impl Rhi for NullRhi {
 mod tests {
     use super::*;
     use crate::api::Command;
-    use crate::desc::ShaderStage;
+    use crate::desc::{ShaderStage, Usage};
     use nexora_foundation::error::Recovery;
     use nexora_foundation::memory::{MemoryBudget, MemoryClass, MemoryLedger, PoolSpec};
 

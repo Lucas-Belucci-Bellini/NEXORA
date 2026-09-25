@@ -82,3 +82,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0024](docs/adr/ADR-0024-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memória é contabilizada pelo dono, num livro-razão só | ACCEPTED |
 | [0025](docs/adr/ADR-0025-the-rhi-is-a-contract-a-null-backend-keeps-before-a-gpu-does.md) | O RHI é um contrato que um backend nulo cumpre antes de uma GPU | ACCEPTED |
 | [0026](docs/adr/ADR-0026-the-first-native-backend-is-wgpu-and-ci-runs-it.md) | O primeiro backend nativo é wgpu, e o CI o executa | ACCEPTED |
+| [0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md) | O host de janela é o winit, e ele é dono do laço de eventos | ACCEPTED |

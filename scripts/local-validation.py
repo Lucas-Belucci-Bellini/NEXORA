@@ -18,9 +18,11 @@ Two rules this script keeps, and why:
 
 * Nothing is marked as passed that did not run. The native RHI backend is a
   check (`rhi_native`): it opens this machine's GPU, runs the conformance
-  suite, uploads a texture and draws, reading both back (ADR-0026). Window,
-  swapchain, presentation, a renderer, real input devices and client mode are
-  recorded as NOT_IMPLEMENTED, because the engine has no code for them yet --
+  suite, uploads a texture and draws, reading both back (ADR-0026). The window
+  host is another (`window`): it opens a window, presents to it, and reads the
+  first frame back from the surface where the platform allows (ADR-0027). A
+  renderer, real input devices and client mode are recorded as
+  NOT_IMPLEMENTED, because the engine has no code for them yet --
   a real GPU cannot validate code that does not exist, and a report that said
   "not tested" would invite someone to test it.
 * Nothing personal is recorded: no hostname, user name, serial number, MAC
@@ -58,12 +60,11 @@ RELEVANT = ["engine/", "tools/", "content/", "benchmarks/", "Cargo.toml", "Cargo
 STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 
 # What a real machine is needed for, and why none of it can pass yet.
+# The window, its surface (swapchain) and presentation left this list with
+# ADR-0027: they are the `window` check now.
 HARDWARE_GATED = [
-    ("window", "no window host exists in the engine"),
-    ("swapchain", "the native backend opens no surface: it needs a window (DEBT-0046)"),
-    ("presentation", "needs a swapchain"),
-    ("rendering", "no renderer: the native backend draws one triangle offscreen (rhi_native), "
-                  "nothing draws the world; meshes are data (ADR-0012)"),
+    ("rendering", "no renderer: the native backend draws one triangle (rhi_native) and presents "
+                  "a 16x16 target (window); nothing draws the world; meshes are data (ADR-0012)"),
     ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
     ("benchmark_gpu_stages", "DEBT-0008: the plan's GPU stages have no implementation"),
@@ -400,6 +401,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     forge = str(release / _exe("nexora-texture-forge"))
     bench = str(release / _exe("nexora-benchmark"))
     probe = str(release / _exe("nexora-rhi-probe"))
+    window_probe = str(release / _exe("nexora-window-probe"))
     slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
@@ -433,6 +435,18 @@ def run_checks(scratch: Path, quick: bool) -> list:
     else:
         results.append(needs_build("rhi_native", [probe],
                                    _lines("adapter", "conformance", "upload", "draw", "result")))
+    # The window host: a window, its surface, the conformance suite with
+    # presentation on, and frames shown in it, the first read back from the
+    # surface where the platform allows (ADR-0027). No display is declared,
+    # like no GPU; otherwise its absence is a failure.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("window", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("window", "NEXORA_GPU=none: nothing can present without a GPU"))
+    else:
+        results.append(needs_build("window", [window_probe],
+                                   _lines("adapter", "window", "surface", "conformance", "frame",
+                                          "presented", "result")))
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
     # DEBT-0008: the container's numbers are one machine's.
     results.append(needs_build("benchmark_cpu", [bench, "--markdown"] + (["--smoke"] if quick else [])

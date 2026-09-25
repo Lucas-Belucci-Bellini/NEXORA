@@ -601,6 +601,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   real. A ordem, porém, é depois do `DEBT-0018` e do `DEBT-0027`: um host que
   rode quadros enquanto a geração e o meshing ainda moram na thread do tick
   mede o atraso deles, não o loop.
+- **NOTE (2026-09-25):** o host de janela existe
+  ([ADR-0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md)):
+  `nexora_window::Client::frame` é chamado uma vez por redesenho, e é o lugar
+  natural do relógio num cliente. Nada o liga ao `runtime::frame` ainda; o
+  caminho headless descrito acima continua válido.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
@@ -681,7 +686,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** existir qualquer processo com janela ou com laço de eventos do
   sistema operacional. Depende do `DEBT-0041` pela mesma razão que ele depende
   do `DEBT-0018` e do `DEBT-0027`: medir ou exercitar a borda antes de haver
-  host é medir o roteiro.
+  host é medir o roteiro. **Disparado em 2026-09-25**
+  ([ADR-0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md)):
+  o `nexora-window` roda o laço de eventos do sistema operacional, e o `winit`
+  já entrega a ele eventos de teclado e mouse, que o host hoje descarta. A
+  tradução para `Signal` é o próximo passo desta dívida, não deste host.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
@@ -726,12 +735,16 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   **lavapipe** (Vulkan por software da Mesa) do container e do CI. Duas
   regras que só um driver teria pego foram para as regras compartilhadas.
   Continua aberto, e só isto:
-  - **apresentação**: não há janela, portanto não há surface, swapchain nem
-    `present`. É código a escrever (o host da janela, o mesmo que o
-    `DEBT-0041` e o `DEBT-0043` esperam), não uma limitação de ambiente;
-  - **uma GPU real**: a checagem `rhi_native` de `local-validation.py` roda o
-    probe na máquina do operador, e até haver um relatório, o backend foi
-    verificado num driver conforme, não em hardware;
+  - ~~**apresentação**~~ — **construída** (2026-09-25,
+    [ADR-0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md)):
+    `engine/window` abre uma janela com o `winit`, o `WgpuRhi` abre a surface
+    nela, e `present` desenha o alvo na imagem da swapchain e a apresenta. No
+    CI, sob Xvfb e lavapipe, o primeiro quadro é lido de volta da surface e
+    bate nos 65.536 texels; a conformidade roda com `presents: true`;
+  - **uma GPU real**: as checagens `rhi_native` e `window` de
+    `local-validation.py` rodam os probes na máquina do operador, e até haver
+    um relatório, o backend e a janela foram verificados num driver conforme e
+    num servidor X virtual, não em hardware nem num desktop;
   - **regra provisória de vértice**: sem formato de vértice no contrato, o
     backend lê a posição como até quatro `f32` escolhidos pelo stride. O
     renderer traz o formato de verdade.

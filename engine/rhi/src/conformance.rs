@@ -411,14 +411,41 @@ fn present(rhi: &mut dyn Rhi) -> Result<()> {
         rhi.present(sampled).is_err(),
         "only a render target can be presented",
     )?;
+    if rhi
+        .capabilities()
+        .formats
+        .contains(&TextureFormat::Depth32Float)
+    {
+        let depth = rhi.create_texture(&texture(
+            8,
+            TextureFormat::Depth32Float,
+            Usage::RENDER_TARGET,
+        ))?;
+        let refused = rhi.present(depth).is_err();
+        rhi.destroy_texture(depth)?;
+        ensure(refused, "a depth texture cannot be presented")?;
+    }
     let target =
         rhi.create_texture(&texture(8, TextureFormat::Rgba8Unorm, Usage::RENDER_TARGET))?;
+    let before = rhi.allocated_bytes();
     let shown = rhi.present(target).is_ok();
     ensure(
         shown == presents,
         "a backend presents exactly when its capabilities say it can",
     )?;
     rhi.destroy_texture(target)?;
+    if shown {
+        // Presenting reads the texture on the GPU, like a draw. Its memory
+        // waits for that work, and later work completes after it.
+        ensure(
+            rhi.allocated_bytes() == before,
+            "a presented texture's memory outlives its handle until the frame is done",
+        )?;
+        let mut after = CommandList::new("after present");
+        after.push(Command::Marker("after present".into()));
+        let fence = rhi.submit(after)?;
+        settle(rhi, fence)?;
+    }
     rhi.destroy_texture(sampled)
 }
 

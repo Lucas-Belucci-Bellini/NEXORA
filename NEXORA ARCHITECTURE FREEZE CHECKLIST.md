@@ -37,8 +37,8 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 
 | Contract | Defined | Built | Where |
 | --- | :---: | :---: | --- |
-| RHI boundary | [x] | [~] | the **contract** is built (`engine/rhi`, ADR-0025): generational handles that a device loss also kills, all-or-nothing submission, four-byte copy alignment, declared usages, ordered fences, destruction deferred until the last use's fence, device loss as `DisableSubsystem` with `recreate`, `present` exactly when the capabilities say. A **null backend** keeps every rule with no GPU, and a nine-case **conformance suite** runs against it on every slice, which also uploads the first generation's sixteen albedos through it. The **first native backend is built** (`engine/rhi-wgpu`, ADR-0026): `wgpu` over Vulkan / Direct3D 12 / Metal, WGSL validated by naga, rules shared with the null backend through `rhi::kit`. It passes the same nine cases, uploads a texture and draws a triangle, and reads both back. It is **verified in CI on all three of its APIs**: Vulkan (Mesa's lavapipe, Linux), Direct3D 12 (WARP, Windows) and Metal (Apple's paravirtual device, macOS). All three are software or virtual, and it is **not yet verified on the operator's GPU** (the `rhi_native` check waits for a report), and it has **no surface**: window, swapchain and presentation are not built |
-| Input boundary | [x] | [ ] | meaningless without a window |
+| RHI boundary | [x] | [~] | the **contract** is built (`engine/rhi`, ADR-0025): generational handles that a device loss also kills, all-or-nothing submission, four-byte copy alignment, declared usages, ordered fences, destruction deferred until the last use's fence, device loss as `DisableSubsystem` with `recreate`, `present` exactly when the capabilities say. A **null backend** keeps every rule with no GPU, and a nine-case **conformance suite** runs against it on every slice, which also uploads the first generation's sixteen albedos through it. The **first native backend is built** (`engine/rhi-wgpu`, ADR-0026): `wgpu` over Vulkan / Direct3D 12 / Metal, WGSL validated by naga, rules shared with the null backend through `rhi::kit`. It passes the same nine cases, uploads a texture and draws a triangle, and reads both back. It is **verified in CI on all three of its APIs**: Vulkan (Mesa's lavapipe, Linux), Direct3D 12 (WARP, Windows) and Metal (Apple's paravirtual device, macOS). All three are software or virtual, and it is **not yet verified on the operator's GPU** (the `rhi_native` check waits for a report). It **presents** (ADR-0027): a `winit` window host (`engine/window`) owns the event loop, the backend opens a surface on the window and `present` draws the target onto it; CI reads the first frame back from the surface on Xvfb and matches all 65,536 texels. Not yet verified on the operator's desktop (the `window` check waits for the same report) |
+| Input boundary | [x] | [ ] | a window and an OS event loop exist now (ADR-0027); no device event reaches `runtime::input` yet (DEBT-0043) |
 | Audio boundary | [x] | [ ] | — |
 | Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0021); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0022); it inflates with the foundation's `inflate_bounded`, all three deflate block types, one inflater in the workspace; resource packs do not layer |
 | Streaming lifecycle | [x] | [~] | `request · cancel · set_interest · tick` of `STREAMING SYSTEM.md` are built (ADR-0008), and of its test list fast travel, save-before-evict and low-memory pressure are covered (`engine/streaming::system` tests); the slice's **initial** load is still explicit, through the job system rather than through streaming (DEBT-0018, DEBT-0024), and dimension transfer and reconnect have no subsystem to test against. *Corrected 2026-09-25: the row said `[ ]` and predated ADR-0008.* |
@@ -121,8 +121,8 @@ anything.
 
 | Roadmap phase | State | Evidence |
 | --- | --- | --- |
-| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met: the benchmark has no GPU stages and no engine-scale comparison (DEBT-0008), and the RHI has no surface. Its contract, a null backend and a native `wgpu` backend are built and pass the same suite, the native one on a real (software) Vulkan driver in CI (ADR-0025, ADR-0026). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
-| 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005) |
+| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met: the benchmark has no GPU stages and no engine-scale comparison (DEBT-0008), and the RHI has not run on the operator's hardware. Its contract, a null backend and a native `wgpu` backend are built and pass the same suite, the native one on a real (software) Vulkan driver in CI, and it presents to a real window (ADR-0025, ADR-0026, ADR-0027). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
+| 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005), and now has one (ADR-0027), but nothing runs the frame loop, a renderer or input inside it yet |
 | 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming exist; camera, input, render and player do not |
 
 Work continues on what can be verified headless — the roadmap's own rule is
@@ -183,11 +183,13 @@ contracts.
    question the gate exists to ask, and
    `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves the language lock for the
    completed benchmark.
-2. **The RHI has met a driver, but not a window.** Its contract, a null
-   backend and a native `wgpu` backend are built (ADR-0025, ADR-0026). The
-   native one passes the conformance suite and an upload-and-draw readback on
-   Mesa's software Vulkan in CI, so the boundary has survived contact with a
-   conformant driver. Two things remain before this blocker closes:
-   **presentation**, which needs a window host (code not written), and **a
-   report from the operator's GPU** (`rhi_native` in `local-validation.py`).
-   See DEBT-0046.
+2. **The RHI has met a driver and a window, but not the operator's
+   hardware.** Its contract, a null backend and a native `wgpu` backend are
+   built (ADR-0025, ADR-0026), and a `winit` window host presents through it
+   (ADR-0027). The native one passes the conformance suite, an
+   upload-and-draw readback and, with presentation on, a frame read back from
+   the window's surface, on Mesa's software Vulkan and Xvfb in CI. So the
+   boundary has survived contact with a conformant driver and a real window
+   system. One thing remains before this blocker closes: **a report from the
+   operator's GPU and desktop** (`rhi_native` and `window` in
+   `local-validation.py`). See DEBT-0046.

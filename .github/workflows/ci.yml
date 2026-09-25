@@ -53,14 +53,19 @@ jobs:
       # The native RHI backend's tests need a GPU and the runner has none, so
       # it gets Mesa's lavapipe: a conformant Vulkan driver, in software. The
       # tests fail rather than skip when no adapter answers (ADR-0026).
-      - name: Install a software Vulkan driver
-        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
+      # The window host's need a display, so the runner gets Xvfb, a real X
+      # server with no screen, and the keyboard library winit loads at run
+      # time (ADR-0027). No display is a failure too, not a skip.
+      - name: Install a software Vulkan driver and a virtual display
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mesa-vulkan-drivers xvfb libxkbcommon-x11-0
 
       # STAGE: UNIT + INTEGRATION + DETERMINISM + SAVE TESTS
       # The determinism and save/load suites live alongside the units they
       # cover; the whole workspace runs as one gate.
       - name: Test
-        run: cargo test --workspace --all-targets
+        run: xvfb-run -a -s "-screen 0 640x480x24" cargo test --workspace --all-targets
 
       - name: Documentation tests
         run: cargo test --workspace --doc
@@ -77,6 +82,19 @@ jobs:
           ./target/release/nexora-rhi-probe | tee "${RUNNER_TEMP}/rhi-probe.txt"
           grep '^conformance        9/9 cases on wgpu$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
           grep '^draw               16 of 16 texels shaded by the GPU$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+
+      # The window host on Xvfb: a real X11 window, a Vulkan surface on it, the
+      # conformance suite with presentation on, and 60 frames shown. The first
+      # is read back from the surface image and must show the 16x16 target's
+      # four quadrants in place: upside down or red-for-blue fails.
+      - name: Smoke test the window host and presentation
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" ./target/release/nexora-window-probe \
+            | tee "${RUNNER_TEMP}/window-probe.txt"
+          grep '^conformance        9/9 cases on wgpu, presenting$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+          grep '^frame              65536 of 65536 window texels show the 16x16 target, read back from the surface$' \
+            "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+          grep '^presented          61 frames, 60 of them by the probe$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.

@@ -294,6 +294,14 @@ impl<B, T, P> Resources<B, T, P> {
         }
     }
 
+    /// Record that `texture` is in flight until fence `value`, for work a
+    /// backend submits on its own, such as copying a frame to its surface.
+    pub fn mark_texture_used(&mut self, texture: TextureHandle, value: u64) {
+        if let Some(live) = self.textures.get_mut(texture.0, self.epoch) {
+            live.last_use = value;
+        }
+    }
+
     fn check_one(&self, command: &Command, checked: &mut Checked) -> Result<()> {
         match command {
             Command::WriteBuffer {
@@ -406,6 +414,29 @@ pub fn device_lost(backend: &'static str) -> Error {
     Error::new(Domain::Render, "rhi", "the device was lost")
         .with_recovery(Recovery::DisableSubsystem)
         .with_context("backend", backend)
+}
+
+/// Whether `desc` may be presented: a colour render target.
+///
+/// Every backend checks this before it looks for a surface, so a texture that
+/// could never be shown is refused the same way whether or not the backend
+/// presents.
+///
+/// # Errors
+///
+/// The texture is not a render target, or it holds depth.
+pub fn presentable(desc: &TextureDesc) -> Result<()> {
+    if !desc.usage.contains(Usage::RENDER_TARGET) {
+        return Err(
+            refused("only a render target can be presented").with_context("label", &desc.label)
+        );
+    }
+    if !desc.format.is_color() {
+        return Err(refused("a depth texture cannot be presented")
+            .with_context("label", &desc.label)
+            .with_context("format", desc.format.as_str()));
+    }
+    Ok(())
 }
 
 /// The error `present` returns from a backend that has no surface.

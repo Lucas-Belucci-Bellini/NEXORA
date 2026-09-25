@@ -18,12 +18,17 @@
 //! `Queue::write_*`: those land before the whole submission, so a list that
 //! drew and then wrote the same buffer would see the write first.
 //!
-//! # What is not here
+//! # Presentation
 //!
-//! No window, no surface, no presentation: [`Capabilities::presents`] is false,
-//! and `present` says so. That needs a window host, the next step (DEBT-0046).
+//! [`WgpuRhi::new`] opens a device with no surface, as servers, tests and the
+//! benchmark want, and [`Capabilities::presents`] is false. A window host
+//! (ADR-0027: `nexora-window`) opens one with [`WgpuRhi::with_surface`]
+//! instead; then `present` draws the texture onto the window and shows it.
+//! This crate takes the window as anything `wgpu` can make a surface from, and
+//! never names a windowing library.
 
 pub mod proof;
+mod surface;
 
 use std::future::Future;
 use std::pin::pin;
@@ -36,7 +41,7 @@ use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::memory::MemoryPool;
 use nexora_rhi::conformance::TestShaders;
 use nexora_rhi::desc::{check_buffer, check_pipeline, check_texture, refused};
-use nexora_rhi::kit::{device_lost, no_surface, Accounting, Resources};
+use nexora_rhi::kit::{device_lost, no_surface, presentable, Accounting, Resources};
 use nexora_rhi::{
     BufferDesc, BufferHandle, Capabilities, Command, CommandList, Fence, PipelineDesc,
     PipelineHandle, Rhi, ShaderStage, TextureDesc, TextureFormat, TextureHandle, Usage,
@@ -94,6 +99,36 @@ pub struct AdapterClass {
     pub driver: String,
 }
 
+/// The window surface a backend presents to, as a probe reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceInfo {
+    /// Width in pixels, as last configured.
+    pub width: u32,
+    /// Height in pixels, as last configured.
+    pub height: u32,
+    /// The surface image format, as `wgpu` names it.
+    pub format: String,
+    /// How frames are queued for display.
+    pub present_mode: String,
+    /// Whether a presented image can be read back ([`WgpuRhi::present_and_capture`]).
+    pub readable: bool,
+    /// Frames shown so far.
+    pub presented: u64,
+}
+
+/// A surface image as it was shown, read back from the GPU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentedFrame {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// The surface format the bytes are in, as `wgpu` names it.
+    pub format: String,
+    /// Four bytes a texel, row-major from the top-left, in `format`'s order.
+    pub texels: Vec<u8>,
+}
+
 /// What a texture keeps next to its descriptor.
 #[derive(Debug)]
 struct TextureObject {
@@ -118,6 +153,7 @@ pub struct WgpuRhi {
     completed: Arc<AtomicU64>,
     submissions: Vec<(u64, wgpu::SubmissionIndex)>,
     memory: Accounting,
+    presenter: Option<surface::Presenter>,
 }
 
 impl WgpuRhi {
@@ -139,10 +175,43 @@ impl WgpuRhi {
     /// As [`WgpuRhi::new`].
     pub fn with_memory(bytes: u64) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        Self::open(&instance, None, bytes)
+    }
+
+    /// Open the highest-performance adapter that can present to `window`, a
+    /// device on it, and the window's surface at `width` × `height` pixels.
+    /// [`Capabilities::presents`] is true.
+    ///
+    /// `window` is anything `wgpu` makes a surface from; a window host passes
+    /// its window here (ADR-0027).
+    ///
+    /// # Errors
+    ///
+    /// The window refused a surface, no adapter can present to it, or the
+    /// adapter refused a device.
+    pub fn with_surface(
+        window: impl Into<wgpu::SurfaceTarget<'static>>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let surface = instance.create_surface(window).map_err(|error| {
+            Error::new(Domain::Render, "rhi-wgpu", "the window refused a surface")
+                .with_recovery(Recovery::DisableSubsystem)
+                .with_context("cause", error.to_string())
+        })?;
+        Self::open(&instance, Some((surface, width, height)), DEFAULT_MEMORY)
+    }
+
+    fn open(
+        instance: &wgpu::Instance,
+        window: Option<(wgpu::Surface<'static>, u32, u32)>,
+        bytes: u64,
+    ) -> Result<Self> {
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
-            compatible_surface: None,
+            compatible_surface: window.as_ref().map(|(surface, _, _)| surface),
             apply_limit_buckets: false,
         }))
         .map_err(|error| {
@@ -166,6 +235,20 @@ impl WgpuRhi {
                 .join(" "),
         };
         let (device, queue, lost) = open_device(&adapter)?;
+        let presenter = match window {
+            Some((surface, width, height)) => {
+                let config = surface::configure(&surface, &adapter, width, height)?;
+                surface.configure(&device, &config);
+                let blit = surface::blit(&device, config.format);
+                Some(surface::Presenter {
+                    surface,
+                    config,
+                    blit,
+                    presented: 0,
+                })
+            }
+            None => None,
+        };
         let limits = device.limits();
         let caps = Capabilities {
             backend: "wgpu",
@@ -176,7 +259,7 @@ impl WgpuRhi {
             // All five are guaranteed by the WebGPU specification on every
             // adapter wgpu will open.
             formats: TextureFormat::ALL.to_vec(),
-            presents: false,
+            presents: presenter.is_some(),
             validates_shaders: true,
         };
         Ok(Self {
@@ -191,7 +274,60 @@ impl WgpuRhi {
             completed: Arc::new(AtomicU64::new(0)),
             submissions: Vec::new(),
             memory: Accounting::new(bytes),
+            presenter,
         })
+    }
+
+    /// The surface this backend presents to, if it has one.
+    #[must_use]
+    pub fn surface(&self) -> Option<SurfaceInfo> {
+        self.presenter.as_ref().map(|presenter| SurfaceInfo {
+            width: presenter.config.width,
+            height: presenter.config.height,
+            format: format!("{:?}", presenter.config.format),
+            present_mode: format!("{:?}", presenter.config.present_mode),
+            readable: readable_surface(presenter),
+            presented: presenter.presented,
+        })
+    }
+
+    /// The window changed size: reconfigure the surface to `width` × `height`.
+    /// A zero edge (a minimized window) keeps the old size until it is not.
+    ///
+    /// # Errors
+    ///
+    /// The device is lost, or the backend has no surface.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        self.alive()?;
+        let presenter = self
+            .presenter
+            .as_mut()
+            .ok_or_else(|| no_surface(self.caps.backend))?;
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+        presenter.config.width = width;
+        presenter.config.height = height;
+        presenter.surface.configure(&self.device, &presenter.config);
+        Ok(())
+    }
+
+    /// [`Rhi::present`], and read back the surface image exactly as it went
+    /// to the window. `None` when this surface cannot be read (its platform
+    /// does not allow copies from it, or its format is not 8 bits a channel).
+    /// Waits for the GPU.
+    ///
+    /// Not part of [`Rhi`]: it exists so tests and the local validation probe
+    /// can prove a frame reached the window, not only that `present` returned.
+    ///
+    /// # Errors
+    ///
+    /// As [`Rhi::present`].
+    pub fn present_and_capture(
+        &mut self,
+        texture: TextureHandle,
+    ) -> Result<Option<PresentedFrame>> {
+        self.show(texture, true)
     }
 
     /// The adapter this backend runs on.
@@ -267,6 +403,133 @@ impl WgpuRhi {
             extent(width, height),
         );
         self.queue.submit([encoder.finish()]);
+        self.map_rows(&staging, padded, row, height)
+    }
+
+    /// Draw `texture` onto the next surface image and show it.
+    fn show(&mut self, texture: TextureHandle, capture: bool) -> Result<Option<PresentedFrame>> {
+        self.alive()?;
+        let live = self.resources.texture(texture)?;
+        presentable(&live.desc)?;
+        let Some(presenter) = self.presenter.as_mut() else {
+            return Err(no_surface(self.caps.backend));
+        };
+        let (frame, suboptimal) = surface::acquire(presenter, &self.device)?;
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nexora present"),
+            layout: &presenter.blit.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&live.native.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&presenter.blit.sampler),
+                },
+            ],
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nexora present"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("nexora present"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&presenter.blit.pipeline);
+            pass.set_bind_group(0, &bindings, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        let (width, height) = (presenter.config.width, presenter.config.height);
+        let capture = (capture && readable_surface(presenter)).then(|| {
+            let padded = padded_row(width * 4);
+            let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nexora present readback"),
+                size: u64::from(padded) * u64::from(height),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                frame.texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded),
+                        rows_per_image: Some(height),
+                    },
+                },
+                extent(width, height),
+            );
+            (staging, padded)
+        });
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let index = self.queue.submit([encoder.finish()]);
+        if let Some(error) = block_on(scope.pop()) {
+            return Err(Error::new(
+                Domain::Render,
+                "rhi-wgpu",
+                "the driver refused to present a checked texture",
+            )
+            .with_recovery(Recovery::Manual)
+            .with_context("label", &live.desc.label)
+            .with_context("cause", error.to_string()));
+        }
+        self.queue.present(frame);
+        presenter.presented += 1;
+        if suboptimal {
+            presenter.surface.configure(&self.device, &presenter.config);
+        }
+        let format = format!("{:?}", presenter.config.format);
+        // Presenting reads the texture on the GPU, so it is in flight like a
+        // draw: its memory waits for this fence if the handle dies first.
+        self.issued += 1;
+        let value = self.issued;
+        self.resources.mark_texture_used(texture, value);
+        self.submissions.push((value, index));
+        let completed = Arc::clone(&self.completed);
+        self.queue.on_submitted_work_done(move || {
+            completed.fetch_max(value, Ordering::SeqCst);
+        });
+        let Some((staging, padded)) = capture else {
+            return Ok(None);
+        };
+        let texels = self.map_rows(&staging, padded, width * 4, height)?;
+        Ok(Some(PresentedFrame {
+            width,
+            height,
+            format,
+            texels,
+        }))
+    }
+
+    /// Wait for `staging` and copy its `height` rows of `row` bytes out,
+    /// dropping the padding up to `padded`.
+    fn map_rows(
+        &self,
+        staging: &wgpu::Buffer,
+        padded: u32,
+        row: u32,
+        height: u32,
+    ) -> Result<Vec<u8>> {
         let slice = staging.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         self.device
@@ -482,7 +745,7 @@ impl Rhi for WgpuRhi {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: texture_format(desc.format),
-            usage: texture_usages(desc.usage),
+            usage: texture_usages(desc.usage) | presented_usages(desc),
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -646,13 +909,7 @@ impl Rhi for WgpuRhi {
     }
 
     fn present(&mut self, texture: TextureHandle) -> Result<()> {
-        self.alive()?;
-        let live = self.resources.texture(texture)?;
-        if !live.desc.usage.contains(Usage::RENDER_TARGET) {
-            return Err(refused("only a render target can be presented")
-                .with_context("label", &live.desc.label));
-        }
-        Err(no_surface(self.caps.backend))
+        self.show(texture, false).map(|_| ())
     }
 
     fn device_lost(&self) -> bool {
@@ -672,6 +929,12 @@ impl Rhi for WgpuRhi {
         self.completed = Arc::new(AtomicU64::new(0));
         self.submissions.clear();
         self.memory.reset();
+        if let Some(presenter) = self.presenter.as_mut() {
+            // The surface outlives the device; its configuration and the blit
+            // belong to the old one.
+            presenter.surface.configure(&self.device, &presenter.config);
+            presenter.blit = surface::blit(&self.device, presenter.config.format);
+        }
         Ok(())
     }
 
@@ -726,6 +989,24 @@ const fn position_format(stride: u32) -> wgpu::VertexFormat {
         12 => wgpu::VertexFormat::Float32x3,
         _ => wgpu::VertexFormat::Float32x4,
     }
+}
+
+/// What a colour render target needs beyond its declared usage so `present`
+/// can sample it onto the surface.
+fn presented_usages(desc: &TextureDesc) -> wgpu::TextureUsages {
+    if desc.usage.contains(Usage::RENDER_TARGET) && desc.format.is_color() {
+        wgpu::TextureUsages::TEXTURE_BINDING
+    } else {
+        wgpu::TextureUsages::empty()
+    }
+}
+
+fn readable_surface(presenter: &surface::Presenter) -> bool {
+    presenter
+        .config
+        .usage
+        .contains(wgpu::TextureUsages::COPY_SRC)
+        && surface::readable(presenter.config.format)
 }
 
 fn buffer_usages(usage: Usage) -> wgpu::BufferUsages {
