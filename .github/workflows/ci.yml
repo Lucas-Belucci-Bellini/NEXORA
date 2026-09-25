@@ -237,6 +237,16 @@ jobs:
           grep '^memory             3 pools, worst nominal, 0 suspected leaks$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
 
+      # The bridge to a real machine (docs/validation/local/): its rules are
+      # checked here, and a committed report must be well formed and must
+      # have come from a machine, not a container or a runner like this one.
+      # Stale is not a failure -- it is what a report becomes -- so `check`
+      # only fails on a malformed report.
+      - name: Check the local validation bridge
+        run: |
+          python3 scripts/local-validation.py self-test
+          python3 scripts/local-validation.py check --allow-missing
+
       # STAGE: CROSS-STACK CONFORMANCE
       # The C++ reference must agree with Rust on every digest before its
       # timings mean anything, so the agreement is checked on every push rather

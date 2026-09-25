@@ -129,6 +129,17 @@ Work continues on what can be verified headless — the roadmap's own rule is
 that a phase advances on its technical criteria, and the criteria that remain
 need hardware this environment does not have. Nothing here claims otherwise.
 
+**Local evidence (2026-09-25): none yet.** The bridge exists —
+`scripts/local-validation.py` and [`docs/validation/local/`](docs/validation/local/README.md):
+a run on a real machine records its commit, its hardware class and every check
+it could execute, and `check` classifies that evidence against `HEAD`
+(`CURRENT`, `STALE_LOCAL_EVIDENCE`, …). It does not move either blocker by
+itself. What a machine can give today is the CPU benchmark from a second
+machine (DEBT-0013's trigger) and the slice on a real OS; the GPU stages, the
+RHI, the window and client mode stay `NOT_IMPLEMENTED` in every report until
+the code for them exists, because no hardware can validate code that is not
+there.
+
 ## Final gate
 
 The architecture can be frozen only when unresolved items are either completed
