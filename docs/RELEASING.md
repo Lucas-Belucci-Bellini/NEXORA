@@ -33,14 +33,28 @@ build job runs; the publish job is skipped because there is no tag. The
 archives land as workflow artifacts named after the commit
 (`0.0.0-dev+<sha>`), so a dry run can never be mistaken for a release.
 
-> **Not yet possible, and not because of anything in this file.** GitHub only
-> offers `workflow_dispatch` for workflows that exist on the repository's
-> **default branch**. Until this workflow is merged to `main` it is not in the
-> Actions tab at all, and the dispatch API answers `404` — confirmed by asking
-> the API to list the repository's workflows, which returns only `CI`. So the
-> first run of this pipeline necessarily happens after the merge, and **nothing
-> here has ever executed.** Treat every claim in this document as describing
-> what the workflow is written to do, not as something observed.
+To test a change to the workflow itself, dispatch it on the branch that
+carries the change. GitHub only *offers* the dispatch for a workflow that
+exists on the default branch, but the run uses that branch's copy of the file.
+
+> **What has actually run.** Nothing here could execute before the workflow
+> reached `main`, because until then GitHub did not offer the dispatch at all.
+> Its first run was a dry run from `main` right after the merge
+> ([36075825860](https://github.com/Lucas-Belucci-Bellini/NEXORA/actions/runs/36075825860)):
+> Linux and macOS passed every step, and Windows built, ran the slice, started
+> the tools and packed the archive — then failed at the checksum, because the
+> Windows runner's Git Bash has no `shasum`. The fix was proved before it
+> merged, by dispatching the same dry run on the fix's own branch
+> ([36077804637](https://github.com/Lucas-Belucci-Bellini/NEXORA/actions/runs/36077804637)):
+> the log shows the branch's copy of the step running, and all three platforms
+> built, ran, packed, checksummed and uploaded, with publish skipped.
+>
+> **The publish job has never run, and no dry run can run it** — it is gated
+> on a tag. The first real release is the first time `gh release create`
+> executes and the first time the per-platform checksum lines are merged into
+> `SHA256SUMS` on a runner. That merge was exercised locally against the exact
+> line format the build jobs now write, which is evidence about its input, not
+> a run of the job.
 
 ## What the archive contains
 

@@ -21,6 +21,9 @@ name: release
 # dispatchable workflows. Its first run was exactly that dry run, from `main`
 # after the merge (36075825860): Linux and macOS passed end to end, and Windows
 # built, ran and staged everything and then failed at the checksum line below.
+# A dispatch runs the copy of this file on the ref it is dispatched on, so a
+# change here can be proved before it merges, and the fix for that line was
+# (36077804637: all three platforms green, publish skipped).
 
 on:
   push:
