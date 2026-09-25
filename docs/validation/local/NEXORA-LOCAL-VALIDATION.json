@@ -1,0 +1,258 @@
+{
+  "schema": 1,
+  "generated_at": "2026-09-25T02:03:07+00:00",
+  "git": {
+    "commit": "700eed684e6bdfa66494e6b6d2a0495ebc1068a2",
+    "branch": "main",
+    "dirty": false,
+    "dirty_files": 0
+  },
+  "environment": {
+    "host": {
+      "kind": "machine",
+      "virtualization": null
+    },
+    "os": "Windows",
+    "os_release": "10",
+    "arch": "AMD64",
+    "cpu": "AMD Ryzen 5 5500",
+    "logical_cpus": 12,
+    "memory_bytes": 17043542016,
+    "gpus": [
+      {
+        "name": "AMD Radeon RX 6650 XT",
+        "driver": "32.0.21045.5002",
+        "via": "cim"
+      }
+    ],
+    "display": "not probed",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+    "cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+    "python": "3.11.9"
+  },
+  "quick": false,
+  "checks": [
+    {
+      "id": "build_release",
+      "status": "PASS",
+      "seconds": 22.9,
+      "command": "cargo build --workspace --release",
+      "summary": "exit 0",
+      "tail": [
+        "   Compiling nexora-asset v0.0.1 (<repo>\\engine\\asset)",
+        "   Compiling nexora-command v0.0.1 (<repo>\\engine\\command)",
+        "   Compiling nexora-world v0.0.1 (<repo>\\engine\\world)",
+        "   Compiling nexora-entity v0.0.1 (<repo>\\engine\\entity)",
+        "   Compiling nexora-query v0.0.1 (<repo>\\engine\\query)",
+        "   Compiling nexora-resource v0.0.1 (<repo>\\engine\\resource)",
+        "   Compiling nexora-simulation v0.0.1 (<repo>\\engine\\simulation)",
+        "   Compiling nexora-image v0.0.1 (<repo>\\engine\\image)",
+        "   Compiling nexora-benchmark v0.0.1 (<repo>\\engine\\benchmark)",
+        "   Compiling nexora-headless v0.0.1 (<repo>\\engine\\headless)",
+        "   Compiling nexora-texture-forge v0.0.1 (<repo>\\tools\\texture-forge)",
+        "    Finished `release` profile [optimized] target(s) in 22.63s"
+      ]
+    },
+    {
+      "id": "tests",
+      "status": "PASS",
+      "seconds": 117.3,
+      "command": "cargo test --workspace --all-targets",
+      "summary": "1138 passed, 0 failed",
+      "tail": [
+        "test a_journalled_world_and_a_plain_one_reach_the_same_state ... ok",
+        "test an_edit_naming_content_this_build_does_not_have_is_reported_not_guessed ... ok",
+        "test a_crash_before_the_commit_boundary_costs_only_the_unsynced_tail ... ok",
+        "test edits_made_after_a_snapshot_survive_a_crash_mid_journal ... ok",
+        "test the_engine_journals_its_own_edits_without_being_asked ... ok",
+        "test partial_corruption_is_reported_and_never_applied_as_an_edit ... ok",
+        "test a_corrupt_journal_can_be_quarantined_and_the_snapshot_still_loads ... ok",
+        "test a_recovered_world_can_be_checkpointed_and_its_journal_started_again ... ok",
+        "test replaying_the_same_journal_twice_lands_on_the_same_world ... ok",
+        "test an_edit_in_a_column_the_reload_has_not_loaded_lands_when_that_column_does ... ok",
+        "",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s"
+      ]
+    },
+    {
+      "id": "headless_slice",
+      "status": "PASS",
+      "seconds": 0.7,
+      "command": "<repo>\\target\\release\\nexora-headless.exe --quiet --save <scratch>\\w.nxsv",
+      "summary": "queries 76 answered, 2 refused; memory 2 pools, worst nominal, 0 suspected leaks; probes verified 76; result OK",
+      "tail": [
+        "frames             29 (29 fixed steps at 20 Hz, 0 dropped)",
+        "input              29 frames sampled, 16 carried an intent",
+        "chunks retained    15 (peak, edits that cannot be regenerated)",
+        "memory             2 pools, worst nominal, 0 suspected leaks",
+        "                   world.chunks       world     722304 now, 722304 peak, 3276800 ceiling",
+        "                   world.retained     world     0 now, 435024 peak, 3276800 ceiling",
+        "retention spill    25 columns to 12 region files, 25 read back",
+        "probes verified    76",
+        "lifecycle phases   16",
+        "                   process-start -> platform-init -> foundation-init -> module-discovery -> module-resolution -> resource-bootstrap -> runtime-init -> world-attach -> simulation-running -> shutdown-requested -> simulation-stop -> world-flush -> module-stop -> resource-release -> platform-shutdown -> process-exit",
+        "",
+        "result             OK"
+      ]
+    },
+    {
+      "id": "headless_slice_content",
+      "status": "PASS",
+      "seconds": 0.6,
+      "command": "<repo>\\target\\release\\nexora-headless.exe --quiet --save <scratch>\\c.nxsv --content content/first-generation/blocks.json",
+      "summary": "queries 92 answered, 2 refused; content blocks 16 (16 surfaces in the mesh); memory 2 pools, worst nominal, 0 suspected leaks; probes verified 92; result OK",
+      "tail": [
+        "input              29 frames sampled, 16 carried an intent",
+        "chunks retained    15 (peak, edits that cannot be regenerated)",
+        "content blocks     16 (16 surfaces in the mesh)",
+        "memory             2 pools, worst nominal, 0 suspected leaks",
+        "                   world.chunks       world     740120 now, 740120 peak, 3276800 ceiling",
+        "                   world.retained     world     0 now, 452840 peak, 3276800 ceiling",
+        "retention spill    25 columns to 12 region files, 25 read back",
+        "probes verified    92",
+        "lifecycle phases   16",
+        "                   process-start -> platform-init -> foundation-init -> module-discovery -> module-resolution -> resource-bootstrap -> runtime-init -> world-attach -> simulation-running -> shutdown-requested -> simulation-stop -> world-flush -> module-stop -> resource-release -> platform-shutdown -> process-exit",
+        "",
+        "result             OK"
+      ]
+    },
+    {
+      "id": "forge_first_generation",
+      "status": "PASS",
+      "seconds": 0.1,
+      "command": "<repo>\\target\\release\\nexora-texture-forge.exe build content/first-generation/plan.json --out <scratch>\\fg --recipes content/recipes",
+      "summary": "build nexora-first-generation: 16 materials: 16 written, 0 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed; index <scratch>\\fg\\resources.json (32 resources)",
+      "tail": [
+        "written   nexora:material/stone/volcanic_rock",
+        "written   nexora:material/stone/marble_light",
+        "written   nexora:material/stone/marble_dark",
+        "written   nexora:material/stone/quartzite",
+        "written   nexora:material/stone/ferruginous_stone",
+        "written   nexora:material/stone/limestone_aged",
+        "written   nexora:material/stone/mossy_stone",
+        "written   nexora:material/stone/brittle_stone",
+        "written   nexora:material/stone/mountain_stone",
+        "written   nexora:material/stone/ancient_stone",
+        "build nexora-first-generation: 16 materials: 16 written, 0 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed",
+        "index <scratch>\\fg\\resources.json (32 resources)"
+      ]
+    },
+    {
+      "id": "headless_slice_textures",
+      "status": "PASS",
+      "seconds": 0.3,
+      "command": "<repo>\\target\\release\\nexora-headless.exe --quiet --radius 1 --save <scratch>\\t.nxsv --content content/first-generation/blocks.json --resources <scratch>\\fg",
+      "summary": "queries 44 answered, 2 refused; content blocks 16 (16 surfaces in the mesh); content textures 16 (resolved, verified and decoded); memory 3 pools, worst nominal, 0 suspected leaks; probes verified 44; result OK",
+      "tail": [
+        "content blocks     16 (16 surfaces in the mesh)",
+        "content textures   16 (resolved, verified and decoded)",
+        "memory             3 pools, worst nominal, 0 suspected leaks",
+        "                   resource.textures  streaming 0 now, 16384 peak, 65536 ceiling",
+        "                   world.chunks       world     280472 now, 280472 peak, 1179648 ceiling",
+        "                   world.retained     world     0 now, 194288 peak, 1179648 ceiling",
+        "retention spill    9 columns to 6 region files, 9 read back",
+        "probes verified    44",
+        "lifecycle phases   16",
+        "                   process-start -> platform-init -> foundation-init -> module-discovery -> module-resolution -> resource-bootstrap -> runtime-init -> world-attach -> simulation-running -> shutdown-requested -> simulation-stop -> world-flush -> module-stop -> resource-release -> platform-shutdown -> process-exit",
+        "",
+        "result             OK"
+      ]
+    },
+    {
+      "id": "benchmark_cpu",
+      "status": "PASS",
+      "seconds": 4.8,
+      "command": "<repo>\\target\\release\\nexora-benchmark.exe --markdown --scratch <scratch>\\bench",
+      "summary": "see the report's benchmark section",
+      "tail": [
+        "",
+        "| stage the plan asks for | why there is no number |",
+        "| --- | --- |",
+        "| window | no windowing layer; ADR-0005 |",
+        "| input | meaningless without a window |",
+        "| RHI | boundary specified, no backend implemented |",
+        "| camera | depends on the RHI |",
+        "| mod boundary | mod runtime not implemented; Phase 7 |",
+        "| frame time | no render loop exists to time |",
+        "| incremental build | measured by the build system, not by this process |",
+        "| debugging / tooling effort | qualitative; the plan scores it separately from timing |",
+        "| FFI overhead | built without the `cpp` feature; no boundary is linked in |"
+      ]
+    }
+  ],
+  "hardware_gated": [
+    {
+      "id": "window",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "no window host exists in the engine"
+    },
+    {
+      "id": "rhi",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "the RHI boundary is specified, not built (freeze checklist, Runtime)"
+    },
+    {
+      "id": "gpu_context",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "needs the RHI"
+    },
+    {
+      "id": "swapchain",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "needs the RHI and a window"
+    },
+    {
+      "id": "presentation",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "needs a swapchain"
+    },
+    {
+      "id": "shaders",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "no shader pipeline exists"
+    },
+    {
+      "id": "texture_upload",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "textures decode on the CPU (ADR-0022); nothing uploads them"
+    },
+    {
+      "id": "rendering",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "no renderer; meshes are built and checked as data (ADR-0012)"
+    },
+    {
+      "id": "input_devices",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "no real device has produced a signal (DEBT-0043)"
+    },
+    {
+      "id": "client_mode",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "the runtime starts headless only; client mode is Phase 1's exit"
+    },
+    {
+      "id": "benchmark_gpu_stages",
+      "status": "NOT_IMPLEMENTED",
+      "reason": "DEBT-0008: the plan's GPU stages have no implementation"
+    }
+  ],
+  "benchmark_tail": [
+    "",
+    "| stage the plan asks for | why there is no number |",
+    "| --- | --- |",
+    "| window | no windowing layer; ADR-0005 |",
+    "| input | meaningless without a window |",
+    "| RHI | boundary specified, no backend implemented |",
+    "| camera | depends on the RHI |",
+    "| mod boundary | mod runtime not implemented; Phase 7 |",
+    "| frame time | no render loop exists to time |",
+    "| incremental build | measured by the build system, not by this process |",
+    "| debugging / tooling effort | qualitative; the plan scores it separately from timing |",
+    "| FFI overhead | built without the `cpp` feature; no boundary is linked in |"
+  ],
+  "verdict": {
+    "executed_pass": true,
+    "failures": []
+  }
+}
