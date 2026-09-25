@@ -1016,6 +1016,10 @@ fn load_content_textures(
 ) -> Result<usize> {
     let mut resources = ResourceManager::open(root, TEXTURE_BUDGET)?;
     resources.cache_mut().attach(Arc::clone(pool))?;
+    // Cross-system, before any load: the index must provide every map the
+    // content asks for, and a gap is reported whole rather than as whichever
+    // texture the loop below would have tripped over first.
+    resources.manifest().provides(content.materials())?;
     let before = resources.cache().stats();
     // The first visual generation is 16x16; anything larger is a content
     // error, found here rather than in video memory.

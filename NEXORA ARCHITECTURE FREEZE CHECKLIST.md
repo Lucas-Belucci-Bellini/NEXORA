@@ -41,7 +41,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Input boundary | [x] | [ ] | meaningless without a window |
 | Audio boundary | [x] | [ ] | — |
 | Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0015); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0016); resource packs do not layer, and deflate's dynamic-Huffman blocks are not read |
-| Streaming lifecycle | [x] | [ ] | chunks are loaded explicitly for now |
+| Streaming lifecycle | [x] | [~] | `request · cancel · set_interest · tick` of `STREAMING SYSTEM.md` are built (ADR-0008), and of its test list fast travel, save-before-evict and low-memory pressure are covered (`engine/streaming::system` tests); the slice's **initial** load is still explicit, through the job system rather than through streaming (DEBT-0018, DEBT-0024), and dimension transfer and reconnect have no subsystem to test against. *Corrected 2026-09-25: the row said `[ ]` and predated ADR-0008.* |
 | Headless mode | [x] | [x] | `nexora-headless` |
 
 ## Simulation
@@ -86,7 +86,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Authority model | [x] | [ ] | |
 | Replication boundaries | [x] | [ ] | |
 | Threat model | [x] | [~] | save files are treated as untrusted input today: bounded lengths, checked reads, quarantine |
-| Validation invariants | [x] | [~] | foundation and world invariants are enforced and tested; cross-system validation is not |
+| Validation invariants | [x] | [~] | foundation and world invariants are enforced and tested; the first `CROSS-SYSTEM` check is built — a resource index against the content that needs it (`Manifest::gaps`/`provides`): the forge refuses to write an incomplete index and the slice refuses one before any load, every gap named at once; saves already resolve block identifiers against the registry and quarantine missing content (`runtime::registry`); commands ↔ entities have no check, because commands do not reach entities yet |
 | Mod / script trust model | [x] | [ ] | configuration namespace isolation is built; no script sandbox |
 
 ## Content / tools

@@ -45,4 +45,4 @@ pub mod manifest;
 
 pub use cache::{CacheStats, Priority, ResourceCache};
 pub use manager::{BytesLoader, Loader, ResourceHandle, ResourceManager};
-pub use manifest::{Manifest, ManifestEntry, ResourceKind, MANIFEST_FILE};
+pub use manifest::{Gap, Manifest, ManifestEntry, ResourceKind, MANIFEST_FILE};

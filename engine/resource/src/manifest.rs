@@ -23,11 +23,23 @@
 //! required entry, or a path that leaves its root, is refused before any
 //! resource is loaded from it. Finding those at load time would mean finding
 //! them in front of a player.
+//!
+//! # Checked against the content, before loading
+//!
+//! A manifest can be internally sound and still not provide what the content
+//! asks for: the forge indexes the map files it finds, so a material whose
+//! albedo was never written is indexed without it, and the runtime finds out
+//! at the first load. [`Manifest::gaps`] is the `CROSS-SYSTEM` level of
+//! `NEXORA DATA VALIDATION AND INVARIANTS.md` for that boundary: every
+//! material, every map it asks for, and the link between them — all of them
+//! reported at once, not the first one a loader trips over.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use nexora_asset::json::{self, Json};
+use nexora_asset::material::SurfaceMaterial;
+use nexora_asset::texture::MapRole;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
 
@@ -150,6 +162,65 @@ pub struct ManifestEntry {
     pub fallback: Option<Identifier>,
 }
 
+/// One thing the content asks for that a manifest does not provide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Gap {
+    /// No entry for the material.
+    MissingMaterial(Identifier),
+    /// No entry for one of its maps.
+    MissingMap {
+        /// The material asking.
+        material: Identifier,
+        /// Which map.
+        role: MapRole,
+        /// The identifier the map would have.
+        texture: Identifier,
+    },
+    /// An entry under the right identifier, of the wrong kind.
+    WrongKind {
+        /// The identifier.
+        id: Identifier,
+        /// The kind the content needs.
+        expected: ResourceKind,
+        /// The kind the manifest declares.
+        found: ResourceKind,
+    },
+    /// The material and the map are both there, but loading the material
+    /// would not load the map.
+    UnlinkedMap {
+        /// The material.
+        material: Identifier,
+        /// Its map.
+        texture: Identifier,
+    },
+}
+
+impl std::fmt::Display for Gap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingMaterial(id) => write!(f, "{id}: no material entry"),
+            Self::MissingMap {
+                material,
+                role,
+                texture,
+            } => write!(f, "{material}: no {} map ({texture})", role.as_str()),
+            Self::WrongKind {
+                id,
+                expected,
+                found,
+            } => write!(
+                f,
+                "{id}: declared as {}, needed as {}",
+                found.as_str(),
+                expected.as_str()
+            ),
+            Self::UnlinkedMap { material, texture } => {
+                write!(f, "{material}: does not depend on {texture}")
+            }
+        }
+    }
+}
+
 /// Every resource under one root, checked.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Manifest {
@@ -247,6 +318,85 @@ impl Manifest {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Everything this manifest fails to provide for `materials`.
+    ///
+    /// For each material: an entry of kind `material` under its identifier;
+    /// for each map it asks for (the required ones and the ones it wants), an
+    /// entry of kind `texture` under the map's derived identifier; and the
+    /// material entry depending on that texture, so loading the material loads
+    /// its maps. Empty means the manifest provides all of it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when a map identifier cannot be derived — the
+    /// material itself is malformed, which is a different failure from a gap.
+    pub fn gaps(&self, materials: &[SurfaceMaterial]) -> Result<Vec<Gap>> {
+        let mut gaps = Vec::new();
+        for material in materials {
+            let entry = self.entries.get(material.id());
+            match entry {
+                None => gaps.push(Gap::MissingMaterial(material.id().clone())),
+                Some(entry) if entry.kind != ResourceKind::Material => gaps.push(Gap::WrongKind {
+                    id: entry.id.clone(),
+                    expected: ResourceKind::Material,
+                    found: entry.kind,
+                }),
+                Some(_) => {}
+            }
+            for role in MapRole::ALL {
+                if !(role.is_required() || material.wanted_maps().contains(&role)) {
+                    continue;
+                }
+                let texture = material.map_asset_id(role)?;
+                match self.entries.get(&texture) {
+                    None => gaps.push(Gap::MissingMap {
+                        material: material.id().clone(),
+                        role,
+                        texture,
+                    }),
+                    Some(found) if found.kind != ResourceKind::Texture => {
+                        gaps.push(Gap::WrongKind {
+                            id: texture,
+                            expected: ResourceKind::Texture,
+                            found: found.kind,
+                        });
+                    }
+                    Some(_) => {
+                        if entry.is_some_and(|entry| {
+                            entry.kind == ResourceKind::Material
+                                && !entry.dependencies.contains(&texture)
+                        }) {
+                            gaps.push(Gap::UnlinkedMap {
+                                material: material.id().clone(),
+                                texture,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(gaps)
+    }
+
+    /// Fail unless this manifest provides everything `materials` asks for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming how many gaps there are and every one of them,
+    /// or the error from [`Manifest::gaps`].
+    pub fn provides(&self, materials: &[SurfaceMaterial]) -> Result<()> {
+        let gaps = self.gaps(materials)?;
+        if gaps.is_empty() {
+            return Ok(());
+        }
+        let mut error = invalid("the resource manifest does not provide what the content asks for")
+            .with_context("gaps", gaps.len().to_string());
+        for gap in &gaps {
+            error = error.with_context("gap", gap.to_string());
+        }
+        Err(error)
     }
 
     /// A resource and everything it depends on, dependencies first.
@@ -571,5 +721,129 @@ mod tests {
             let err = Manifest::from_text(&text).expect_err(needle);
             assert!(err.to_string().contains(needle), "`{needle}`: {err}");
         }
+    }
+
+    fn material(raw: &str, wants: &[MapRole]) -> SurfaceMaterial {
+        use nexora_asset::material::MaterialCategory;
+        use nexora_asset::provenance::{GenerationTrace, Provenance};
+        use nexora_asset::texture::Resolution;
+        use nexora_foundation::version::ContentGeneratorVersion;
+        let trace = GenerationTrace::new(
+            id("nexora:generator/procedural"),
+            ContentGeneratorVersion(1),
+            1,
+        );
+        let mut builder = SurfaceMaterial::builder(
+            id(raw),
+            MaterialCategory::Stone,
+            Resolution::square(16).unwrap(),
+            Provenance::generated("NEXORA", "test", trace),
+        );
+        for role in wants {
+            builder = builder.wants(*role);
+        }
+        builder.build().unwrap()
+    }
+
+    fn material_entry(raw: &str, maps: &[&str]) -> ManifestEntry {
+        ManifestEntry {
+            dependencies: maps.iter().map(|map| id(map)).collect(),
+            ..entry(raw, ResourceKind::Material)
+        }
+    }
+
+    #[test]
+    fn a_manifest_that_provides_every_map_has_no_gaps() {
+        let manifest = Manifest::new([
+            entry("nexora:texture/basalt/albedo", ResourceKind::Texture),
+            entry("nexora:texture/basalt/normal", ResourceKind::Texture),
+            material_entry(
+                "nexora:material/basalt",
+                &[
+                    "nexora:texture/basalt/albedo",
+                    "nexora:texture/basalt/normal",
+                ],
+            ),
+        ])
+        .unwrap();
+        let basalt = material("nexora:material/basalt", &[MapRole::Normal]);
+        let materials = [basalt];
+        assert_eq!(manifest.gaps(&materials).unwrap(), []);
+        assert!(manifest.provides(&materials).is_ok());
+    }
+
+    #[test]
+    fn every_gap_is_reported_not_just_the_first() {
+        let manifest = Manifest::new([
+            // basalt: the material is there, its normal map is not, and its
+            // albedo is there but the material does not depend on it.
+            entry("nexora:texture/basalt/albedo", ResourceKind::Texture),
+            material_entry("nexora:material/basalt", &[]),
+            // granite: its albedo is declared as data.
+            entry("nexora:texture/granite/albedo", ResourceKind::Data),
+            material_entry("nexora:material/granite", &[]),
+        ])
+        .unwrap();
+        let materials = [
+            material("nexora:material/basalt", &[MapRole::Normal]),
+            material("nexora:material/granite", &[]),
+            // marble: nothing at all.
+            material("nexora:material/marble", &[]),
+        ];
+        let gaps = manifest.gaps(&materials).unwrap();
+        assert_eq!(
+            gaps,
+            [
+                Gap::UnlinkedMap {
+                    material: id("nexora:material/basalt"),
+                    texture: id("nexora:texture/basalt/albedo"),
+                },
+                Gap::MissingMap {
+                    material: id("nexora:material/basalt"),
+                    role: MapRole::Normal,
+                    texture: id("nexora:texture/basalt/normal"),
+                },
+                Gap::WrongKind {
+                    id: id("nexora:texture/granite/albedo"),
+                    expected: ResourceKind::Texture,
+                    found: ResourceKind::Data,
+                },
+                Gap::MissingMaterial(id("nexora:material/marble")),
+                Gap::MissingMap {
+                    material: id("nexora:material/marble"),
+                    role: MapRole::Albedo,
+                    texture: id("nexora:texture/marble/albedo"),
+                },
+            ]
+        );
+        let err = manifest.provides(&materials).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("gaps=5"), "{text}");
+        assert!(
+            text.contains("nexora:material/marble: no material entry"),
+            "{text}"
+        );
+        assert_eq!(err.recovery(), Recovery::Reject);
+    }
+
+    #[test]
+    fn a_material_entry_of_the_wrong_kind_is_a_gap() {
+        let manifest = Manifest::new([
+            entry("nexora:texture/basalt/albedo", ResourceKind::Texture),
+            entry("nexora:material/basalt", ResourceKind::Texture),
+        ])
+        .unwrap();
+        let gaps = manifest
+            .gaps(&[material("nexora:material/basalt", &[])])
+            .unwrap();
+        assert_eq!(
+            gaps,
+            [Gap::WrongKind {
+                id: id("nexora:material/basalt"),
+                expected: ResourceKind::Material,
+                found: ResourceKind::Texture,
+            }],
+            "no unlinked-map report on top: a texture has no dependencies to check"
+        );
     }
 }

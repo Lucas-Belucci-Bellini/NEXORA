@@ -357,7 +357,8 @@ impl Forge {
     ///
     /// Returns an error when a definition under the root does not read — an
     /// index that silently skipped it would tell the runtime the material does
-    /// not exist — or when a file cannot be read or named.
+    /// not exist — when a file cannot be read or named, or when a material asks
+    /// for a map that is not on disk ([`Manifest::provides`], every gap named).
     pub fn index(&self) -> Result<Manifest> {
         let listing = self.list()?;
         if let Some((path, error)) = listing.unreadable.into_iter().next() {
@@ -392,7 +393,12 @@ impl Forge {
                 maps,
             )?);
         }
-        Manifest::new(entries)
+        let manifest = Manifest::new(entries)?;
+        // The index is built from the files that exist, so a material whose
+        // map was never written would be indexed without it -- and found out
+        // by the runtime, at the first load. Refuse it here, naming every gap.
+        manifest.provides(&listing.materials)?;
+        Ok(manifest)
     }
 
     /// Write [`Forge::index`] to `<root>/resources.json`, returning it.
@@ -853,6 +859,37 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&recipes);
+    }
+
+    #[test]
+    fn an_index_missing_a_map_its_material_asks_for_is_refused() {
+        let root = scratch("index-gap");
+        let forge = Forge::new(&root).unwrap();
+        forge
+            .generate(&definition("nexora:material/oak", 0.8), 7, false)
+            .unwrap();
+        forge
+            .generate(&definition("nexora:material/pine", 0.8), 7, false)
+            .unwrap();
+        std::fs::remove_file(root.join("nexora/oak/albedo.png")).unwrap();
+        std::fs::remove_file(root.join("nexora/pine/normal.png")).unwrap();
+
+        let err = forge.write_index().expect_err("oak has no albedo");
+        let text = err.to_string();
+        assert!(text.contains("gaps=2"), "both gaps, not the first: {text}");
+        assert!(
+            text.contains("nexora:material/oak: no albedo map"),
+            "{text}"
+        );
+        assert!(
+            text.contains("nexora:material/pine: no normal map"),
+            "{text}"
+        );
+        assert!(
+            !root.join(MANIFEST_FILE).exists(),
+            "nothing is written for the runtime to trust"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

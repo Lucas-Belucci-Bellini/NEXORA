@@ -497,3 +497,34 @@ fn every_memory_pool_stays_inside_its_budget_and_drains_at_rest() {
     assert!(retained.high_water > 0, "the walk retained edited columns");
     assert!(retained.drains_at_rest);
 }
+
+#[test]
+fn a_resource_index_missing_what_the_content_asks_for_is_refused_whole() {
+    let scratch = Scratch::new("gaps");
+    let root = scratch.save("resources");
+    fs::create_dir_all(&root).unwrap();
+    // An index that is well-formed and provides nothing.
+    fs::write(
+        root.join("resources.json"),
+        "{\"schema\": 1, \"resources\": []}",
+    )
+    .unwrap();
+    let config = SliceConfig {
+        content: Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../content/first-generation/blocks.json"),
+        ),
+        resources: Some(root),
+        ..config(&scratch, "world.nxsv")
+    };
+
+    let err = run_slice(&config).expect_err("nothing the content needs is indexed");
+    let text = err.to_string();
+    // Sixteen materials and their sixteen albedos, all named, before any
+    // texture is opened -- not whichever one a loader reached first.
+    assert!(text.contains("gaps=32"), "{text}");
+    assert!(
+        text.contains("nexora:material/stone/basalt: no albedo map"),
+        "{text}"
+    );
+}
