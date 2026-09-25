@@ -50,6 +50,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The native RHI backend's tests need a GPU and the runner has none, so
+      # it gets Mesa's lavapipe: a conformant Vulkan driver, in software. The
+      # tests fail rather than skip when no adapter answers (ADR-0026).
+      - name: Install a software Vulkan driver
+        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
+
       # STAGE: UNIT + INTEGRATION + DETERMINISM + SAVE TESTS
       # The determinism and save/load suites live alongside the units they
       # cover; the whole workspace runs as one gate.
@@ -64,6 +70,14 @@ jobs:
         run: cargo build --workspace --release
 
       # STAGE: SMOKE TEST
+      # The native backend on the runner's software Vulkan: conformance, then
+      # an upload and a draw, both read back from the device.
+      - name: Smoke test the native RHI backend
+        run: |
+          ./target/release/nexora-rhi-probe | tee "${RUNNER_TEMP}/rhi-probe.txt"
+          grep '^conformance        9/9 cases on wgpu$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+          grep '^draw               16 of 16 texels shaded by the GPU$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.
       - name: Smoke test the headless vertical slice

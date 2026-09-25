@@ -20,14 +20,18 @@
 //! * **The conformance suite** ([`conformance`]) — backend parity made
 //!   runnable. The first native backend passes it on real hardware, or it is
 //!   not a backend.
+//! * **The backend kit** ([`kit`]) — resource tables, the command rules and
+//!   memory accounting every backend shares, so a rule is written once.
 //!
-//! **No native backend exists.** No window, no swapchain, no shader language.
-//! Choosing the first native backend is a dependency decision ADR-0002 left to
-//! the moment it is needed; ADR-0025 says what that decision must settle.
+//! The first native backend is `nexora-rhi-wgpu` (ADR-0026). It lives in its
+//! own crate because it takes the engine's one external dependency, and this
+//! crate does not know which backend is under it. There is no window and no
+//! surface yet.
 
 pub mod api;
 pub mod conformance;
 pub mod desc;
+pub mod kit;
 pub mod null;
 
 pub use api::{

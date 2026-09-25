@@ -203,6 +203,16 @@ fn descriptor_rules(rhi: &mut dyn Rhi, shaders: &TestShaders, baseline: u64) -> 
         "a pipeline with no target is refused",
     )?;
     ensure(
+        rhi.create_buffer(&buffer(16, Usage::VERTEX | Usage::RENDER_TARGET))
+            .is_err(),
+        "a buffer with a texture-only usage is refused",
+    )?;
+    ensure(
+        rhi.create_pipeline(&pipeline(shaders, vec![TextureFormat::Depth32Float]))
+            .is_err(),
+        "a depth format is refused as a colour target",
+    )?;
+    ensure(
         rhi.allocated_bytes() == baseline,
         "a refused create allocates nothing",
     )

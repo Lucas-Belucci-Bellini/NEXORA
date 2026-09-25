@@ -1,0 +1,29 @@
+[package]
+name = "nexora-rhi-wgpu"
+description = "The first native RHI backend: wgpu over Vulkan, Direct3D 12 and Metal, held to the same conformance suite as the null backend."
+version.workspace = true
+edition.workspace = true
+# wgpu 30 needs 1.87; the rest of the workspace keeps its own floor.
+rust-version = "1.87"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_rhi_wgpu"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexora-rhi-probe"
+path = "src/main.rs"
+
+# The engine's first external dependency, and the only crate that takes it
+# (ADR-0026). `nexora-rhi` stays dependency-free: the contract does not know
+# which backend is under it. Default features off: no OpenGL, no WebGPU, no
+# GLSL/SPIR-V front ends — WGSL only, validated by naga.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-rhi.workspace = true
+wgpu = { version = "=30.0.1", default-features = false, features = ["vulkan", "dx12", "metal", "wgsl", "std"] }
+
+[lints]
+workspace = true

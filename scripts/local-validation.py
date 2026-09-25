@@ -16,11 +16,13 @@ the commit it ran on and nothing newer.
 
 Two rules this script keeps, and why:
 
-* Nothing is marked as passed that did not run. Window, RHI, GPU context,
-  swapchain, presentation, shaders, texture upload, rendering, real input
-  devices and client mode are recorded as NOT_IMPLEMENTED, because the engine
-  has no code for them yet -- a real GPU cannot validate code that does not
-  exist, and a report that said "not tested" would invite someone to test it.
+* Nothing is marked as passed that did not run. The native RHI backend is a
+  check (`rhi_native`): it opens this machine's GPU, runs the conformance
+  suite, uploads a texture and draws, reading both back (ADR-0026). Window,
+  swapchain, presentation, a renderer, real input devices and client mode are
+  recorded as NOT_IMPLEMENTED, because the engine has no code for them yet --
+  a real GPU cannot validate code that does not exist, and a report that said
+  "not tested" would invite someone to test it.
 * Nothing personal is recorded: no hostname, user name, serial number, MAC
   address or absolute path. Command output is kept only as short tails, with
   the repository root and the home directory replaced by placeholders.
@@ -58,15 +60,10 @@ STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 # What a real machine is needed for, and why none of it can pass yet.
 HARDWARE_GATED = [
     ("window", "no window host exists in the engine"),
-    ("rhi", "contract and null backend built, conformance runs in every slice (ADR-0025); "
-            "no native backend exists, so no GPU has run it"),
-    ("gpu_context", "needs a native RHI backend"),
-    ("swapchain", "needs a native RHI backend and a window"),
+    ("swapchain", "the native backend opens no surface: it needs a window (DEBT-0046)"),
     ("presentation", "needs a swapchain"),
-    ("shaders", "no shader pipeline exists"),
-    ("texture_upload", "uploads pass the null backend's rules as RGBA8 (ADR-0025); "
-                       "no native backend moves a byte to a GPU"),
-    ("rendering", "no renderer; meshes are built and checked as data (ADR-0012)"),
+    ("rendering", "no renderer: the native backend draws one triangle offscreen (rhi_native), "
+                  "nothing draws the world; meshes are data (ADR-0012)"),
     ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
     ("benchmark_gpu_stages", "DEBT-0008: the plan's GPU stages have no implementation"),
@@ -402,6 +399,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     headless = str(release / _exe("nexora-headless"))
     forge = str(release / _exe("nexora-texture-forge"))
     bench = str(release / _exe("nexora-benchmark"))
+    probe = str(release / _exe("nexora-rhi-probe"))
     slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
@@ -427,6 +425,14 @@ def run_checks(scratch: Path, quick: bool) -> list:
         headless, "--quiet", "--radius", "1", "--save", str(scratch / "t.nxsv"),
         "--content", "content/first-generation/blocks.json",
         "--resources", str(scratch / "fg")], slice_lines))
+    # The native RHI backend on this machine's GPU: device, conformance,
+    # WGSL shaders, upload and draw, both read back (ADR-0026). A machine with
+    # no GPU says so; it is never recorded as a pass.
+    if os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("rhi_native", "NEXORA_GPU=none: this machine declares no GPU"))
+    else:
+        results.append(needs_build("rhi_native", [probe],
+                                   _lines("adapter", "conformance", "upload", "draw", "result")))
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
     # DEBT-0008: the container's numbers are one machine's.
     results.append(needs_build("benchmark_cpu", [bench, "--markdown"] + (["--smoke"] if quick else [])

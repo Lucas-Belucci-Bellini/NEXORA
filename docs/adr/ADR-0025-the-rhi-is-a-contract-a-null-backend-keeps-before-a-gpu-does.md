@@ -122,6 +122,10 @@ fence. Then they are destroyed, and the GPU pool must drain like every other.
 
 ## What the next ADR must settle
 
+*Settled by ADR-0026 (2026-09-25), except the window host: `wgpu` in one crate,
+safe code only, WGSL, and conformance run in CI on software Vulkan and on the
+operator's machine through `local-validation.py`.*
+
 The first native backend. This ADR does not choose it, but it fixes what that
 choice has to answer:
 

@@ -685,7 +685,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
-### DEBT-0046 — O RHI só tem o backend nulo: nenhum byte jamais chegou a uma GPU
+### DEBT-0046 — O RHI ainda não apresenta nada, e nenhuma GPU real o executou
 
 - **SYSTEM:** `engine/rhi`
 - **CLASS:** ARCHITECTURAL
@@ -718,7 +718,24 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   Windows 10 com uma AMD Radeon RX 6650 XT, que tem drivers Vulkan e
   Direct3D 12.
 - **TARGET STAGE:** Phase 0 (bloqueia o congelamento)
-- **STATUS:** OPEN
+- **PROGRESS (2026-09-25, ADR-0026):** o backend nativo existe:
+  `engine/rhi-wgpu`, `wgpu` 30 sobre Vulkan / Direct3D 12 / Metal, com código
+  seguro, WGSL validado pelo naga e as regras compartilhadas com o backend nulo
+  (`rhi::kit`). Ele passa nos nove casos de conformidade e envia uma textura
+  16×16 e desenha um triângulo, lendo os dois de volta byte a byte, no
+  **lavapipe** (Vulkan por software da Mesa) do container e do CI. Duas
+  regras que só um driver teria pego foram para as regras compartilhadas.
+  Continua aberto, e só isto:
+  - **apresentação**: não há janela, portanto não há surface, swapchain nem
+    `present`. É código a escrever (o host da janela, o mesmo que o
+    `DEBT-0041` e o `DEBT-0043` esperam), não uma limitação de ambiente;
+  - **uma GPU real**: a checagem `rhi_native` de `local-validation.py` roda o
+    probe na máquina do operador, e até haver um relatório, o backend foi
+    verificado num driver conforme, não em hardware;
+  - **regra provisória de vértice**: sem formato de vértice no contrato, o
+    backend lê a posição como até quatro `f32` escolhidos pelo stride. O
+    renderer traz o formato de verdade.
+- **STATUS:** IN PROGRESS
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

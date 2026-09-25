@@ -26,6 +26,12 @@ pub enum TextureFormat {
 }
 
 impl TextureFormat {
+    /// Whether this format holds colour, as opposed to depth.
+    #[must_use]
+    pub const fn is_color(self) -> bool {
+        !matches!(self, Self::Depth32Float)
+    }
+
     /// Every format, in declaration order.
     pub const ALL: [Self; 5] = [
         Self::R8Unorm,
@@ -95,6 +101,15 @@ impl Usage {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// Every use a buffer can have.
+    pub const BUFFER: Self = Self(
+        Self::VERTEX.0 | Self::INDEX.0 | Self::UNIFORM.0 | Self::COPY_SRC.0 | Self::COPY_DST.0,
+    );
+
+    /// Every use a texture can have.
+    pub const TEXTURE: Self =
+        Self(Self::SAMPLED.0 | Self::COPY_SRC.0 | Self::COPY_DST.0 | Self::RENDER_TARGET.0);
 }
 
 impl BitOr for Usage {
@@ -204,14 +219,22 @@ impl Capabilities {
 }
 
 /// A descriptor or command the caller got wrong. Never retried unchanged.
-pub(crate) fn refused(message: &'static str) -> Error {
+pub fn refused(message: &'static str) -> Error {
     Error::new(Domain::Render, "rhi", message).with_recovery(Recovery::Reject)
 }
 
 /// Check a buffer descriptor against the rules every backend shares.
-pub(crate) fn check_buffer(desc: &BufferDesc, caps: &Capabilities) -> Result<()> {
+///
+/// # Errors
+///
+/// Names the rule the descriptor breaks.
+pub fn check_buffer(desc: &BufferDesc, caps: &Capabilities) -> Result<()> {
     if desc.usage.is_empty() {
         return Err(refused("a buffer needs at least one usage").with_context("label", &desc.label));
+    }
+    if !Usage::BUFFER.contains(desc.usage) {
+        return Err(refused("a buffer was given a usage only textures have")
+            .with_context("label", &desc.label));
     }
     if desc.size == 0 || desc.size % COPY_ALIGNMENT != 0 {
         return Err(
@@ -230,11 +253,19 @@ pub(crate) fn check_buffer(desc: &BufferDesc, caps: &Capabilities) -> Result<()>
 }
 
 /// Check a texture descriptor against the rules every backend shares.
-pub(crate) fn check_texture(desc: &TextureDesc, caps: &Capabilities) -> Result<()> {
+///
+/// # Errors
+///
+/// Names the rule the descriptor breaks.
+pub fn check_texture(desc: &TextureDesc, caps: &Capabilities) -> Result<()> {
     if desc.usage.is_empty() {
         return Err(
             refused("a texture needs at least one usage").with_context("label", &desc.label)
         );
+    }
+    if !Usage::TEXTURE.contains(desc.usage) {
+        return Err(refused("a texture was given a usage only buffers have")
+            .with_context("label", &desc.label));
     }
     if !caps.supports(desc.format) {
         return Err(
@@ -262,7 +293,11 @@ pub(crate) fn check_texture(desc: &TextureDesc, caps: &Capabilities) -> Result<(
 }
 
 /// Check a pipeline descriptor's shape against the rules every backend shares.
-pub(crate) fn check_pipeline(desc: &PipelineDesc, caps: &Capabilities) -> Result<()> {
+///
+/// # Errors
+///
+/// Names the rule the descriptor breaks.
+pub fn check_pipeline(desc: &PipelineDesc, caps: &Capabilities) -> Result<()> {
     for (stage, shader) in [("vertex", &desc.vertex), ("fragment", &desc.fragment)] {
         if shader.entry.is_empty() || shader.code.is_empty() {
             return Err(refused("a shader stage needs an entry point and code")
@@ -280,6 +315,13 @@ pub(crate) fn check_pipeline(desc: &PipelineDesc, caps: &Capabilities) -> Result
     if desc.targets.is_empty() {
         return Err(refused("a pipeline needs at least one target format")
             .with_context("label", &desc.label));
+    }
+    if let Some(format) = desc.targets.iter().find(|format| !format.is_color()) {
+        return Err(
+            refused("a pipeline's targets are colour formats; depth is not one")
+                .with_context("label", &desc.label)
+                .with_context("format", format.as_str()),
+        );
     }
     if let Some(format) = desc.targets.iter().find(|format| !caps.supports(**format)) {
         return Err(refused("this backend cannot render to that format")
@@ -339,6 +381,10 @@ mod tests {
         assert!(check_buffer(&ok, &caps).is_ok());
         for bad in [
             BufferDesc {
+                usage: Usage::VERTEX | Usage::RENDER_TARGET,
+                ..ok.clone()
+            },
+            BufferDesc {
                 size: 0,
                 ..ok.clone()
             },
@@ -372,6 +418,10 @@ mod tests {
         };
         assert!(check_texture(&ok, &caps).is_ok());
         for bad in [
+            TextureDesc {
+                usage: Usage::SAMPLED | Usage::VERTEX,
+                ..ok.clone()
+            },
             TextureDesc {
                 width: 0,
                 ..ok.clone()
@@ -423,6 +473,16 @@ mod tests {
             code: Vec::new(),
             ..stage
         };
+        let mut with_depth = caps.clone();
+        with_depth.formats.push(TextureFormat::Depth32Float);
+        let depth_target = PipelineDesc {
+            targets: vec![TextureFormat::Depth32Float],
+            ..ok.clone()
+        };
+        assert!(
+            check_pipeline(&depth_target, &with_depth).is_err(),
+            "depth is not a colour target, even where it is supported"
+        );
         for bad in [
             PipelineDesc {
                 vertex: no_entry,

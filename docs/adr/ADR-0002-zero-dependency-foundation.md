@@ -68,6 +68,14 @@ is pinned by golden output values.
 - This is **not** a project-wide rule. Rendering, windowing, networking and
   tooling will take dependencies; each should be justified where it is added.
 
+## Amendment, 2026-09-25
+
+The first external dependency arrived where this ADR said rendering would
+take one: `wgpu`, pinned, in `engine/rhi-wgpu` alone (ADR-0026). The crates
+named above still declare none, and neither does `nexora-rhi`, which holds the
+RHI's contract. The reproducibility argument above is unaffected, because no
+save, world or checksum passes through a graphics driver.
+
 ## Migration
 
 None. Should a dependency later replace one of these primitives, the algorithm

@@ -34,7 +34,11 @@ submission, ordered fences, destruction deferred until the GPU is done, device
 loss and recreation. There is also a **null backend** that keeps all of those
 rules without a GPU, and a **conformance suite** every backend must pass. The
 slice runs that suite on every start and uploads the first generation's
-textures through it. No native backend exists yet, so no byte has reached a GPU.
+textures through it. The first **native** backend is `wgpu`
+([ADR-0026](docs/adr/ADR-0026-the-first-native-backend-is-wgpu-and-ci-runs-it.md)).
+It passes the same suite, uploads a texture and draws a triangle, and reads
+both back from the device. CI runs it on Mesa's software Vulkan. There is
+still no window, so nothing is presented.
 
 There *is* a frame, as of ENGINE-0
 ([ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)): a fixed
@@ -221,6 +225,9 @@ engine/resource      resource manifest, integrity-checked loading, bounded
 engine/mesh          greedy meshing into a data structure (ADR-0012)
 engine/rhi           the render hardware interface: the contract, a null
                      backend and the conformance suite (ADR-0025)
+engine/rhi-wgpu      the first native backend: wgpu over Vulkan, Direct3D 12
+                     and Metal -- the engine's one external dependency
+                     (ADR-0026); `nexora-rhi-probe` proves it on a machine
 engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,

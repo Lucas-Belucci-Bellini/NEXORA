@@ -37,7 +37,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 
 | Contract | Defined | Built | Where |
 | --- | :---: | :---: | --- |
-| RHI boundary | [x] | [~] | the **contract** is built (`engine/rhi`, ADR-0025): generational handles that a device loss also kills, all-or-nothing submission, four-byte copy alignment, declared usages, ordered fences, destruction deferred until the last use's fence, device loss as `DisableSubsystem` with `recreate`, `present` exactly when the capabilities say. A **null backend** keeps every rule with no GPU, and a nine-case **conformance suite** runs against it on every slice, which also uploads the first generation's sixteen albedos through it. **No native backend exists**: nothing here has met a GPU, and the shader language, the window and the dependency are the next ADR's |
+| RHI boundary | [x] | [~] | the **contract** is built (`engine/rhi`, ADR-0025): generational handles that a device loss also kills, all-or-nothing submission, four-byte copy alignment, declared usages, ordered fences, destruction deferred until the last use's fence, device loss as `DisableSubsystem` with `recreate`, `present` exactly when the capabilities say. A **null backend** keeps every rule with no GPU, and a nine-case **conformance suite** runs against it on every slice, which also uploads the first generation's sixteen albedos through it. The **first native backend is built** (`engine/rhi-wgpu`, ADR-0026): `wgpu` over Vulkan / Direct3D 12 / Metal, WGSL validated by naga, rules shared with the null backend through `rhi::kit`. It passes the same nine cases, uploads a texture and draws a triangle, and reads both back. It is **verified on Mesa's software Vulkan in CI**, **not yet on the operator's GPU** (the `rhi_native` check waits for a report), and it has **no surface**: window, swapchain and presentation are not built |
 | Input boundary | [x] | [ ] | meaningless without a window |
 | Audio boundary | [x] | [ ] | — |
 | Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0021); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0022); it inflates with the foundation's `inflate_bounded`, all three deflate block types, one inflater in the workspace; resource packs do not layer |
@@ -121,7 +121,7 @@ anything.
 
 | Roadmap phase | State | Evidence |
 | --- | --- | --- |
-| 0 — Architecture Freeze | **open, blocked by environment** | the Final gate below is not met: the benchmark cannot run its GPU stages or an engine-scale comparison here (DEBT-0008), and the RHI boundary has never met a GPU — its contract, a null backend and a conformance suite are built (ADR-0025), and no native backend is. Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
+| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met: the benchmark has no GPU stages and no engine-scale comparison (DEBT-0008), and the RHI has no surface. Its contract, a null backend and a native `wgpu` backend are built and pass the same suite, the native one on a real (software) Vulkan driver in CI (ADR-0025, ADR-0026). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
 | 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005) |
 | 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming exist; camera, input, render and player do not |
 
@@ -183,9 +183,11 @@ contracts.
    question the gate exists to ask, and
    `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves the language lock for the
    completed benchmark.
-2. **The RHI and presentation boundary has no native backend.** Its contract
-   is built and a null backend passes the conformance suite on every slice
-   (ADR-0025). That tests the rules for consistency with each other, not with
-   a driver. Nothing has yet tested whether the boundary survives contact with
-   a real GPU; the next step is a native backend that passes the same suite on
-   the local validation machine (DEBT-0046).
+2. **The RHI has met a driver, but not a window.** Its contract, a null
+   backend and a native `wgpu` backend are built (ADR-0025, ADR-0026). The
+   native one passes the conformance suite and an upload-and-draw readback on
+   Mesa's software Vulkan in CI, so the boundary has survived contact with a
+   conformant driver. Two things remain before this blocker closes:
+   **presentation**, which needs a window host (code not written), and **a
+   report from the operator's GPU** (`rhi_native` in `local-validation.py`).
+   See DEBT-0046.
