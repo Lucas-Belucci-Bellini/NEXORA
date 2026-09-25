@@ -292,7 +292,22 @@ def git_state() -> dict:
 # checks
 
 
-def check(id_, args, summary_from=None, timeout=3600):
+# The most lines of a check's output a report keeps whole. The benchmark's
+# markdown is ~130 lines; the bound only stops a runaway tool from filling
+# the report.
+MAX_KEPT_LINES = 500
+
+
+def whole(text: str) -> list:
+    """All of a tool's output, scrubbed and bounded -- for the output that is
+    the point of the check, like the benchmark's measurements."""
+    lines = scrub(text).rstrip().splitlines()
+    if len(lines) > MAX_KEPT_LINES:
+        return lines[:MAX_KEPT_LINES] + [f"... {len(lines) - MAX_KEPT_LINES} more lines not kept"]
+    return lines
+
+
+def check(id_, args, summary_from=None, timeout=3600, keep_whole=False):
     # A full run takes minutes; say what is running so a quiet terminal does
     # not look like a hang.
     print(f"running  {id_} ...", flush=True)
@@ -308,6 +323,7 @@ def check(id_, args, summary_from=None, timeout=3600):
         "command": " ".join(scrub(str(a)) for a in args),
         "summary": scrub(summary),
         "tail": tail(out),
+        "output": whole(out) if keep_whole else None,
     }
 
 
@@ -393,8 +409,10 @@ def run_checks(scratch: Path, quick: bool) -> list:
     else:
         results.append(check("tests", ["cargo", "test", "--workspace", "--all-targets"], _test_totals))
 
-    def needs_build(id_, args, summary=None):
-        return check(id_, args, summary) if built else skipped(id_, "the release build failed")
+    def needs_build(id_, args, summary=None, keep_whole=False):
+        if not built:
+            return skipped(id_, "the release build failed")
+        return check(id_, args, summary, keep_whole=keep_whole)
 
     results.append(needs_build("headless_slice", [headless, "--quiet", "--save", str(scratch / "w.nxsv")], slice_lines))
     results.append(needs_build("headless_slice_content", [
@@ -410,7 +428,8 @@ def run_checks(scratch: Path, quick: bool) -> list:
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
     # DEBT-0008: the container's numbers are one machine's.
     results.append(needs_build("benchmark_cpu", [bench, "--markdown"] + (["--smoke"] if quick else [])
-                               + ["--scratch", str(scratch / "bench")], lambda out: "see the report's benchmark section"))
+                               + ["--scratch", str(scratch / "bench")],
+                               lambda out: "see the report's benchmark section", keep_whole=True))
     return results
 
 
@@ -442,6 +461,10 @@ def build_report(quick: bool) -> dict:
             {"id": id_, "status": "NOT_IMPLEMENTED", "reason": reason} for id_, reason in HARDWARE_GATED
         ],
         "benchmark_tail": benchmark["tail"] if benchmark else [],
+        # The measurements themselves: a second machine's numbers are what
+        # DEBT-0013 waits for, and the tail alone is only the list of stages
+        # that have no number.
+        "benchmark_output": (benchmark.get("output") or []) if benchmark else [],
         "verdict": {
             "executed_pass": all(c["status"] == "PASS" for c in checks if c["status"] != "SKIPPED"),
             "failures": [c["id"] for c in checks if c["status"] == "FAIL"],
@@ -488,7 +511,12 @@ def render_markdown(report: dict) -> str:
     ]
     for item in report["hardware_gated"]:
         lines.append(f"| `{item['id']}` | {item['status']} | {item['reason']} |")
-    if report.get("benchmark_tail"):
+    if report.get("benchmark_output"):
+        # Markdown already: the benchmark is run with --markdown.
+        # Its headings are demoted one level so they nest under this section.
+        lines += ["", "## CPU benchmark", ""]
+        lines += ["#" + line if line.startswith("#") else line for line in report["benchmark_output"]]
+    elif report.get("benchmark_tail"):
         lines += ["", "## CPU benchmark (tail)", "", "```text", *report["benchmark_tail"], "```"]
     failures = report["verdict"]["failures"]
     lines += ["", "## Verdict", "", "Every executed check passed." if not failures
@@ -605,6 +633,10 @@ def self_test() -> int:
     leaked = str(Path(tempfile.gettempdir()) / "nexora-local-validation-abc123" / "fg")
     assert scrub(leaked) == str(Path("<scratch>") / "fg"), scrub(leaked)
     assert _lines("result")("result             OK\nother") == "result OK"
+    many = "\n".join(f"| row {n} |" for n in range(MAX_KEPT_LINES + 20))
+    kept = whole(many)
+    assert len(kept) == MAX_KEPT_LINES + 1 and kept[-1].startswith("... 20 more"), kept[-1]
+    assert whole("a\nb\n") == ["a", "b"], "short output is kept whole, not tailed"
     missing_msvc = "error: linker `link.exe` not found\n  = note: program not found"
     assert "Build Tools" in explain_build_failure(missing_msvc, "Windows")
     assert "Desktop development with C++" in explain_build_failure(missing_msvc, "Windows")

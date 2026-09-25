@@ -129,7 +129,18 @@ Work continues on what can be verified headless — the roadmap's own rule is
 that a phase advances on its technical criteria, and the criteria that remain
 need hardware this environment does not have. Nothing here claims otherwise.
 
-**Local evidence (2026-09-25): none yet.** The bridge exists —
+**Local evidence (2026-09-25): the first report exists** —
+[`docs/validation/local/NEXORA-LOCAL-VALIDATION.md`](docs/validation/local/NEXORA-LOCAL-VALIDATION.md),
+commit `700eed6`, a real Windows 10 machine (AMD Ryzen 5 5500, 12 threads,
+16 GiB, AMD Radeon RX 6650 XT). Release build, **1138 tests**, the slice with
+and without the first generation, the forge's build of it and the textures:
+all `VERIFIED_ON_LOCAL_HARDWARE`. Every GPU item stays `NOT_IMPLEMENTED` — the
+report proves the machine has a GPU, not that the engine can use one, and it
+moves neither blocker. Its CPU benchmark numbers were lost to a tail cut in the
+script (fixed since); a re-run captures them for DEBT-0013. The previous note,
+kept for the record:
+
+**Before the first report:** The bridge exists —
 `scripts/local-validation.py` and [`docs/validation/local/`](docs/validation/local/README.md):
 a run on a real machine records its commit, its hardware class and every check
 it could execute, and `check` classifies that evidence against `HEAD`
