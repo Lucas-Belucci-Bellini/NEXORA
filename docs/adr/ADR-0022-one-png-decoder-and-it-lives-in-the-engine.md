@@ -1,4 +1,4 @@
-# ADR-0016 — One PNG decoder, and it lives in the engine
+# ADR-0022 — One PNG decoder, and it lives in the engine
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24
@@ -9,7 +9,7 @@
 
 ## Context
 
-ADR-0015 gave the runtime a resource system that can resolve, verify and cache
+ADR-0021 gave the runtime a resource system that can resolve, verify and cache
 a texture — and nothing that could turn the verified bytes into pixels. The
 only PNG decoder, and the `inflate` beneath it, lived in `tools/texture-forge`,
 interleaved with the encoder and compressor. The engine cannot depend on a
@@ -48,7 +48,7 @@ now decodes with the same code the runtime does.
   the tool that wrote them. The headless slice does it for all sixteen
   first-generation stones with `--resources`, and CI runs it.
 - A tampered file is refused by the resource index's hash before the decoder
-  sees it (ADR-0015); a well-hashed file that is not a PNG this project writes
+  sees it (ADR-0021); a well-hashed file that is not a PNG this project writes
   is refused by the decoder, by name.
 - **Known limit, deliberate:** dynamic-Huffman deflate blocks are not read. So
   the runtime cannot open a PNG written by an arbitrary external tool — only

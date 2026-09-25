@@ -112,7 +112,7 @@ violation fails the build rather than a review
 
 ```text
 engine/foundation    errors, versions, identifiers, space, time, determinism,
-                     diagnostics, configuration, memory budgets (ADR-0018)
+                     diagnostics, configuration, memory budgets (ADR-0024)
                                                          (no dependencies at all)
 engine/persistence   versioned, checksummed, atomic save container
 engine/runtime       lifecycle, engine modules, registries, event bus, jobs
@@ -125,12 +125,12 @@ engine/streaming     interest, priority, budgets, LOD tiers, eviction
 engine/simulation    the one crate allowed to see the world, physics and
                      streaming at the same time
 engine/command       intent: definitions, validation, dispatch, quotas
-engine/query         reads as a contract: versioned, permitted, bounded (ADR-0017)
+engine/query         reads as a contract: versioned, permitted, bounded (ADR-0023)
 engine/asset         surface materials, provenance, the strict JSON reader
 engine/resource      resource manifest, integrity-checked loading, bounded
-                     cache and typed handles (ADR-0015)
+                     cache and typed handles (ADR-0021)
 engine/mesh          greedy meshing into a data structure (ADR-0012)
-engine/image         the one PNG decoder and the texture loader (ADR-0016)
+engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the content tool: recipes, generation, batch, INDEX
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine

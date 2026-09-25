@@ -1,6 +1,6 @@
 //! Deflate decompression (RFC 1951): the half the runtime needs.
 //!
-//! Moved here from `tools/texture-forge` (ADR-0016). The forge writes PNGs and
+//! Moved here from `tools/texture-forge` (ADR-0022). The forge writes PNGs and
 //! the runtime reads them; one decoder serves both, because two decoders of
 //! one format are two chances to disagree about what a file means. The
 //! compressor stays in the forge: the runtime never writes a texture.
@@ -11,7 +11,7 @@
 //! dynamic-Huffman block is refused by name. That is a real limit on what the
 //! runtime can open, and it is deliberate for now: every texture the runtime
 //! loads is named in a resource manifest whose hash it has already matched
-//! (ADR-0015), so what reaches this decoder was written by the forge.
+//! (ADR-0021), so what reaches this decoder was written by the forge.
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 

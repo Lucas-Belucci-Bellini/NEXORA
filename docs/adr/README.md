@@ -22,9 +22,9 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0010](ADR-0010-commands-are-intent-and-carry-their-own-authority.md) | Commands are intent, and the crate graph enforces the boundary | ACCEPTED |
 | [0011](ADR-0011-a-torn-tail-is-a-crash-and-corruption-is-not.md) | A torn tail is a crash; corruption is not, and each has its own answer | ACCEPTED |
 | [0012](ADR-0012-a-mesh-is-a-data-structure-not-a-picture.md) | A mesh is a data structure, not a picture | ACCEPTED |
-| [0013](ADR-0013-a-recipe-is-data-and-a-material-names-it.md) | A recipe is data, and a material names it | ACCEPTED |
-| [0014](ADR-0014-content-blocks-enter-through-the-api-a-mod-uses.md) | Content blocks enter through the API a mod uses | ACCEPTED |
-| [0015](ADR-0015-resources-are-verified-before-they-are-decoded.md) | Resources are indexed, and verified before they are decoded | ACCEPTED |
-| [0016](ADR-0016-one-png-decoder-and-it-lives-in-the-engine.md) | One PNG decoder, and it lives in the engine | ACCEPTED |
-| [0017](ADR-0017-queries-are-reads-and-a-contract.md) | Queries are reads, and a contract | ACCEPTED |
-| [0018](ADR-0018-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memory is accounted by its owner, in one ledger | ACCEPTED |
+| [0019](ADR-0019-a-recipe-is-data-and-a-material-names-it.md) | A recipe is data, and a material names it | ACCEPTED |
+| [0020](ADR-0020-content-blocks-enter-through-the-api-a-mod-uses.md) | Content blocks enter through the API a mod uses | ACCEPTED |
+| [0021](ADR-0021-resources-are-verified-before-they-are-decoded.md) | Resources are indexed, and verified before they are decoded | ACCEPTED |
+| [0022](ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md) | One PNG decoder, and it lives in the engine | ACCEPTED |
+| [0023](ADR-0023-queries-are-reads-and-a-contract.md) | Queries are reads, and a contract | ACCEPTED |
+| [0024](ADR-0024-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memory is accounted by its owner, in one ledger | ACCEPTED |

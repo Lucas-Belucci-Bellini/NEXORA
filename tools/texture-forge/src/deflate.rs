@@ -25,7 +25,7 @@
 //!
 //! Every table is a place to be silently wrong. So this module's tests
 //! round-trip through the engine's inflater (`nexora_image::inflate`, which
-//! owns the tables since ADR-0016), that inflater is checked against streams
+//! owns the tables since ADR-0022), that inflater is checked against streams
 //! zlib itself wrote, and the PNG files are decompressed by Python's `zlib`
 //! outside the test suite entirely. A compressor that only agrees with itself
 //! has proved nothing.
@@ -33,7 +33,7 @@
 use nexora_image::inflate::{DISTANCE_CODES, LENGTH_CODES};
 
 /// The decoder lives in the engine, because the runtime reads what this
-/// module writes (ADR-0016). Re-exported so a caller of the tool keeps one
+/// module writes (ADR-0022). Re-exported so a caller of the tool keeps one
 /// name for the pair.
 pub use nexora_image::inflate::{inflate, MAX_INFLATED_BYTES};
 

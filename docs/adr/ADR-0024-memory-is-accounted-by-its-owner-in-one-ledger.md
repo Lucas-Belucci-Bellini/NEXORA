@@ -1,4 +1,4 @@
-# ADR-0018 — Memory is accounted by its owner, in one ledger
+# ADR-0024 — Memory is accounted by its owner, in one ledger
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24
@@ -11,7 +11,7 @@
 ## Context
 
 The freeze checklist listed *Resource ownership* as partial: the asset cache
-had a byte budget (ADR-0015), but *"per-subsystem budgets for the other memory
+had a byte budget (ADR-0021), but *"per-subsystem budgets for the other memory
 classes are not"* built. Three owners already measured their own memory and
 nobody else could see it:
 

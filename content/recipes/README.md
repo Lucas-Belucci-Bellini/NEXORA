@@ -2,7 +2,7 @@
 
 What a procedural material looks like, as numbers — palette, noise lattice,
 cracks, boards, courses, grains. A material names one with its `"recipe"`
-field ([ADR-0013](../../docs/adr/ADR-0013-a-recipe-is-data-and-a-material-names-it.md)):
+field ([ADR-0019](../../docs/adr/ADR-0019-a-recipe-is-data-and-a-material-names-it.md)):
 
 ```text
 nexora:recipe/stone/basalt   ->   content/recipes/nexora/stone/basalt.json

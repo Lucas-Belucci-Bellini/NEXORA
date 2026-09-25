@@ -69,7 +69,7 @@ jobs:
       - name: Smoke test the headless vertical slice
         run: |
           # Memory is gated, unlike time: a pool's bytes are a property of the
-          # data structures and come out the same on any runner (ADR-0018).
+          # data structures and come out the same on any runner (ADR-0024).
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv" \
             | tee "${RUNNER_TEMP}/ci-world.txt"
           grep '^memory             2 pools, worst nominal, 0 suspected leaks$' \

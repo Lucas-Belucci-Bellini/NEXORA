@@ -1,4 +1,4 @@
-# ADR-0017 — Queries are reads, and a contract
+# ADR-0023 — Queries are reads, and a contract
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24

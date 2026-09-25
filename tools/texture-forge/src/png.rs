@@ -30,7 +30,7 @@ use nexora_foundation::hashing::crc32;
 use nexora_image::png::paeth;
 
 /// The decoder lives in the engine, because the runtime reads what this
-/// module writes (ADR-0016). Re-exported so the tool keeps one name for both
+/// module writes (ADR-0022). Re-exported so the tool keeps one name for both
 /// halves of the format.
 pub use nexora_image::png::{adler32, decode, Decoded, SIGNATURE};
 

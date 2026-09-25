@@ -907,7 +907,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   preset da categoria.
 - **TRIGGER:** a primeira família 16×16 catalogada pelo caminho procedural.
 - **TARGET STAGE:** Phase 1 (conteúdo da primeira geração)
-- **STATUS:** RESOLVED — [ADR-0013](docs/adr/ADR-0013-a-recipe-is-data-and-a-material-names-it.md).
+- **STATUS:** RESOLVED — [ADR-0019](docs/adr/ADR-0019-a-recipe-is-data-and-a-material-names-it.md).
   Receitas são documentos em `content/recipes/`, nomeados pelo campo `recipe`
   do schema 2 do material. Prova: `recipe_book::tests` (receita pálida
   renderiza pálida; caminho, categoria e identificador errados são recusados),
@@ -918,7 +918,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 
 - **SYSTEM:** `engine/resource`, `tools/texture-forge::png`, `tools/texture-forge::deflate`
 - **CLASS:** ARCHITECTURAL
-- **WHY CREATED:** o `ResourceManager` (ADR-0015) resolve, verifica e faz cache
+- **WHY CREATED:** o `ResourceManager` (ADR-0021) resolve, verifica e faz cache
   de uma textura, mas só existe um loader de bytes para ela: o único
   decodificador PNG (e o inflate que ele usa) está em `tools/texture-forge`,
   misturado com o codificador, e o engine não pode depender de uma ferramenta.
@@ -936,7 +936,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro consumidor de pixels no runtime (renderizador,
   validação de conteúdo em runtime, ou ícone de UI).
 - **TARGET STAGE:** Phase 1 (Resource System)
-- **STATUS:** RESOLVED — [ADR-0016](docs/adr/ADR-0016-one-png-decoder-and-it-lives-in-the-engine.md).
+- **STATUS:** RESOLVED — [ADR-0022](docs/adr/ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md).
   `engine/image` tem o `inflate` (agora limitado pelo tamanho que o cabeçalho
   declara), o `png::decode` e o `TextureLoader`; o forge reexporta, e há um
   decodificador só. Prova: `engine/image` (PNGs montados à mão, sem o

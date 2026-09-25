@@ -1,7 +1,7 @@
 //! The resource loader that turns a verified PNG into a [`TextureMap`].
 //!
 //! `nexora_resource` hands a loader bytes whose size and hash already match
-//! the manifest (ADR-0015); this is the loader that knows the format. It is
+//! the manifest (ADR-0021); this is the loader that knows the format. It is
 //! where DEBT-0037 closes: the runtime can now go from
 //! `nexora:texture/stone/basalt/albedo` to pixels without the tool that wrote
 //! them.

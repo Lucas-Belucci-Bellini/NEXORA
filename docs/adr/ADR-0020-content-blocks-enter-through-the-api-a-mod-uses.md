@@ -1,8 +1,8 @@
-# ADR-0014 — Content blocks enter through the API a mod uses
+# ADR-0020 — Content blocks enter through the API a mod uses
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24
-- **Follows:** [ADR-0013](ADR-0013-a-recipe-is-data-and-a-material-names-it.md)
+- **Follows:** [ADR-0019](ADR-0019-a-recipe-is-data-and-a-material-names-it.md)
   (the sixteen first-generation stones it made possible needed blocks)
 - **Touches:** mod API, public IDs — both on the index's list
 

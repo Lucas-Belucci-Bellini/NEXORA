@@ -1,4 +1,4 @@
-# ADR-0015 — Resources are indexed, and verified before they are decoded
+# ADR-0021 — Resources are indexed, and verified before they are decoded
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24

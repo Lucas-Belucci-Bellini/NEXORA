@@ -20,7 +20,7 @@ stone is:
 content/first-generation/stone/<variant>.json   the material: id, 16×16, no optional maps,
                                                 and a provenance note naming its #5 prompt
 content/recipes/nexora/stone/<variant>.json     the recipe: palette, lattice, cracks,
-                                                layers, grains (ADR-0013)
+                                                layers, grains (ADR-0019)
 ```
 
 The #5 prompt was read as art direction — *"pale mineral base with interlocking
@@ -89,7 +89,7 @@ the engine's built-in set. `integration_status` records what has been
 | meshed | its surface is its own material, not `UNMAPPED_SURFACE`, and it appears in a mesh of the placed row |
 | saved | it survives a save and a reload with the content present; without it, the save is refused by name |
 | recovered | it survives journal replay onto the pre-edit checkpoint |
-| texture | its albedo is resolved by identifier through the forge's `resources.json`, hash-checked and decoded to 16×16 by the runtime (ADR-0015, ADR-0016) |
+| texture | its albedo is resolved by identifier through the forge's `resources.json`, hash-checked and decoded to 16×16 by the runtime (ADR-0021, ADR-0022) |
 
 `engine/simulation/tests/first_generation_blocks.rs` checks the first three on
 every `cargo test`; the headless slice checks the next one when run with

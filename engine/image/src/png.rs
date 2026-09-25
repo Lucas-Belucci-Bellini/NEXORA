@@ -1,6 +1,6 @@
 //! PNG decoding: the half the runtime needs.
 //!
-//! Moved here from `tools/texture-forge::png` (ADR-0016), which keeps the
+//! Moved here from `tools/texture-forge::png` (ADR-0022), which keeps the
 //! encoder and re-exports this. It reads what this project writes — eight
 //! bits per channel, the four non-indexed colour types, no interlacing — and
 //! refuses everything else by name.

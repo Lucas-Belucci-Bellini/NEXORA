@@ -1,4 +1,4 @@
-# ADR-0013 — A recipe is data, and a material names it
+# ADR-0019 — A recipe is data, and a material names it
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24

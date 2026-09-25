@@ -931,7 +931,7 @@ const TEXTURE_BUDGET: u64 = 64 * 1024;
 const COLUMN_BUDGET: [u64; 4] = [40 << 10, 48 << 10, 64 << 10, 128 << 10];
 
 /// The slice's memory pools, one per owner (`NEXORA MEMORY AND RESOURCE
-/// OWNERSHIP.md`, ADR-0018).
+/// OWNERSHIP.md`, ADR-0024).
 struct SliceMemory {
     ledger: MemoryLedger,
     /// Chunks resident in the world. Streaming enforces this pool's ceiling.
@@ -1007,7 +1007,7 @@ impl SliceMemory {
 
 /// Resolve every content block's albedo by identifier, verify it against the
 /// resource index, and decode it -- the runtime reaching its own textures
-/// without the tool that wrote them (ADR-0015, ADR-0016).
+/// without the tool that wrote them (ADR-0021, ADR-0022).
 fn load_content_textures(
     content: &BlockContent,
     root: &Path,
