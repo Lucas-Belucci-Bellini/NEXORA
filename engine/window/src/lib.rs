@@ -146,6 +146,7 @@ pub fn run(spec: &WindowSpec, client: &mut dyn Client) -> Result<Session> {
         frames: 0,
         waited: 0,
         closed: false,
+        exiting: false,
         failure: None,
     };
     event_loop.run_app(&mut host).map_err(|error| {
@@ -186,6 +187,10 @@ struct Host<'a> {
     frames: u64,
     waited: u64,
     closed: bool,
+    /// The run is over: `exit` has been asked for. The platform may still
+    /// deliver events already queued (macOS delivers a pending redraw), and
+    /// none of them may reach the client, which has finished.
+    exiting: bool,
     failure: Option<Error>,
 }
 
@@ -219,9 +224,17 @@ impl Host<'_> {
         Ok(())
     }
 
-    fn fail(&mut self, event_loop: &ActiveEventLoop, error: Error) {
-        self.failure = Some(error);
+    fn exit(&mut self, event_loop: &ActiveEventLoop) {
+        self.exiting = true;
         event_loop.exit();
+    }
+
+    /// End the run with `error`. The first failure is the one reported.
+    fn fail(&mut self, event_loop: &ActiveEventLoop, error: Error) {
+        if self.failure.is_none() {
+            self.failure = Some(error);
+        }
+        self.exit(event_loop);
     }
 }
 
@@ -236,13 +249,16 @@ impl ApplicationHandler for Host<'_> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if self.exiting {
+            return;
+        }
         let Some(rhi) = self.rhi.as_mut() else {
             return;
         };
         match event {
             WindowEvent::CloseRequested => {
                 self.closed = true;
-                event_loop.exit();
+                self.exit(event_loop);
             }
             WindowEvent::Resized(size) => {
                 if let Err(error) = rhi.resize(size.width, size.height) {
@@ -263,7 +279,7 @@ impl ApplicationHandler for Host<'_> {
                 }
                 Ok(Flow::Exit) => {
                     self.frames += 1;
-                    event_loop.exit();
+                    self.exit(event_loop);
                 }
                 Err(error) => self.fail(event_loop, error),
             },
@@ -272,6 +288,9 @@ impl ApplicationHandler for Host<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exiting {
+            return;
+        }
         let Some(window) = &self.window else {
             return;
         };

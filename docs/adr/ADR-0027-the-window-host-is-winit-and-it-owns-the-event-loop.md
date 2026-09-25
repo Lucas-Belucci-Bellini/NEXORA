@@ -93,6 +93,12 @@ window to `wgpu`, and `x11`.
   frame. It asks again 10 ms later, and fails with *"the window never became
   visible"* if no frame is shown within `SHOW_TIMEOUT` (20 s). The probe runs
   the conformance suite only after its first frame has been shown.
+- **After `Exit`, the client is never called again.** Asking the loop to
+  exit does not empty it: on macOS a redraw already queued is still
+  delivered. CI caught this on `5e272c0`, where the probe, having destroyed
+  its target on its last frame, was asked for one more and presented a stale
+  handle. The host ignores every event once it is exiting, keeps the first
+  failure it saw, and the probe answers a frame after its last with `Exit`.
 - **No display is a failure, not a skip**, as ADR-0026 made no GPU. A machine
   without one declares it with `NEXORA_DISPLAY=none`.
 - Window errors get their own domain, `Domain::Platform`.

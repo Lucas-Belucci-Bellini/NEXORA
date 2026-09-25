@@ -197,6 +197,11 @@ impl Client for Probe {
             .state
             .as_mut()
             .ok_or_else(|| wrong("a frame before the window opened"))?;
+        if state.shown >= self.frames {
+            // Finished, and the target is gone: a redraw the platform had
+            // already queued must not present it again.
+            return Ok(Flow::Exit);
+        }
         if state.shown == 0 {
             // A window may not take frames until it is on screen (macOS
             // reports it occluded until then). Wait for the first frame that
