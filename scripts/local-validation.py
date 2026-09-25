@@ -58,12 +58,14 @@ STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 # What a real machine is needed for, and why none of it can pass yet.
 HARDWARE_GATED = [
     ("window", "no window host exists in the engine"),
-    ("rhi", "the RHI boundary is specified, not built (freeze checklist, Runtime)"),
-    ("gpu_context", "needs the RHI"),
-    ("swapchain", "needs the RHI and a window"),
+    ("rhi", "contract and null backend built, conformance runs in every slice (ADR-0025); "
+            "no native backend exists, so no GPU has run it"),
+    ("gpu_context", "needs a native RHI backend"),
+    ("swapchain", "needs a native RHI backend and a window"),
     ("presentation", "needs a swapchain"),
     ("shaders", "no shader pipeline exists"),
-    ("texture_upload", "textures decode on the CPU (ADR-0022); nothing uploads them"),
+    ("texture_upload", "uploads pass the null backend's rules as RGBA8 (ADR-0025); "
+                       "no native backend moves a byte to a GPU"),
     ("rendering", "no renderer; meshes are built and checked as data (ADR-0012)"),
     ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
@@ -400,7 +402,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     headless = str(release / _exe("nexora-headless"))
     forge = str(release / _exe("nexora-texture-forge"))
     bench = str(release / _exe("nexora-benchmark"))
-    slice_lines = _lines("result", "memory ", "content ", "queries", "probes verified")
+    slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
     built = results[0]["status"] == "PASS"

@@ -27,6 +27,15 @@ and `NEXORA DEFINITION OF DONE.md` does not accept unverified work.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists exactly what is and
 is not implemented.
 
+There *is* an **RHI**, as a contract
+([ADR-0025](docs/adr/ADR-0025-the-rhi-is-a-contract-a-null-backend-keeps-before-a-gpu-does.md)):
+handles that die with their resource or their device, all-or-nothing
+submission, ordered fences, destruction deferred until the GPU is done, device
+loss and recreation. There is also a **null backend** that keeps all of those
+rules without a GPU, and a **conformance suite** every backend must pass. The
+slice runs that suite on every start and uploads the first generation's
+textures through it. No native backend exists yet, so no byte has reached a GPU.
+
 There *is* a frame, as of ENGINE-0
 ([ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)): a fixed
 timestep, a cap on catching up that says how many steps it threw away, and
@@ -210,6 +219,8 @@ engine/asset         surface materials, texture maps, provenance, validation,
 engine/resource      resource manifest, integrity-checked loading, bounded
                      cache and typed handles (ADR-0021)
 engine/mesh          greedy meshing into a data structure (ADR-0012)
+engine/rhi           the render hardware interface: the contract, a null
+                     backend and the conformance suite (ADR-0025)
 engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,

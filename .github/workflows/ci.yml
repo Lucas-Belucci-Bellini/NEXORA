@@ -72,7 +72,11 @@ jobs:
           # data structures and come out the same on any runner (ADR-0024).
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-world.nxsv" \
             | tee "${RUNNER_TEMP}/ci-world.txt"
-          grep '^memory             2 pools, worst nominal, 0 suspected leaks$' \
+          grep '^memory             3 pools, worst nominal, 0 suspected leaks$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # The RHI's null backend, held to the suite every backend must pass,
+          # with no GPU initialized (ADR-0025). Its pool is the third above.
+          grep '^rhi                null backend, conformance 9/9 cases, no GPU initialized$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones must register, show its own surface in a mesh, and survive
@@ -232,9 +236,12 @@ jobs:
             --resources "${RUNNER_TEMP}/first-generation" > "${RUNNER_TEMP}/ci-textures.txt"
           grep '^content textures   16 (resolved, verified and decoded)$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
-          # The decoded textures are a third pool, and the cache that held them
-          # must have given its bytes back when the stage ended.
-          grep '^memory             3 pools, worst nominal, 0 suspected leaks$' \
+          # The decoded textures are a fourth pool, and the cache that held them
+          # must have given its bytes back when the stage ended -- as must the
+          # RHI, which received all sixteen as RGBA8 in one submission.
+          grep '^memory             4 pools, worst nominal, 0 suspected leaks$' \
+            "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
+          grep '^rhi uploads        16 textures as RGBA8, 16384 bytes, one fence$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
 
       # The bridge to a real machine (docs/validation/local/): its rules are

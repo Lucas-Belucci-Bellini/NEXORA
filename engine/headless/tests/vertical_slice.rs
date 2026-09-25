@@ -551,13 +551,20 @@ fn every_memory_pool_stays_inside_its_budget_and_drains_at_rest() {
             .iter()
             .map(|pool| pool.name)
             .collect::<Vec<_>>(),
-        ["world.chunks", "world.retained"],
-        "no texture pool without textures"
+        ["rhi.null", "world.chunks", "world.retained"],
+        "no texture pool without textures; reported by name"
     );
+    let pool = |name: &str| {
+        memory
+            .pools
+            .iter()
+            .find(|pool| pool.name == name)
+            .expect("the pool is reported")
+    };
     assert_eq!(memory.worst(), Pressure::Nominal, "{memory:?}");
     assert_eq!(memory.suspected_leaks(), 0);
 
-    let world = &memory.pools[0];
+    let world = pool("world.chunks");
     assert_eq!(world.class, MemoryClass::World);
     assert_eq!(
         world.current as usize, report.storage_bytes,
@@ -567,10 +574,21 @@ fn every_memory_pool_stays_inside_its_budget_and_drains_at_rest() {
 
     // Every edited column was held outside the world at some point, and all
     // of it went back before the save.
-    let retained = &memory.pools[1];
+    let retained = pool("world.retained");
     assert_eq!(retained.current, 0);
     assert!(retained.high_water > 0, "the walk retained edited columns");
     assert!(retained.drains_at_rest);
+
+    // The RHI's null backend held memory for the conformance suite, in the
+    // GPU class, and gave every byte of it back.
+    let gpu = pool("rhi.null");
+    assert_eq!(gpu.class, MemoryClass::Gpu);
+    assert_eq!(gpu.current, 0);
+    assert!(gpu.high_water > 0, "the suite allocated through the pool");
+    assert!(gpu.drains_at_rest);
+    assert_eq!(report.rhi_backend, "null");
+    assert_eq!(report.rhi_conformance, nexora_rhi::conformance::CASES.len());
+    assert_eq!(report.rhi_textures, 0, "no content, nothing to upload");
 }
 
 #[test]

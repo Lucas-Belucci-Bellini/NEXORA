@@ -64,6 +64,7 @@ dependencies = [
  "nexora-physics",
  "nexora-query",
  "nexora-resource",
+ "nexora-rhi",
  "nexora-runtime",
  "nexora-simulation",
  "nexora-streaming",
@@ -114,6 +115,13 @@ name = "nexora-resource"
 version = "0.0.1"
 dependencies = [
  "nexora-asset",
+ "nexora-foundation",
+]
+
+[[package]]
+name = "nexora-rhi"
+version = "0.0.1"
+dependencies = [
  "nexora-foundation",
 ]
 
