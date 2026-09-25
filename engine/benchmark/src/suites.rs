@@ -2380,11 +2380,11 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
     let mut stages = vec![
         Unmeasured {
             name: "window",
-            reason: "no windowing layer; ADR-0005",
+            reason: "a window host exists (ADR-0027); the benchmark does not open one (DEBT-0008)",
         },
         Unmeasured {
             name: "input",
-            reason: "meaningless without a window",
+            reason: "no device signal reaches the engine yet (DEBT-0043)",
         },
         Unmeasured {
             name: "RHI",
@@ -2400,7 +2400,7 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
         },
         Unmeasured {
             name: "frame time",
-            reason: "no render loop exists to time",
+            reason: "the window host presents a test target; no renderer draws a frame to time",
         },
         Unmeasured {
             name: "incremental build",

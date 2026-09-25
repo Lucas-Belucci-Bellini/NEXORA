@@ -117,6 +117,12 @@ says `not readable on this surface` rather than claiming the check.
   window with a `Bgra8UnormSrgb` FIFO surface, passes the nine conformance
   cases with presentation on, and presents 61 frames. The first frame read
   back from the surface matches the target in all 65,536 texels.
+- In CI, on commit `08b4a26`, the same probe passed on all three window
+  systems, each reading back **65,536 of 65,536** texels from the surface:
+  **X11** on Linux (Xvfb, lavapipe/Vulkan), **Win32** on Windows (WARP,
+  Direct3D 12, 0 redraws waited) and **AppKit** on macOS (Apple paravirtual
+  device, Metal, 1 redraw waited for the window to become visible). All are
+  virtual displays and software or virtual GPUs, not the operator's hardware.
 - Mutation-checked. Flipping the blit's Y axis fails the readback (0 of
   65,536). Not tracking the present's fence fails the conformance case
   `present` ("a presented texture's memory outlives its handle until the frame
