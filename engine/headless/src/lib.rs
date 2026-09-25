@@ -7,6 +7,7 @@
 //! boot the runtime lifecycle
 //!   -> resolve and initialize engine modules
 //!   -> create a world from a seed
+//!   -> open the RHI's null backend and hold it to the conformance suite
 //!   -> generate chunks in parallel through the job system
 //!   -> mutate voxels
 //!   -> drop a character onto the terrain and simulate it
@@ -18,11 +19,12 @@
 //!   -> check every memory pool at rest: none over its ceiling, none leaking
 //! ```
 //!
-//! **There is no window and no renderer here, by design.** The RHI boundary is
-//! specified in `RENDER HARDWARE INTERFACE.md` but not implemented: a renderer
-//! cannot be verified in a headless environment, and claiming a subsystem works
-//! without running it is exactly what `NEXORA DEFINITION OF DONE.md` forbids.
-//! What this slice proves is the part that can be run and checked.
+//! **There is no window and no renderer here, by design.** The RHI runs on its
+//! null backend (ADR-0025): the slice holds it to the conformance suite every
+//! backend must pass and, with content, uploads the decoded textures through
+//! it — every rule a GPU upload is held to, and no GPU initialized. No native
+//! backend exists, and claiming one works without running it on hardware is
+//! exactly what `NEXORA DEFINITION OF DONE.md` forbids.
 //!
 //! The verification step compares blocks by their **namespaced identifier**, not
 //! by runtime id, so a save that came back with plausible-looking integers
@@ -61,6 +63,8 @@ use nexora_physics::math::Vec3;
 use nexora_physics::world::PhysicsWorld;
 use nexora_query::{QueryRequest, QueryService, QueryStats};
 use nexora_resource::ResourceManager;
+use nexora_rhi::conformance::{self, TestShaders};
+use nexora_rhi::{Command, CommandList, NullRhi, Rhi, TextureDesc, TextureFormat, Usage};
 use nexora_runtime::frame::{FrameBudget, FrameLoop, FrameSchedule, FrameStage};
 use nexora_runtime::input::{
     ActionDefinition, ActionKind, AxisTuning, Binding, ButtonCode, DeviceId, DeviceKind,
@@ -223,6 +227,15 @@ pub struct SliceReport {
     /// Content textures resolved, verified and decoded through the resource
     /// system.
     pub content_textures: usize,
+    /// The RHI backend the slice ran on. Always `null`: no GPU is initialized.
+    pub rhi_backend: &'static str,
+    /// Conformance cases that backend passed, out of
+    /// [`nexora_rhi::conformance::CASES`].
+    pub rhi_conformance: usize,
+    /// Content textures uploaded through the RHI, as RGBA8.
+    pub rhi_textures: usize,
+    /// Bytes those uploads carried.
+    pub rhi_texture_bytes: u64,
     /// Every memory pool the slice opened, at the end of the run.
     pub memory: MemoryReport,
     /// Lifecycle phases entered, in order.
@@ -367,6 +380,15 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     let chunks_generated = coords.len();
     let memory = SliceMemory::open(chunks_generated as u64, config.resources.is_some())?;
 
+    // --- render hardware interface -----------------------------------------
+    // `RENDER HARDWARE INTERFACE.md`, *Headless*: the null backend, with no
+    // GPU initialized. It is held to the same suite a native backend will be,
+    // so the rules the slice's uploads obey are the rules, not this backend's.
+    let mut rhi = NullRhi::new();
+    rhi.attach(Arc::clone(&memory.gpu));
+    let rhi_conformance = conformance::run(&mut rhi, &TestShaders::opaque())?;
+    log(&diagnostics, "rhi null backend passed conformance");
+
     let generated = generate_in_parallel(world, &coords, config.worker_threads, &diagnostics)?;
     world = generated;
     memory.world.record(world.storage_bytes() as u64);
@@ -401,14 +423,14 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
                 .textures
                 .as_ref()
                 .ok_or_else(|| mismatch("the texture pool was not opened"))?;
-            load_content_textures(content, root, pool, &diagnostics)?
+            load_content_textures(content, root, pool, &mut rhi, &diagnostics)?
         }
         (None, Some(_)) => {
             return Err(mismatch(
                 "a resource root was given without content to look up",
             ))
         }
-        _ => 0,
+        _ => Uploaded::default(),
     };
     let blocks_edited = probes.len();
     diagnostics
@@ -664,7 +686,11 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         queries_refused: query_stats.refused,
         content_blocks: content_blocks.len(),
         content_surfaces,
-        content_textures,
+        content_textures: content_textures.textures,
+        rhi_backend: rhi_conformance.backend,
+        rhi_conformance: rhi_conformance.passed.len(),
+        rhi_textures: content_textures.textures,
+        rhi_texture_bytes: content_textures.bytes,
         memory,
         phases: lifecycle
             .history()
@@ -1008,6 +1034,12 @@ fn verify_content_surfaces(world: &World, content: &BlockContent) -> Result<usiz
 /// leaves no room for anything larger to hide in.
 const TEXTURE_BUDGET: u64 = 64 * 1024;
 
+/// Device memory the null backend may hold: the textures above once widened
+/// to RGBA8 (16 KiB, measured) or the conformance suite's largest moment
+/// (4 KiB, measured), with room to spare and none for anything the slice did
+/// not ask for.
+const GPU_BUDGET: u64 = 64 * 1024;
+
 /// Voxel storage per column, as `[target, warning, critical, emergency]`
 /// (`NEXORA PERFORMANCE BUDGETS.md`).
 ///
@@ -1031,6 +1063,9 @@ struct SliceMemory {
     retained: Arc<MemoryPool>,
     /// Decoded textures in the resource cache, when the slice loads them.
     textures: Option<Arc<MemoryPool>>,
+    /// Device memory held by the RHI's null backend. Drains at rest: the
+    /// slice destroys everything it uploads.
+    gpu: Arc<MemoryPool>,
 }
 
 impl SliceMemory {
@@ -1062,11 +1097,20 @@ impl SliceMemory {
         } else {
             None
         };
+        let gpu = ledger.register(
+            PoolSpec::new(
+                "rhi.null",
+                MemoryClass::Gpu,
+                MemoryBudget::capacity(GPU_BUDGET)?,
+            )
+            .drains_at_rest(),
+        )?;
         Ok(Self {
             ledger,
             world,
             retained,
             textures,
+            gpu,
         })
     }
 
@@ -1096,15 +1140,24 @@ impl SliceMemory {
     }
 }
 
+/// What the texture stage loaded and uploaded.
+#[derive(Debug, Clone, Copy, Default)]
+struct Uploaded {
+    textures: usize,
+    bytes: u64,
+}
+
 /// Resolve every content block's albedo by identifier, verify it against the
-/// resource index, and decode it -- the runtime reaching its own textures
-/// without the tool that wrote them (ADR-0021, ADR-0022).
+/// resource index, decode it -- the runtime reaching its own textures without
+/// the tool that wrote them (ADR-0021, ADR-0022) -- and upload it through the
+/// RHI (ADR-0025).
 fn load_content_textures(
     content: &BlockContent,
     root: &Path,
     pool: &Arc<MemoryPool>,
+    rhi: &mut dyn Rhi,
     diagnostics: &Diagnostics,
-) -> Result<usize> {
+) -> Result<Uploaded> {
     let mut resources = ResourceManager::open(root, TEXTURE_BUDGET)?;
     resources.cache_mut().attach(Arc::clone(pool))?;
     // Cross-system, before any load: the index must provide every map the
@@ -1115,6 +1168,8 @@ fn load_content_textures(
     // The first visual generation is 16x16; anything larger is a content
     // error, found here rather than in video memory.
     let loader = TextureLoader::new(MapRole::Albedo).at_most(16);
+    let mut uploads = CommandList::new("content albedo");
+    let mut created = Vec::new();
     for material in content.materials() {
         let id = material.map_asset_id(MapRole::Albedo)?;
         let handle = resources.resolve(&id, &loader)?;
@@ -1123,9 +1178,78 @@ fn load_content_textures(
             return Err(mismatch("a texture is not the size its material declares")
                 .with_context("texture", id.to_string()));
         }
+        let (format, texels) =
+            gpu_texels(&map).map_err(|error| error.with_context("texture", id.to_string()))?;
+        let texture = rhi.create_texture(&TextureDesc {
+            label: id.to_string(),
+            width: map.resolution().width,
+            height: map.resolution().height,
+            format,
+            usage: Usage::SAMPLED | Usage::COPY_DST,
+        })?;
+        created.push(texture);
+        uploads.push(Command::WriteTexture {
+            texture,
+            data: texels,
+        });
     }
     resources.cache().publish(diagnostics.counters(), before);
-    Ok(content.materials().len())
+
+    // One submission for the set, one fence to wait on: the shape a streaming
+    // renderer uploads in, rather than a round trip per texture.
+    let bytes = uploads
+        .commands
+        .iter()
+        .map(|command| match command {
+            Command::WriteTexture { data, .. } => data.len() as u64,
+            _ => 0,
+        })
+        .sum();
+    let fence = rhi.submit(uploads)?;
+    rhi.wait(fence)?;
+    // Nothing samples them yet -- there is no renderer -- so the slice gives
+    // the memory back, and the GPU pool must drain like every other.
+    for texture in created {
+        rhi.destroy_texture(texture)?;
+    }
+    rhi.poll()?;
+    Ok(Uploaded {
+        textures: content.materials().len(),
+        bytes,
+    })
+}
+
+/// A decoded map as texels a GPU samples natively: RGBA8, in the colour space
+/// the map's role says its values are in.
+///
+/// No backend guarantees a three-channel format, so RGB is widened here,
+/// once, rather than by each backend differently (ADR-0025).
+fn gpu_texels(map: &nexora_asset::texture::TextureMap) -> Result<(TextureFormat, Vec<u8>)> {
+    use nexora_asset::texture::{ChannelLayout, ColorSpace};
+    if map.format().bits_per_channel != 8 {
+        return Err(mismatch(
+            "only 8-bit maps have an upload path; the first generation has no other",
+        )
+        .with_context("bits", map.format().bits_per_channel.to_string()));
+    }
+    let pixels = map.pixels();
+    let texels = match map.format().channels {
+        ChannelLayout::Rgba => pixels.to_vec(),
+        ChannelLayout::Rgb => pixels
+            .chunks_exact(3)
+            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], u8::MAX])
+            .collect(),
+        ChannelLayout::GreyAlpha => pixels
+            .chunks_exact(2)
+            .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
+            .collect(),
+        ChannelLayout::Grey => pixels.iter().flat_map(|g| [*g, *g, *g, u8::MAX]).collect(),
+    };
+    let format = match map.color_space() {
+        ColorSpace::Srgb => TextureFormat::Rgba8UnormSrgb,
+        ColorSpace::Linear => TextureFormat::Rgba8Unorm,
+    };
+    Ok((format, texels))
 }
 
 fn apply_edits(
@@ -1275,6 +1399,18 @@ pub fn format_report(report: &SliceReport) -> String {
         out.push_str(&format!(
             "content textures   {} (resolved, verified and decoded)\n",
             report.content_textures
+        ));
+    }
+    out.push_str(&format!(
+        "rhi                {} backend, conformance {}/{} cases, no GPU initialized\n",
+        report.rhi_backend,
+        report.rhi_conformance,
+        conformance::CASES.len()
+    ));
+    if report.rhi_textures > 0 {
+        out.push_str(&format!(
+            "rhi uploads        {} textures as RGBA8, {} bytes, one fence\n",
+            report.rhi_textures, report.rhi_texture_bytes
         ));
     }
     out.push_str(&format!(
@@ -1927,24 +2063,67 @@ mod tests {
         let over = SliceMemory::open(1, false).unwrap();
         over.world.record(COLUMN_BUDGET[3] + 1);
         over.retained.record(0);
+        over.gpu.record(0);
         let err = over.verify().unwrap_err();
         assert!(err.to_string().contains("ceiling"), "{err}");
 
         let leak = SliceMemory::open(1, false).unwrap();
         leak.world.record(1);
         leak.retained.record(1);
+        leak.gpu.record(0);
         let err = leak.verify().unwrap_err();
         assert!(err.to_string().contains("drain"), "{err}");
 
         let unused = SliceMemory::open(1, true).unwrap();
         unused.world.record(1);
         unused.retained.record(0);
+        unused.gpu.record(0);
         let err = unused.verify().unwrap_err();
         assert!(err.to_string().contains("never recorded"), "{err}");
 
         let fine = SliceMemory::open(4, false).unwrap();
         fine.world.record(4 * COLUMN_BUDGET[0]);
         fine.retained.record(0);
+        fine.gpu.record(0);
         assert_eq!(fine.verify().unwrap().worst(), Pressure::Nominal);
+    }
+
+    #[test]
+    fn maps_are_widened_to_rgba8_in_the_colour_space_their_role_names() {
+        use nexora_asset::texture::{
+            ChannelLayout, MapRole, Resolution, TextureFormat as MapFormat, TextureMap,
+        };
+        let edge = Resolution::square(4).unwrap();
+        let rgb = TextureMap::new(
+            MapRole::Albedo,
+            MapFormat::eight_bit(ChannelLayout::Rgb),
+            edge,
+            (0..48).collect(),
+        )
+        .unwrap();
+        let (format, texels) = gpu_texels(&rgb).unwrap();
+        assert_eq!(format, TextureFormat::Rgba8UnormSrgb, "albedo is sRGB");
+        assert_eq!(texels.len(), 64);
+        assert_eq!(&texels[..8], &[0, 1, 2, 255, 3, 4, 5, 255]);
+
+        let grey = TextureMap::new(
+            MapRole::Roughness,
+            MapFormat::eight_bit(ChannelLayout::Grey),
+            edge,
+            vec![9; 16],
+        )
+        .unwrap();
+        let (format, texels) = gpu_texels(&grey).unwrap();
+        assert_eq!(format, TextureFormat::Rgba8Unorm, "roughness is linear");
+        assert_eq!(&texels[..4], &[9, 9, 9, 255]);
+
+        let deep = TextureMap::new(
+            MapRole::Height,
+            MapFormat::sixteen_bit(ChannelLayout::Grey),
+            edge,
+            vec![0; 32],
+        )
+        .unwrap();
+        assert!(gpu_texels(&deep).is_err(), "no 16-bit upload path yet");
     }
 }

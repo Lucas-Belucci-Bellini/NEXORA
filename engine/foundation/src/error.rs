@@ -56,6 +56,9 @@ pub enum Domain {
     Input,
     /// Query definition, permission and budgets.
     Query,
+    /// The render hardware interface: devices, GPU resources, submission and
+    /// presentation.
+    Render,
 }
 
 impl Domain {
@@ -81,6 +84,7 @@ impl Domain {
             Self::Command => "command",
             Self::Input => "input",
             Self::Query => "query",
+            Self::Render => "render",
         }
     }
 }

@@ -97,6 +97,16 @@ and the benchmark now exists. Entities need no hardware, so they were the next
 measurable stage of the language gate. See ADR-0006 for the identity/storage
 decision, and `docs/benchmarks/PHASE-0-BASELINE.md` for the numbers.
 
+## Amendment, 2026-09-25
+
+The RHI row's reason, *"No display or GPU available to verify against"*, no
+longer holds on its own: a real machine with a GPU now produces local
+validation reports. What that machine cannot do is validate code that does not
+exist. ADR-0025 builds the RHI's **contract**, a **null backend** and the
+**conformance suite** a native backend must pass. The window, the renderer, the
+camera and any native backend stay unimplemented, and the RHI row reads "contract
+built, no native backend", not "implemented".
+
 ## Migration
 
 None.

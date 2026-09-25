@@ -60,7 +60,7 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0002](docs/adr/ADR-0002-zero-dependency-foundation.md) | Zero dependências externas nos crates do engine | ACCEPTED |
 | [0003](docs/adr/ADR-0003-workspace-layout-enforces-dependency-matrix.md) | O layout do workspace faz o build recusar violações da matriz de dependências | ACCEPTED |
 | [0004](docs/adr/ADR-0004-save-container-format-v1.md) | Formato do contêiner de save v1 | ACCEPTED |
-| [0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) | Fronteira de escopo da Phase 0 — o que **não** foi implementado, e por quê | ACCEPTED (emendada pelas 0006, 0007 e 0008) |
+| [0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) | Fronteira de escopo da Phase 0 — o que **não** foi implementado, e por quê | ACCEPTED (emendada pelas 0006, 0007, 0008 e 0025) |
 | [0006](docs/adr/ADR-0006-entity-identity-and-storage.md) | Identidade de entidade é API pública; layout de armazenamento não é | ACCEPTED |
 | [0007](docs/adr/ADR-0007-physics-collides-against-a-provider-not-the-world.md) | Física colide contra um provedor, não contra o mundo | ACCEPTED |
 | [0008](docs/adr/ADR-0008-streaming-decides-residency-and-a-backend-provides-it.md) | Streaming decide residência; um backend a executa | ACCEPTED |
@@ -80,3 +80,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0022](docs/adr/ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md) | Um único decodificador PNG, e ele mora no engine | ACCEPTED |
 | [0023](docs/adr/ADR-0023-queries-are-reads-and-a-contract.md) | Queries são leituras, e um contrato | ACCEPTED |
 | [0024](docs/adr/ADR-0024-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memória é contabilizada pelo dono, num livro-razão só | ACCEPTED |
+| [0025](docs/adr/ADR-0025-the-rhi-is-a-contract-a-null-backend-keeps-before-a-gpu-does.md) | O RHI é um contrato que um backend nulo cumpre antes de uma GPU | ACCEPTED |

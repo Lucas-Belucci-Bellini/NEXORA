@@ -1,0 +1,22 @@
+[package]
+name = "nexora-rhi"
+description = "The render hardware interface: GPU resources, submission, fences and presentation behind one contract, with a null backend and the conformance suite every backend must pass."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_rhi"
+path = "src/lib.rs"
+
+# Foundation only (`NEXORA DEPENDENCY MATRIX.md`: RHI -> Platform, Foundation).
+# The RHI knows buffers, textures and pipelines; it does not know what a block,
+# a material or a texture *asset* is. The caller translates, which keeps the
+# contract the same whichever backend sits under it (ADR-0025).
+[dependencies]
+nexora-foundation.workspace = true
+
+[lints]
+workspace = true

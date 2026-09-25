@@ -685,6 +685,41 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
+### DEBT-0046 — O RHI só tem o backend nulo: nenhum byte jamais chegou a uma GPU
+
+- **SYSTEM:** `engine/rhi`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o contrato do RHI foi construído antes de qualquer backend
+  nativo, de propósito
+  ([ADR-0025](docs/adr/ADR-0025-the-rhi-is-a-contract-a-null-backend-keeps-before-a-gpu-does.md)):
+  se o primeiro backend vier antes do contrato, ele *vira* o contrato, e uma
+  fronteira definida pelo único backend que tem não pode falhar no contato com
+  ele. O backend nulo cumpre todas as regras sem GPU, e a suíte de conformidade
+  roda contra ele em todo slice.
+- **IMPACT:** o que nunca aconteceu, listado para não ser confundido com o que
+  funciona: nenhum buffer ou textura foi alocado num dispositivo real; nenhum
+  fence foi sinalizado por um driver; nenhum shader foi compilado — o código de
+  shader é bytes opacos e `validates_shaders` é falso; nenhuma perda de
+  dispositivo veio de um driver, só de `lose_device`; nada foi apresentado. As
+  regras são consistentes entre si e com a suíte; nenhuma foi confrontada com
+  Vulkan, Direct3D 12 ou Metal.
+- **RISK:** alto para o gate de congelamento, que depende exatamente disso (o
+  segundo bloqueio do *Final gate*). Baixo para o que já existe: nada
+  persistido ou na rede depende do RHI, então uma regra que um driver real
+  desminta muda o contrato sem migração.
+- **PROPOSED REMEDIATION:** a ADR do primeiro backend nativo, decidindo o que a
+  ADR-0025 enumera — a dependência (justificada como a ADR-0002 pede), onde o
+  `unsafe` mora (o precedente é a ADR-0009), a linguagem de shader, e o host da
+  janela, que é o mesmo que o `DEBT-0041` e o `DEBT-0043` esperam. Depois, um
+  check novo em `scripts/local-validation.py` que roda
+  `conformance::run` contra esse backend na máquina real: só esse relatório pode
+  tirar `rhi`, `gpu_context` e `texture_upload` de `NOT_IMPLEMENTED`.
+- **TRIGGER:** já disparado. A máquina existe: os relatórios locais vêm de um
+  Windows 10 com uma AMD Radeon RX 6650 XT, que tem drivers Vulkan e
+  Direct3D 12.
+- **TARGET STAGE:** Phase 0 (bloqueia o congelamento)
+- **STATUS:** OPEN
+
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
 - **SYSTEM:** `engine/simulation::terrain` (`WorldVoxels`)

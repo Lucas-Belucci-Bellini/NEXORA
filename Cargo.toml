@@ -16,6 +16,7 @@
 #     physics     -> foundation
 #     streaming   -> foundation
 #     mesh        -> foundation
+#     rhi         -> foundation
 #     simulation  -> foundation, runtime, asset, world, physics, streaming, command, query
 #     headless    -> all of the above
 #
@@ -41,6 +42,7 @@ members = [
     "engine/physics",
     "engine/streaming",
     "engine/mesh",
+    "engine/rhi",
     "engine/simulation",
     "engine/headless",
     "engine/benchmark",
@@ -72,6 +74,7 @@ nexora-entity = { path = "engine/entity", version = "0.0.1" }
 nexora-physics = { path = "engine/physics", version = "0.0.1" }
 nexora-streaming = { path = "engine/streaming", version = "0.0.1" }
 nexora-mesh = { path = "engine/mesh", version = "0.0.1" }
+nexora-rhi = { path = "engine/rhi", version = "0.0.1" }
 nexora-simulation = { path = "engine/simulation", version = "0.0.1" }
 nexora-ffi-probe = { path = "benchmarks/ffi-probe", version = "0.0.1" }
 nexora-texture-forge = { path = "tools/texture-forge", version = "0.0.1" }
