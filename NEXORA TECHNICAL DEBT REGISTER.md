@@ -92,7 +92,42 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **RISK:** Alto a partir de mundos grandes; irrelevante na escala da Phase 0.
 - **PROPOSED REMEDIATION:** Region files com escrita apenas dos chunks sujos.
 - **TARGET STAGE:** Phase 2 (Voxel Vertical Slice)
-- **STATUS:** OPEN
+- **RESOLUÇÃO PARCIAL (2026-09-15):** existe agora um
+  `nexora_world::region::RegionStore` — um diretório com **um arquivo por
+  região**, cada um um `SaveContainer` comum. Decisões em
+  [ADR-0014](docs/adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md).
+
+  **Salvar depois de um bloco mudar: 12,8–13,2 ms → 2,9 ms, e 40,8 KiB →
+  4,7 KiB.** Cerca de 4,5× menos tempo e 8,7× menos bytes, no mundo de
+  benchmark agrupado a duas colunas por região. A região limpa não é
+  codificada, não é deflacionada, não é escrita e não é relida — o arquivo dela
+  não é aberto.
+
+  **O número que não depende da máquina é uma contagem:**
+  `save.regions_written_per_edit` é **1** de 4, em qualquer caixa e em qualquer
+  build. É também a confirmação independente de que a sujeira por seção — que
+  já era rastreada e nunca tinha sido lida na hora de salvar — agora é lida.
+
+  **O preço, medido e não escondido: a escrita completa custa 13–17% a mais** e
+  o total cresce 2,2%. Cinco arquivos em vez de um são cinco molduras, cinco
+  `fsync`, cinco releituras de verificação e cinco fluxos deflate que não
+  compartilham dicionário; a paleta também é escrita uma vez por região. A
+  escrita completa é exatamente o caso para o qual este arranjo **não** é.
+
+  **Dividir a seção dentro do mesmo contêiner não resolveria nada hoje** — o
+  contêiner codifica como uma unidade, então toda seção deflaciona a cada
+  `encode` e o arquivo inteiro é escrito e verificado. O custo segue o arquivo,
+  então as regiões precisavam ser arquivos.
+- **STATUS:** OPEN (reduzido) — o mecanismo existe e está medido, mas
+  **nada no motor ainda salva por ele**: o slice escreve o contêiner único e o
+  `RegionStore` roda ao lado como verificação. Fechar exige escolher o
+  `RegionStore` como o formato de save do runtime. O `DEBT-0020` — a coluna
+  despejada ir para o arquivo de região em vez do `BTreeMap` — foi remediado em
+  seguida e é **opt-in**; enquanto o padrão for a memória e o save for o
+  contêiner único, o store continua sendo um destino que o motor sabe escrever
+  e não o lugar de onde ele lê. No extent padrão de 32 colunas, todo mundo deste
+  repositório cabe numa região só — a economia é real a partir da escala em que
+  um mundo passa de uma região, e não antes.
 
 ### DEBT-0003 — Sem compressão de chunk
 
@@ -106,7 +141,45 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **PROPOSED REMEDIATION:** Compressão por seção, com o algoritmo registrado no
   cabeçalho para permitir troca versionada.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **RESOLUÇÃO (2026-09-14):** a remediação proposta, **num lugar diferente do que
+  esta entrada supôs**. O `SYSTEM` dizia `engine/world::persist`; a costura certa
+  é o contêiner. Toda seção passa pela mesma moldura — chunks hoje, entidades
+  amanhã — e resolver no contêiner faz isso uma vez em vez de cada produtor
+  decidir por si. O `world::persist` não mudou uma linha.
+
+  **O save do slice: 744.954 → 116.904 bytes, 6,4× menor.** *(Corrigido em
+  2026-09-15: a publicação original emparelhava 744.954, que é o slice na seed
+  padrão, com 117.908, que é o slice do smoke de determinismo na seed
+  987654321 — dois mundos diferentes. Ambos os números estavam certos; o par
+  não estava. Na seed padrão, o antes e o depois são 744.954 e 116.904.)* O
+  codec é o mesmo do
+  DEBT-0034 (1,02× do zlib), que estava em `tools/texture-forge` onde só o PNG o
+  alcançava; foi promovido para `nexora_foundation::deflate`. **Zero arestas
+  novas no grafo de crates** — persistência e texture-forge já dependiam de
+  foundation. Os 12 PNGs saem byte-idênticos antes e depois da mudança de casa.
+
+  **Comprimir é mantido só quando ganha.** Bytes de alta entropia deflacionam
+  para um pouco mais do que eram, e escrever isso pioraria o formato exatamente
+  nas entradas em que ele já é pior. `Coding::Stored` não é caminho de falha —
+  não há falha — é a resposta quando comprimir não pagou.
+
+  **Formato 2, e o formato 1 continua legível.** `MIN_SUPPORTED_SAVE_FORMAT`
+  ficou em 1 de propósito: ler um save antigo custa um `if` no decodificador, e
+  recusá-lo jogaria fora todo mundo escrito antes da mudança por nada além de
+  conveniência. Verificado contra um arquivo formato 1 **real**, escrito pelo
+  build anterior, além do teste que monta a moldura à mão.
+
+  **Um achado no caminho, de um teste que falhou.** O primeiro teste de dano
+  virou um bit "no meio do arquivo" e acertou o byte de codificação — pego, mas
+  pelo guarda errado. Isso expôs que os campos novos da moldura estavam **fora**
+  do checksum da seção, cujo comentário já dizia que o nome entra nele
+  justamente para não ser renomeado em silêncio. A mesma razão vale para a
+  codificação e o comprimento: um bit virado ali não parece dano, parece
+  instrução diferente — um fluxo deflate virando "isto é cru". Agora os quatro
+  campos estão dentro do `frame_crc`, e há teste para o byte de codificação.
+- **STATUS:** **CLOSED** — o save deixou de gravar palavras empacotadas cruas. O
+  algoritmo está na moldura de cada seção, então trocá-lo é uma versão de
+  formato e não uma migração.
 
 ### DEBT-0004 — Journal de chunk descarta o mais antigo em silêncio parcial
 
@@ -120,7 +193,54 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **PROPOSED REMEDIATION:** Drenar o journal a cada tick para o History System
   em vez de acumular no chunk.
 - **TARGET STAGE:** Phase 11 (History), ou antes se a replicação chegar primeiro
-- **STATUS:** OPEN
+- **MEDIÇÃO (2026-09-16):** medir esta entrada achou um defeito **maior do que
+  ela**, e que ela não nomeia. O teto era imposto com `Vec::remove(0)`, então
+  toda escrita passada a marca movia as outras 4.095 entradas:
+
+  | | mediana |
+  | --- | ---: |
+  | `chunk.change_feed_append` (feed abaixo do teto) | 40,7 ns |
+  | `chunk.change_feed_at_cap` (feed cheio, descarta a cada escrita) | **49,95 µs** |
+
+  **1.227×**, pago exatamente pela coluna que está sendo mais editada — a que
+  chega ao teto. São ~190 KB de `memmove` por voxel escrito.
+- **RESOLUÇÃO PARCIAL (2026-09-16):** duas das três metades. A terceira está
+  bloqueada e o bloqueio é o que esta entrada sempre disse.
+
+  **O teto ficou de graça: 49,95 µs → 42,0 ns.** O feed virou `VecDeque` e o
+  descarte é `pop_front`. O número que importa não é o 1.190× — é que
+  `change_feed_at_cap` (42,0 ns) e `change_feed_append` (40,9 ns) agora são **o
+  mesmo número**: descartar deixou de custar. Os controles não se mexeram
+  (`voxel.get_paletted` 6,6 → 6,5 ns, `get_uniform` 3,2 → 3,2 ns,
+  `set_existing_state` 13,5 → 14,1 ns, `compact_section` 164 → 169 µs). Isto é
+  provado pelo benchmark e não por teste: trocar a estrutura de dados não muda
+  comportamento, e os testes de correção passam nas duas versões.
+
+  **O silêncio parcial fechou, pelo tipo.** `take_journal` devolvia
+  `Vec<VoxelChange>` **e zerava** `dropped_journal_entries` — então quem drenava
+  sem olhar antes destruía o único registro de que faltava coisa. Agora devolve
+  um `ChangeFeed { changes, dropped }`, `#[must_use]`: a lacuna sai junto com o
+  dado ou não sai. Os dois lugares que descartavam o retorno em silêncio
+  (`persist::decode_chunks` e `World::generate_chunk`) foram apontados pelo
+  próprio `must_use` e viraram `clear_journal()`, que é o que eles queriam dizer
+  — um chunk recém-gerado ou recém-lido não tem feed para ninguém consumir.
+
+  **E alguém lê o sinal.** `World::change_feed_gaps()` soma as lacunas dos chunks
+  residentes, e o slice falha se houver alguma. Com 76 edições em 25 colunas
+  contra um teto de 4.096 isso não dispara hoje — o ponto é que passou a ser
+  **verificado** em vez de apenas contável.
+
+  **Uma correção de leitura:** uma lacuna aqui **não é perda de durabilidade**.
+  `World::set_block` grava no journal de save (ADR-0011) **antes** de tocar o
+  chunk; o feed do chunk é alimentação de mudanças para History e replicação.
+  Perder uma entrada custa história, nunca o bloco.
+- **STATUS:** OPEN (bloqueado) — **o feed não tem nenhum consumidor real**, e é
+  isso que sobra. `take_journal` não é chamado por nada no motor: o History
+  System é Phase 11 e não existe, e a replicação não chegou. A remediação
+  proposta (drenar por tick para o History) continua sendo a certa e continua
+  esperando o History; construir um consumidor agora seria construir na frente
+  da evidência. O que mudou é que, quando ele chegar, o teto não custa nada e a
+  lacuna não tem como passar despercebida.
 
 ### DEBT-0005 — Conversão de coordenadas usa divisão por valor de runtime
 
@@ -259,7 +379,49 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   que `NEXORA THREADING AND CONCURRENCY MODEL.md` manda dividir. **Um job por
   entidade é anti-padrão, agora com número.**
 - **TARGET STAGE:** antes da Phase 5 (Entity + AI Foundation)
-- **STATUS:** OPEN (medido)
+- **RESOLUÇÃO PARCIAL (2026-09-19):** a hipótese acima foi **medida antes de ser
+  consertada**, e estava certa sobre o despertar e errada sobre o mutex ser a
+  causa. Ver o achado 23 do `PHASE-0-BASELINE.md`.
+
+  **Uma submissão é 2% enfileirar e 98% acordar um worker.** Medindo `submit()`
+  em três estados que só diferem no que o pool está fazendo:
+
+  | `submit()` com… | mediana |
+  | --- | ---: |
+  | todo worker **parado** na fila — um despertar por submissão | **12,20 µs** |
+  | todo worker **ocupado** dentro de um job — ninguém para acordar | **288 ns** |
+  | workers **drenando** (o que o `jobs.submit_only` mede) | **12,18 µs** |
+
+  42× entre as duas primeiras, e a única diferença é existir uma thread para
+  acordar. As peças somadas à parte dão ~142 ns; um `notify_one` para uma thread
+  parada custa 646 ns sozinho e ~11,9 µs dentro do pool. A diferença é o
+  handoff: o worker acordado vai imediatamente buscar o mesmo mutex que o
+  produtor precisa para a próxima submissão. **O mutex é o amplificador, não a
+  causa** — é ele que transforma um despertar numa ida e volta inteira.
+
+  **`JobSystem::submit_all` acorda uma vez por onda, não por job.** Um lock,
+  a onda inteira enfileirada, e `min(jobs, workers)` despertares:
+
+  | | um a um | `submit_all` | |
+  | --- | ---: | ---: | ---: |
+  | 1.000 jobs submetidos e executados | 11,40 ms | **1,88 ms** | **6,1×** |
+  | custo do produtor por job | 10,95 µs | **103 ns** | **106×** |
+  | **despertares por 1.000 jobs** | **1 000** | **4** | contagem |
+
+  A última linha é a que não é desta máquina. Os controles — `jobs.submit_only`
+  e `jobs.submit_wait_roundtrip`, que continuam no caminho antigo — não se
+  mexeram (10,92/10,87 → 10,95 µs e 36,26/34,44 → 36,31 µs), e é isso que diz
+  que refatorar o `submit` para compartilhar o enfileiramento não custou nada.
+
+  **A nota de arquitetura continua valendo inteira.** 103 ns por job contra
+  ~3 ns para simular uma entidade inline ainda são ~35×: um job por entidade
+  segue sendo anti-padrão. O que o lote conserta é submeter uma **onda de
+  trabalho real** — as 25 colunas do slice agora vão como um lote só.
+- **STATUS:** OPEN (reduzido) — o caminho de onda está consertado e medido; o
+  `submit()` de um job isolado continua custando ~11 µs quando há worker parado,
+  e ninguém mediu ainda se dá para baixar isso sem filas por worker. O segundo
+  candidato da remediação (work-stealing) não foi construído: não há caso medido
+  que o exija depois que a onda deixou de ser o gargalo.
 
 ### DEBT-0010 — Consultas de entidade são varredura linear, sem índice espacial
 
@@ -283,6 +445,244 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** população passar de 10.000, ou um perfil mostrar consulta em
   caminho quente.
 - **TARGET STAGE:** Phase 5 (Entity + AI Foundation)
+- **RESOLUÇÃO (2026-09-16):** existe índice espacial, e ele foi medido **antes**
+  — que era o que a remediação pedia. Ver [ADR-0015](docs/adr/ADR-0015-a-spatial-index-is-a-loose-grid-and-a-query-may-decline-it.md)
+  e o achado 10l do `PHASE-0-BASELINE.md`.
+
+  **A extrapolação acima foi conferida e quase toda ela se sustentou.** Medindo a
+  varredura em 1.000, 10.000 e 100.000: `within_radius` custa 9,8–10,9 ns por
+  entidade e `in_chunk` 16,6–17,3 ns, estáveis em duas ordens de grandeza. A
+  linha que **não** se sustentou foi `by_type`: 15,7 ns por entidade em 1.000 e
+  **40,7 ns** em 100.000, porque ela casa com a população inteira e o custo está
+  em montar o resultado, não em examinar. A nota equivalente da ADR-0006 errou
+  para menos pelo mesmo motivo.
+
+  **Isso mudou o que foi construído.** Consulta sem posição não tem índice que
+  ajude — nenhum arranjo encolhe uma resposta que já é tudo. Então `matching`,
+  `count`, `by_type` e `by_tag` continuam varredura de propósito, e o controle
+  provou que continuaram: `by_type` em 100.000 ficou em 4.069 → 4.196 µs.
+
+  **O que o índice comprou**, com população espalhada como um mundo espalha:
+
+  | | varredura | índice | |
+  | --- | ---: | ---: | ---: |
+  | `within_radius(16)`, 100.000 | 979,7 µs | **782 ns** | 1.253× |
+  | `in_chunk`, 100.000 | 1.655,4 µs | **625 ns** | 2.647× |
+
+  **O número que não é desta máquina é 41.** `entity.query_radius_candidates_100k`
+  = 41 entidades examinadas, de 100.000, para responder um raio de 16 blocos. É
+  contagem: igual em qualquer build, em qualquer caixa. E o tempo deixou de
+  crescer com a população — 430, 654 e 782 ns para 1.000, 10.000 e 100.000.
+
+  **O preço, dito inteiro:** `entity.step_1000` foi de 2,07–2,11 µs para
+  7,2–8,7 µs, ~4×, que são ~6,5 ns por entidade por tick. Metade da piora era
+  `f64::floor`: o baseline x86-64 não tem `roundsd` (é SSE4.1), então `floor` é
+  chamada de libm — 4,94 ns contra 1,54 ns na forma com `as i64` mais correção.
+  O pior caso, toda entidade mudando de célula todo tick, é 170,9 µs por 1.000.
+
+  **E a parte incômoda:** no estágio de 1.000 entidades do próprio plano, este
+  índice é **prejuízo líquido de ~6,5 µs por tick**. A fixture do plano empacota
+  1.000 entidades em doze células, então o raio de 16 blocos ali pergunta pela
+  população quase toda e não há o que excluir. A fixture **não** foi trocada —
+  trocá-la tornaria toda linha de 1.000 entidades do baseline incomparável com
+  todas as execuções anteriores, para fazer uma mudança parecer melhor. As linhas
+  novas medem população espalhada ao lado dela, e as duas estão publicadas.
+  6,5 µs é 0,013% de um tick de 50 ms.
+
+  **Manter ligado sempre não é decisão de número, é de obsolescência.** Índice
+  que a store mantém só às vezes é índice que a consulta não pode confiar, e
+  índice espacial errado devolve entidade errada em silêncio. A ADR-0015 fecha
+  isso.
+- **STATUS:** **CLOSED** para as consultas espaciais. O que fica registrado, e
+  não é o mesmo defeito: a remoção de uma célula varre o vetor daquela célula
+  para achar o slot, então uma célula com dezenas de milhares de entidades torna
+  cada `despawn` ou travessia proporcional a ela. Com densidade de mundo isso
+  são dezenas de entradas; o gatilho é uma célula passar de ~1.000. Não vira
+  entrada nova porque não há caso medido — é o mesmo erro que esta entrada
+  acabou de evitar.
+
+### DEBT-0040 — O job system guarda o resultado de todo job para sempre
+
+- **SYSTEM:** `engine/runtime::jobs`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** encontrado ao medir o DEBT-0009, não por suspeita de projeto.
+  `worker_loop` faz `state.results.insert(handle, outcome)` ao terminar cada job,
+  e **nada remove**: `JobSystem::wait` lê com `get` e clona, porque um segundo
+  `wait` no mesmo handle tem de continuar funcionando. O sistema não tem como
+  saber que ninguém mais vai perguntar.
+- **IMPACT:** um `(JobHandle, JobOutcome)` por job já submetido, para sempre, num
+  `HashMap` dentro do mutex do escalonador. A 113.000 jobs/s isso é da ordem de
+  dezenas de MB por hora de sessão. **Não custa vazão**: medido, `submit()` lê
+  12,15 / 10,99 / 12,28 µs com 0, 100.000 e 500.000 resultados retidos — plano,
+  dentro do ruído. É defeito de memória, e só.
+- **RISK:** baixo numa sessão curta; alto num servidor dedicado, que é
+  exatamente onde o processo não reinicia.
+- **PROPOSED REMEDIATION:** decidir a semântica antes de mexer, porque as opções
+  não são equivalentes. `wait` que **consome** o resultado é uma mudança de API
+  observável (o segundo `wait` deixa de achar). Reter só os handles que alguém
+  pode ainda esperar exige saber isso, e o sistema não sabe. Um teto com
+  descarte do mais antigo troca vazamento por resposta perdida em silêncio — o
+  mesmo defeito que o DEBT-0004 fechou em outro lugar. Provavelmente é ADR.
+- **MITIGAÇÃO ATUAL:** `JobMetrics::retained_results` publica o tamanho, então o
+  crescimento é **verificável** em vez de silencioso — e há teste cobrindo isso.
+  É o mesmo movimento do DEBT-0004: medir o sinal antes de ter o consumidor.
+- **TRIGGER:** primeiro processo de vida longa — servidor dedicado, ou o slice
+  passar a rodar por horas.
+- **TARGET STAGE:** Phase 2 em diante
+- **RESOLUÇÃO (2026-09-20):** [ADR-0016](docs/adr/ADR-0016-a-job-result-can-be-forgotten-and-says-so.md).
+  A remediação pedia decidir a semântica antes de mexer, e as três opções que
+  ela listou continuam com os defeitos que ela apontou. A escolhida foi a
+  terceira — **teto com descarte do mais antigo** — com a objeção dela
+  respondida em vez de ignorada: o descarte virou **resposta**, não ausência.
+
+  `JobOutcome::Forgotten` é variante própria, e `wait` passou a ter três saídas:
+  devolve o resultado se estiver retido, **continua bloqueando enquanto o pool
+  ainda segura o job**, e devolve `Forgotten` quando nem um nem outro. O sinal
+  que separa os dois últimos é o `tokens`, que já existia e já era limitado —
+  entra no submit, sai na conclusão, então guarda exatamente os jobs em voo.
+  Nenhuma estrutura nova foi necessária para responder a pergunta.
+
+  Três coisas que são o ponto, não efeito colateral:
+
+  - **Job esquecido nunca é reportado como sucesso.** O atalho tentador — tratar
+    resultado ausente como "então deu certo" — deixou de existir:
+    `is_success()` é falso para `Forgotten`, e `is_known()` existe para
+    perguntar direto. Um job que falhou e foi descartado leria como sucesso, que
+    é a única resposta que um escalonador não pode inventar.
+  - **`wait` agora sempre termina, e antes não terminava.** Esperar por um handle
+    que este pool nunca emitiu bloqueava para sempre. A mesma checagem que
+    distingue "ainda rodando" de "sumiu" resolve esse caso — conserto que caiu
+    do desenho, não que foi procurado.
+  - **Descartes são contados.** `JobMetrics::forgotten_results` é total corrido.
+    Contagem e não flag: a pergunta útil não é *se* o pool descarta, é a que
+    velocidade.
+
+  **E um segundo vazamento, apagado em vez de limitado.** O `State` também
+  carregava `cancelled: HashSet<JobHandle>`, escrito pelo `cancel` e **lido por
+  nada** — o cancelamento de verdade é a flag atômica do `CancellationToken`,
+  setada na linha seguinte. Vazava uma entrada por job cancelado sem efeito
+  nenhum. Conjunto que ninguém lê não é estado; foi removido.
+
+  O teto é 65.536, escolhido contra a maior onda que o motor submete e não por
+  ser redondo: geração de chunks num raio de interesse 12 são 625 colunas.
+  **Nada no motor hoje enxerga o teto** — o slice submete 25 e coleta 25 —, e é
+  por isso que os testes empurram dois tetos inteiros por um pool em vez de
+  confiar em algum caminho existente exercitá-lo.
+- **STATUS:** **CLOSED**
+
+### DEBT-0041 — O loop de quadro existe, mas nenhum processo roda quadros contra um relógio
+
+- **SYSTEM:** `engine/runtime::frame`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o ENGINE-0 do `CORE.md` §16 foi construído
+  ([ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)) com o
+  tempo entrando como argumento, de propósito: um loop que lê o relógio não é
+  reproduzível. A consequência é que **alguém tem de entregar o tempo**, e o
+  único chamador hoje é a caminhada do slice, que entrega um delta roteirizado
+  de exatamente um passo. Nenhum processo deste repositório roda quadros contra
+  um relógio real.
+- **IMPACT:** três coisas que o loop mede nunca chegam a acontecer. `discarded`
+  é sempre zero, porque um delta de um passo não pode atrasar. A classificação é
+  sempre `Target`, porque um quadro roteirizado não estoura orçamento. E
+  `unattributed` — o número que o módulo inteiro existe para produzir — nunca é
+  observado num quadro de verdade, só nos testes e no benchmark. Um mecanismo de
+  contabilidade que nunca contabilizou uma carga real não foi exercitado, foi
+  compilado.
+- **RISK:** médio. Não há sintoma hoje, porque não há quadro a perder; o risco é
+  o de sempre com mecanismo não exercitado — descobrir que a contabilidade está
+  errada no dia em que ela for a única coisa a explicar um travamento.
+- **PROPOSED REMEDIATION:** um host que rode quadros num laço, entregando o
+  tempo real medido entre eles, e um estágio do slice ou do benchmark que use
+  esse host. Pode ser headless: não precisa de janela nenhuma para existir um
+  laço com relógio. O que ele precisa é de um critério de parada que não dependa
+  do relógio, ou o slice deixa de ser determinístico — o caminho provável é o
+  benchmark, que já é medição e não prova.
+- **TRIGGER:** já disparado, no sentido de que o mecanismo existe sem carga
+  real. A ordem, porém, é depois do `DEBT-0018` e do `DEBT-0027`: um host que
+  rode quadros enquanto a geração e o meshing ainda moram na thread do tick
+  mede o atraso deles, não o loop.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
+
+- **SYSTEM:** `engine/runtime::input` (`InputSystem::resolve`)
+- **CLASS:** PERFORMANCE
+- **WHY CREATED:** `resolve` percorre `self.bindings` inteiro uma vez por quadro
+  e, para cada binding, procura a prioridade do contexto num
+  `BTreeMap<Identifier, i32>` — ou seja, comparação de string por nível da
+  árvore, 41 vezes por quadro no keymap medido. Roda mesmo quando ninguém
+  apertou nada: um quadro parado paga o mesmo que um quadro de combate.
+- **IMPACT:** medido, com o par que existe para isso
+  (`docs/benchmarks/PHASE-0-BASELINE.md`, achado 26). Três leituras de cada
+  lado, com `frame.schedule_advance` como controle que não pode se mexer — e não
+  se mexeu (39–42 ns dos dois lados):
+
+  | `input.sample_idle`, 41 bindings | leitura 1 | 2 | 3 |
+  | --- | ---: | ---: | ---: |
+  | como está | 322 ns | 342 ns | 356 ns |
+  | sem a busca do contexto | 102 ns | 102 ns | 99 ns |
+
+  **Cerca de 70% do custo de um quadro parado é descobrir de que contexto cada
+  binding é**, ~5,4 ns por binding. O resto da varredura é o que sobra.
+
+  A segunda dimensão nunca foi medida: `button_held` é uma varredura do conjunto
+  de teclas seguradas *dentro* do laço de bindings, então o custo real é
+  O(bindings × seguradas), e todas as medições têm no máximo uma tecla embaixo.
+  Um keymap cheio de cordas com quatro modificadores segurados é um caso sobre o
+  qual este registro não tem número nenhum.
+- **RISK:** baixo hoje, e é importante dizer por quê em vez de deixar o número
+  assustar: 322 ns são 0,00064% do orçamento TARGET de 50 ms de um quadro a
+  20 Hz, e ~11% de um tick de streaming parado (3,0 µs, medido nas mesmas
+  execuções). O risco não é o número atual, é a inclinação — ele cresce com o
+  tamanho do keymap, e keymap cresce.
+- **PROPOSED REMEDIATION:** um índice de contexto → bindings, mantido em `bind`,
+  `unbind` e `unbind_context`, para que a busca aconteça uma vez por contexto
+  ativo (1 a 3) em vez de uma vez por binding (dezenas). A varredura de teclas
+  seguradas pede a mesma forma de conserto: um índice por `Source`. Nenhum dos
+  dois é difícil; os dois são estrutura nova para manter, e é por isso que este
+  é um registro e não um commit.
+- **TRIGGER:** o keymap embarcado passar de ~150 bindings — 3,6× o medido, o que
+  põe o quadro parado perto de 1,2 µs — **ou** o input aparecer com participação
+  não trivial num relatório de quadro de carga real, o que depende do
+  `DEBT-0041`. Antes disso, indexar seria exatamente o que o `DEBT-0010` provou
+  que não se deve fazer sem número: lá a varredura custava 979,7 µs e valia o
+  índice; aqui custa 322 ns e não vale.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0043 — Nenhum dispositivo real jamais produziu um sinal de input
+
+- **SYSTEM:** `engine/runtime::input`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o ENGINE-8 do `CORE.md` §24 e o `INPUT SYSTEM.md` foram
+  construídos ([ADR-0018](docs/adr/ADR-0018-input-is-intent-the-host-hands-in.md))
+  com o sinal entrando como argumento, pelo mesmo motivo do `DEBT-0041`: um
+  sistema que abre o dispositivo sozinho não se reproduz. E, pelo mesmo motivo,
+  **alguém tem de entregar o sinal** — e o único chamador hoje é o jogador
+  roteirizado do slice, que aperta duas teclas de um teclado que não existe.
+- **IMPACT:** o que nunca aconteceu, listado para não ser confundido com o que
+  funciona: nenhum teclado, mouse, gamepad ou tela de toque jamais entregou um
+  sinal; `DeviceKind::Mouse` e `DeviceKind::Touch` não têm um único chamador
+  fora dos testes; nenhum arquivo de remap foi gravado em disco, só codificado e
+  decodificado em memória; e `validate_remote` nunca examinou um snapshot que
+  tivesse atravessado uma rede, porque não há rede. O que está exercitado é a
+  lógica; o que não está é a borda.
+- **RISK:** médio. A parte que costuma dar errado numa camada de input é
+  justamente a borda — que scancode o sistema operacional manda, o que ele faz
+  com repetição de tecla, se a desconexão chega como evento ou como silêncio. O
+  módulo tem uma resposta declarada para cada uma dessas e nenhuma foi
+  confrontada com um driver.
+- **PROPOSED REMEDIATION:** um host que traduza eventos de dispositivo do
+  sistema operacional em `Signal` e chame `sample` uma vez por quadro. É o mesmo
+  host que o `DEBT-0041` pede, e provavelmente é um só: quem tem o relógio tem
+  os dispositivos. Enquanto ele não existir, o ganho barato é gravar e ler o
+  arquivo de remap de verdade, que não precisa de driver nenhum.
+- **TRIGGER:** existir qualquer processo com janela ou com laço de eventos do
+  sistema operacional. Depende do `DEBT-0041` pela mesma razão que ele depende
+  do `DEBT-0018` e do `DEBT-0027`: medir ou exercitar a borda antes de haver
+  host é medir o roteiro.
+- **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
@@ -305,13 +705,86 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   **49% do passo é perguntar ao mundo o que existe ali**, não resolver colisão.
 - **RISK:** médio. Otimizar o solver hoje endereçaria a metade menor; o número
   existe justamente para impedir esse erro.
-- **PROPOSED REMEDIATION:** manter a coluna residente entre os sweeps de um
-  mesmo corpo (a caixa quase nunca cruza chunk), e medir de novo contra o par
-  terreno/plano antes de manter.
+- **PARCIALMENTE ENDEREÇADO** — a remediação proposta foi construída e medida
+  (`docs/benchmarks/PHASE-0-BASELINE.md`, achado 10b). Duas correções ao
+  diagnóstico acima:
+
+  1. **São dois mapas ordenados no caminho, não um.** `World::get_block` desce
+     `World::chunks` pela coluna, e depois `Chunk::get` desce `Chunk::sections`
+     pela seção. A entrada original contou o primeiro e leu o segundo como
+     parte da "leitura da seção paletizada".
+  2. **As descidas eram cerca de um terço do lookup, não o grosso dele.**
+
+  O que foi feito: `WorldVoxels` mantém a última **seção** resolvida — uma
+  entrada, não um mapa — o que remove as duas descidas de toda pergunta
+  repetida, e repetida é quase toda pergunta (um corpo tem ~0,6 × 1,8 × 0,6
+  contra seções de 32³). Junto veio `ChunkShape::split_of`, que devolve
+  endereço de seção e offset local de uma passagem só, porque `section_of`
+  pega o quociente e `local_of` o resto das mesmas três divisões.
+
+  | | antes | depois | |
+  | --- | ---: | ---: | ---: |
+  | `physics.raycast_40m` | 1,90 µs | **1,14 µs** | −40,0% |
+  | `physics.depenetration_check` | 123,6 ns | **78,5 ns** | −36,5% |
+  | `physics.character_step` | 743,2 ns | **545,4 ns** | −26,6% |
+  | `physics.box_sweep` | 289,1 ns | **219,0 ns** | −24,3% |
+  | `physics.thousand_bodies_step` | 209,8 µs | **174,3 µs** | −16,9% |
+  | — só o lookup | 102,7 µs | **67,2 µs** | **−34,6%** |
+  | `physics.thousand_bodies_step_flat` | 107,1 µs | 107,1 µs | — |
+
+  A última linha é o controle: o fixture plano não passa por `WorldVoxels` e
+  não se moveu. Sem ela, "a máquina ficou mais rápida" explicaria o resto.
+
+- **SEGUNDA PARCELA ENDEREÇADA (2026-09-14)** — a leitura paletizada, medida em
+  máquina diferente e mais barulhenta (achado 10e; nada abaixo é comparável com
+  a tabela acima). As células empacotam `64 / bits` por palavra, e `64 / 12` é
+  cinco: tanto a palavra quanto o offset dentro dela saíam de dividir por um
+  divisor que nenhum compilador enxergava. As doze larguras possíveis são
+  conhecidas em tempo de compilação, então cada uma virou entrada de tabela — o
+  quociente é multiplicação e shift contra `ceil(2^32 / per_word)`, e o resto cai
+  do quociente. A identidade é exata para todo índice que uma seção pode ter
+  (`MAX_SECTION_EXTENT³ = 2^24`, e o limite de erro `(N + d - 1) · e < 2^32` sobra
+  duas ordens de grandeza), e um teste percorre o último índice de cada palavra
+  no topo da faixa — que é onde um recíproco aproximado quebra primeiro.
+
+  | | antes | depois | |
+  | --- | ---: | ---: | ---: |
+  | `voxel.get_paletted` | 13,1 ns | **11,4 ns** | −13% |
+  | `physics.voxel_lookup` | 28,3 ns | **25,9 ns** | −8,5% |
+  | `voxel.get_uniform` | 5,2 ns | 5,3 ns | — |
+  | `spatial.index_of` | 6,3 ns | 6,3 ns | — |
+
+  As duas últimas são os controles e não se moveram: armazenamento uniforme
+  nunca chama a leitura empacotada, e `index_of` não foi tocado.
+
+  **CORREÇÃO (2026-09-14, um commit depois):** os −13% são precisos demais para
+  o que a medida aguenta. O commit seguinte não tocou `engine/world` e mesmo
+  assim `voxel.get_paletted` leu **7,8–8,2 ns**, com os mesmos dois controles
+  parados de novo. Sob `lto = "thin"` e `codegen-units = 1`, religar o binário
+  realoca `Section::get`, e a ~10 ns isso vale dezenas de por cento. O que a
+  medida sustenta é **a direção e a ordem de grandeza — a divisão saiu e a
+  leitura ficou entre ~13% e ~40% mais rápida neste box** — não um único número.
+  Registrado como DEBT-0039.
+
+  **13% é menos do que uma divisão custa, e é esse o achado.** O palpite era que
+  duas divisões inteiras fossem o grosso de uma leitura de 13 ns. Valem 1,7 ns.
+  A razão provável é que nunca foram duas: o `div` do x86-64 devolve quociente e
+  resto da mesma instrução, então o compilador já tinha fundido o par. Isso é
+  raciocínio, não medida — medido foram os 1,7 ns.
+- **PROPOSED REMEDIATION (o que resta):** a aritmética de endereço. `split_of`
+  abre todo lookup com três divisões pelas extensões da seção, que são valores
+  de execução, e tem a mesma forma do que acabou de ser resolvido: um divisor
+  fixo pela vida de um mundo que o compilador não vê. Ao contrário da largura de
+  palete, não sai de doze valores, então tabela não fecha — o caminho é o mundo
+  carregar o recíproco junto com o `ChunkShape`.
 - **TRIGGER:** física passar de ~10% do orçamento de simulação, ou população
   acordada estável acima de 1.000.
 - **TARGET STAGE:** Phase 4 (World Runtime) ou antes, se o gatilho ocorrer
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN (medido) — a parcela do lookup num passo de física está em
+  **18–27%** pela régua refeita do DEBT-0037 (`1 000 leituras × 25,9 ns`), contra
+  os 49% de origem. O 38,6% do achado 10b foi medido enquanto a varredura de
+  depenetração ainda rodava e um corpo assentado fazia duas leituras por passo em
+  vez de uma; não é contradição, é a metade que o DEBT-0012 levou.
 
 ### DEBT-0012 — Depenetração custa 42% de um sweep no caso em que nada aconteceu
 
@@ -334,7 +807,241 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   para sempre.
 - **TRIGGER:** junto com DEBT-0011, ou quando física aparecer em perfil.
 - **TARGET STAGE:** Phase 4
-- **STATUS:** OPEN (medido)
+- **RESOLUÇÃO:** a segunda remediação proposta, numa forma mais forte. Um corpo
+  guarda o *par* (revisão da fonte, span de células) que foi **provado** livre
+  de sólidos. A varredura é pulada só quando os dois batem. Detalhes em
+  `docs/benchmarks/PHASE-0-BASELINE.md`, achado 10c.
+
+  Três decisões que fazem isso ser seguro em vez de rápido-e-quebrado:
+
+  1. **`VoxelSource::revision()` tem default `None`**, que significa "assuma que
+     mudou". Uma fonte que não opta por participar se comporta exatamente como
+     antes — verifica tudo, todo passo. Errar aqui exige implementar o método
+     deliberadamente e implementá-lo errado.
+  2. **A chave é o span de células, não a posição.** Um corpo cujo `center` é
+     escrito de fora do solver continua dentro de células já provadas livres,
+     desde que sejam as mesmas células. No instante em que não são, o span
+     deixa de bater e a varredura roda. É por isso que isso é sólido sem
+     precisar tornar `center` privado.
+  3. **O mundo conta com folga.** `chunk_mut` incrementa a revisão ao entregar
+     o empréstimo, não numa escrita que ele não consegue observar. Contar demais
+     custa uma otimização perdida; contar de menos custa um corpo dentro de um
+     bloco.
+
+  | | antes | depois | |
+  | --- | ---: | ---: | ---: |
+  | `physics.thousand_bodies_step` | 137,3 µs | **84,6 µs** | −38,4% |
+  | `physics.character_step` | 386,7 ns | **343,6 ns** | −11,1% |
+  | `physics.thousand_bodies_step_flat` (controle) | 82,8 µs | 82,2 µs | −0,7% |
+  | `physics.depenetration_check` (controle) | 56,1 ns | 55,2 ns | −1,6% |
+
+  E o número que não depende da máquina: um corpo assentado faz **duas** leituras
+  de mundo por passo, uma delas sendo essa verificação. Passa a fazer **uma**.
+  Medido por contagem e assertado como igualdade exata (10 contra 20 células em
+  dez passos), porque teste de tempo prova numa máquina e nada em outra.
+
+- **NOTA (medida):** a `NOTA` acima continua valendo e agora tem teste próprio.
+  `a_block_placed_inside_a_resting_body_still_ejects_it` põe um bloco onde um
+  corpo já está e exige que ele saia — é o defeito original, e o skip não pode
+  sobreviver ao mundo mudar. Um segundo achado saiu daí: **um corpo dormindo
+  nunca roda a verificação de todo modo**, porque `step_once` pula corpos
+  inativos. O custo desta dívida sempre foi só dos corpos acordados.
+- **CUSTO:** fechar esta quebrou a medição do DEBT-0011. O par terreno/plano
+  isolava o lookup porque as duas linhas diferiam em uma coisa; agora diferem em
+  duas, já que só a de terreno pula a varredura. Registrado como **DEBT-0037**.
+- **STATUS:** **CLOSED** — a varredura deixou de ser paga por todo corpo, todo
+  passo. Um corpo que troca de células ainda paga, e isso não é dívida: são
+  células novas e alguém tem de olhar para elas.
+
+### DEBT-0037 — O par terreno/plano parou de isolar o lookup de voxel
+
+- **SYSTEM:** `engine/benchmark::suites::physics`
+- **CLASS:** MEASUREMENT
+- **WHY CREATED:** `physics.thousand_bodies_step` e
+  `physics.thousand_bodies_step_flat` mediam o custo do lookup de voxel porque
+  diferiam em exatamente uma coisa: de onde vinha o terreno. O DEBT-0012 fez a
+  linha de terreno pular a varredura de depenetração e a plana não, porque
+  `FlatGround` não declara revisão. As duas linhas agora diferem em duas coisas,
+  e a subtração entre elas não mede mais nada em particular.
+- **IMPACT:** o número do achado 10b — **38,6% de um passo de física é o
+  lookup** — não pode ser re-derivado. Não é que esteja errado; é que a régua
+  que o produziu deixou de existir.
+- **RISK:** baixo, e inteiramente sobre saber onde está o tempo. Nenhum
+  comportamento depende disso.
+- **PROPOSED REMEDIATION:** um fixture plano que declare uma revisão constante,
+  para que as duas linhas voltem a diferir só na fonte do terreno. **Não** dar
+  isso ao `FlatGround` da biblioteca: ele é construído em linha, e dois com
+  pisos diferentes reportariam a mesma constante — que é exatamente o único
+  jeito de uma revisão mentir. O fixture pertence ao benchmark.
+- **TRIGGER:** a próxima vez que alguém precisar da parcela do lookup, ou antes
+  de tentar mexer na leitura paletizada (que é o que sobrou do DEBT-0011).
+- **TARGET STAGE:** Phase 4
+- **RESOLUÇÃO (2026-09-14):** o fixture existe — `StillFloor`, no benchmark, com
+  revisão derivada do plano que descreve, não constante da biblioteca. **E não
+  bastou.** Medido em A/B: a linha plana lê 145,34 µs sem revisão e 142,79 µs
+  com ela, 1,8% contra um espalhamento de 10–23%. A subtração não tinha
+  resolução para o que restou — depois do DEBT-0012 o lookup é um quinto de um
+  passo, escondido dentro de dois números de 140 µs.
+
+  A régua foi refeita como **produto, não diferença**, com as duas metades
+  medíveis em separado:
+
+  | | valor | espalhamento |
+  | --- | ---: | ---: |
+  | `physics.world_reads_per_step` | **1 000** | — |
+  | `physics.voxel_lookup` | **25,9 ns** | 5,8% |
+
+  `1 000 × 25,9 ns` de um passo de `141,16 µs` = **18%**. A primeira linha é uma
+  **contagem** — uma pergunta por corpo assentado por passo, o mesmo inteiro em
+  qualquer máquina, e confirmação independente de que o atalho do DEBT-0012 está
+  vivo. A segunda é um microbenchmark de 26 ns em vez de um de 140 µs, que é o
+  ponto: é a única metade que precisa de máquina quieta, e re-medi-la é barato.
+
+  **Quanto de quieta importa.** Uma segunda execução do mesmo binário leu
+  `physics.voxel_lookup` em 38,2 ns com 26% de espalhamento, o que põe a parcela
+  em 27% em vez de 18%. A contagem não mexeu um dígito. Fica registrado como
+  faixa, **18–27%**, porque escolher a execução que lê melhor é como uma medida
+  vira propaganda.
+- **STATUS:** **CLOSED** — a parcela do lookup voltou a ser derivável, e por um
+  caminho que não depende de duas medidas grandes se cancelarem. O que sobrou de
+  imprecisão está na metade que é um relógio, e essa está isolada e é barata de
+  repetir.
+
+### DEBT-0038 — A prova de que um corpo está livre não diz qual fonte a produziu
+
+- **SYSTEM:** `engine/physics::world`, `engine/physics::body`
+- **CLASS:** CORRECTNESS
+- **WHY CREATED:** o DEBT-0012 guarda em cada corpo `(revisão, span de células)`
+  e pula a varredura quando a revisão da fonte bate com a guardada. A revisão é
+  um `u64` sem dono: nada liga a prova à fonte que a fez. Duas fontes diferentes
+  numerando a partir do zero — `World` conta suas edições a partir de 0 — podem
+  emitir o mesmo valor para mundos diferentes.
+- **IMPACT:** um `PhysicsWorld` alternado entre duas fontes que declarem revisão
+  pode aceitar uma prova feita contra a outra e deixar de ejetar um corpo que
+  está dentro de um bloco. Nada no motor faz isso hoje: o slice e a simulação
+  seguram uma fonte só. É uma brecha estrutural, não um defeito observado.
+- **RISK:** baixo hoje, e cresce sozinho — a segunda fonte com revisão foi
+  criada nesta mesma sessão (`StillFloor`, no benchmark), e o único motivo de
+  não ser um problema é que o seu valor tem o bit alto ligado, deliberadamente,
+  para não encostar no contador do `World`. Manter dois espaços de numeração
+  separados por convenção é exatamente o tipo de correção que depende de alguém
+  lembrar, e que este repositório recusa em outros lugares.
+- **PROPOSED REMEDIATION:** a prova carregar identidade além de contador. O
+  caminho barato é o `PhysicsWorld` guardar de qual fonte veio o último passo e
+  descartar toda prova quando ela muda; o caminho caro é a fonte devolver um par
+  (identidade, revisão). O barato resolve o caso real e não pede nada de quem
+  implementa `VoxelSource`.
+- **TRIGGER:** a segunda fonte com revisão a ser usada em produção, ou qualquer
+  código que passe fontes diferentes ao mesmo `PhysicsWorld`.
+- **TARGET STAGE:** Phase 1
+- **RESOLUÇÃO (2026-09-14):** nem o caminho barato nem o caro — um terceiro, que
+  não compara nada.
+
+  **Comparar endereços não funciona, e isso foi verificado antes de descartar.**
+  Uma fonte construída para um passo e uma fonte *diferente* construída do mesmo
+  jeito para o próximo ficam no mesmo endereço; o teste
+  `two_sources_at_one_address_do_not_share_a_proof` garante isso em vez de
+  torcer, porque usa a mesma variável, e as duas ainda declaram revisão 1.
+
+  O que existe agora é `PhysicsWorld::against(&source) -> Stepper`, uma
+  **sessão**. O `Stepper` toma `&'s S` emprestado enquanto a prova puder ser
+  consultada, então todo substep que ele roda é respondido pelo **mesmo objeto
+  vivo** — quem diz isso é o borrow checker, não uma comparação e não uma
+  convenção. É o mesmo argumento que o `WorldVoxels` usa para o cache de seção.
+  Abrir uma sessão cunha um número nunca usado; a prova guarda esse número, e
+  uma prova de sessão anterior só pode falhar em casar.
+
+  `step_once` e `advance` continuam existindo e abrem uma sessão só para a
+  chamada: **corretos e nunca pulando**. O padrão seguro é o que não exige saber
+  de nada; manter a otimização é que passou a exigir manter a sessão — o slice
+  headless e o benchmark seguram uma.
+
+  | dez passos assentados | células perguntadas |
+  | --- | ---: |
+  | dentro de uma sessão | **10** |
+  | uma sessão por passo | **20** |
+
+  O teste que fecha a brecha **falha sem a correção**: removida a condição
+  `proof.session == session`, ele acusa exatamente "the check was skipped on the
+  strength of a proof the old source made".
+- **STATUS:** **CLOSED** — a prova deixou de valer por convenção de numeração. O
+  `StillFloor` ainda liga o bit alto, mas agora isso é higiene, não a linha de
+  defesa.
+
+### DEBT-0039 — Microbenchmark de poucos nanossegundos não é comparável entre builds
+
+- **SYSTEM:** `engine/benchmark`
+- **CLASS:** MEASUREMENT
+- **WHY CREATED:** `voxel.get_paletted` leu **11,4 ns** no commit `14086ec` e
+  **7,8–8,2 ns** no commit seguinte, que **não tocou uma linha de
+  `engine/world`** (verificado com `git diff --name-only`). O perfil de release
+  usa `lto = "thin"` e `codegen-units = 1`, então mudar qualquer crate do
+  workspace religa o binário inteiro e realoca `Section::get`. A ~10 ns,
+  alinhamento e decisões de inline valem dezenas de por cento.
+- **IMPACT:** o método em vigor — mover uma coisa, conferir que os controles não
+  se moveram — é **necessário e insuficiente** quando a própria mudança religa o
+  binário. Os controles (`spatial.index_of`, `voxel.get_uniform`) ficaram
+  parados nas duas medições e mesmo assim `get_paletted` andou 30%. Nenhum
+  número abaixo de ~20 ns publicado aqui deve ser lido como preciso melhor que
+  uma faixa.
+- **RISK:** baixo para o produto, alto para a tomada de decisão: é assim que uma
+  otimização inexistente ganha crédito, e é o erro que o próprio Apêndice B
+  existe para impedir.
+- **PROPOSED REMEDIATION:** medir *n* builds do mesmo código-fonte, não uma, e
+  publicar a faixa entre builds junto com o espalhamento dentro de uma. Um
+  `--repeat-build` no runner não resolve — a variação é do link, não da
+  execução. O caminho é o script de release construir duas vezes com uma
+  mudança neutra no meio e reportar as duas.
+- **TRIGGER:** a próxima vez que alguém quiser publicar um ganho abaixo de
+  ~20 ns, ou antes de mexer em `spatial.index_of` (o que sobrou do DEBT-0011).
+- **TARGET STAGE:** Phase 4
+- **RESOLUÇÃO (2026-09-20):** o gatilho disparou pela minha própria mão — o ciclo
+  do DEBT-0010 publicou 4,94 ns contra 1,54 ns. A ferramenta que a remediação
+  pediu existe: **`scripts/build-spread.sh`** constrói *n* vezes a partir do
+  **mesmo fonte**, separando cada build por um comentário neutro em
+  `engine/benchmark/src/lib.rs` — crate que não contém nenhum kernel medido e é
+  religado no mesmo binário, que é exatamente a forma da mudança que gerou esta
+  entrada. Achado 24 do `PHASE-0-BASELINE.md`.
+
+  **E a resposta não é a que a entrada previa.** Em três builds do mesmo fonte:
+
+  | as seis piores linhas da suíte | faixa |
+  | --- | ---: |
+  | `journal.append_durable` | **36,3%** |
+  | `physics.thousand_bodies_step_flat` | **29,9%** |
+  | `save.region_write_one_dirty` | **23,8%** |
+  | `jobs.batch_1000_barrier_submit_all` | **23,6%** |
+  | `journal.append_batched_sync` | **21,3%** |
+  | `jobs.submit_wait_roundtrip` | **18,3%** |
+
+  Todas em µs ou ms, e **todas passam por `fsync`, disco ou escalonamento de
+  thread**. As linhas mais estáveis da suíte inteira são os kernels aritméticos
+  de dois nanossegundos: `ffi.scalar_inlined` e `ffi.scalar_opaque_rust` não
+  moveram **um dígito**. O `voxel.get_paletted`, a linha que dá nome a esta
+  entrada, moveu **5,7%** (5,30–5,60 ns).
+
+  **Grandeza não prevê instabilidade; o que a linha toca, sim.** A regra que a
+  entrada propôs — "nada abaixo de ~20 ns é preciso" — aponta para as linhas
+  erradas, e deixa passar linhas de 36% três ordens de grandeza acima.
+
+  **O piso cresce com o número de builds** (2 builds: 5,0% / 17,2%; 3 builds:
+  10,2% / 33,1%; 3 builds de novo: 13,0% / 36,3%), que é a forma honesta disso —
+  faixa é limite inferior, e amostrar mais acha mais.
+
+  **O que isto NÃO explica:** os 11,4 → 7,8 ns originais. Fonte idêntico é um
+  experimento diferente de dois commits diferentes — o commit em questão mudou
+  código de verdade, e o LTO fino pode inlinar diferente por causa disso, não só
+  realocar. Além disso a caixa mudou: `get_paletted` lê 5,3–5,6 ns aqui contra
+  11,4 e 7,8–8,2 lá, então o par original não é mais reexecutável daqui. A
+  observação continua válida como registrada; o que ela **inferiu** é que está
+  contrariado.
+- **REGRA EM VIGOR:** antes de publicar um ganho, rodar `scripts/build-spread.sh`
+  e comparar com a faixa **daquela linha**. Ganho menor que o piso de build da
+  própria linha não é achado, seja qual for a grandeza. Fora do CI de propósito:
+  três builds de release do workspace são minutos de compute para um número que
+  só importa quando alguém vai publicar comparação.
+- **STATUS:** **CLOSED** — a ferramenta existe, o piso está medido e publicado, e
+  a regra é verificável em vez de ser um limiar escolhido a olho.
 
 ### DEBT-0013 — Física não publicou orçamento, embora agora tenha os números
 
@@ -470,7 +1177,15 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   inteiro custa 21,8 ms na thread do tick, e isso é intolerável assim que
   houver um quadro para perder.)*
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN (medido) — **o gatilho disparou em 2026-09-20.** O loop de
+  quadro existe (`engine/runtime/src/frame.rs`, ENGINE-0, ADR-0017) e a própria
+  caminhada do slice roda dentro dele. Isso **não** conserta nada aqui: a
+  ativação continua síncrona na thread do tick, e o que o loop acrescenta é só
+  que agora há um lugar onde os 21,8 ms aparecem como um quadro classificado
+  `EMERGENCY` em vez de uma frase neste registro. O que falta continua sendo o
+  descrito acima — submeter a geração como job e concluir a ativação num tick
+  posterior — mais a pergunta que o loop torna respondível e que ainda não foi
+  medida: **quantas ativações cabem num passo de 50 ms**.
 
 ### DEBT-0019 — `Regional` e `Abstract` são estados reais sem dados próprios
 
@@ -511,7 +1226,55 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** retenção passar de ~1.000 colunas, ou o primeiro servidor
   dedicado.
 - **TARGET STAGE:** Phase 3 (Persistence + Simulation)
-- **STATUS:** OPEN (medido)
+- **RESOLUÇÃO (2026-09-15):** `RetainedChunks::backed_by(RegionStore)` existe, e
+  faz o que esta entrada pediu — com uma diferença deliberada em *quando*.
+
+  **A memória: 20,0 KiB → 0 B por coluna despejada.** `RegionStore::store_columns`
+  funde as colunas nos arquivos de região sem derrubar as que já estavam lá, e
+  `RegionStore::read_column` traz uma de volta. Medido:
+
+  | | |
+  | --- | ---: |
+  | `streaming.retained_bytes_per_chunk` (controle, não mudou) | **20,0 KiB** |
+  | `streaming.retained_bytes_after_flush` | **0 B** |
+  | `streaming.chunk_retained_cycle` (memória) | 184,7 ns |
+  | `streaming.chunk_flushed_cycle` (disco) | **3,08 ms** |
+  | `streaming.region_writes_per_eight_columns` | **4** |
+
+  **O preço é 16.700×, e é por isso que a decisão não é "sempre disco".** O que
+  torna um flush por tick viável não é o número de nanossegundos: é que o custo
+  é o **arquivo**, não a coluna. Oito colunas que caem em quatro regiões são
+  quatro escritas, não oito — uma contagem, igual em qualquer máquina.
+
+  **Despejar não escreve; o flush escreve.** O `persist` do backend continua
+  entregando o chunk para a memória, porque o despejo roda dentro do orçamento
+  de streaming e escrita de arquivo não cabe ali. `flush_to_store` é chamado no
+  fim do tick, escreve o que aquele tick despejou e solta. O limite da memória
+  passa a ser **o que foi despejado desde o último flush**, não tudo o que já
+  foi editado.
+
+  **`flush_into` continua significando "todo chunk retido".** Com um store
+  anexado ele também lê de volta o que foi para o disco — senão um flush
+  esvaziaria em silêncio justamente o conjunto que aquela chamada olha, e o save
+  em contêiner sairia sem as edições, que é exatamente a armadilha que o módulo
+  existe para fechar. Quem salva **pelo store** não chama `flush_into`: aquelas
+  colunas já estão nos arquivos de região.
+
+  **Coluna nunca editada é regerada, não procurada.** Geração é determinística,
+  então as duas respostas são os mesmos bytes e a barata ganha; há teste com a
+  coluna presente no arquivo provando que mesmo assim ela é regerada.
+
+  **No slice:** o pico de retenção caiu de **25 para 15** colunas (um orçamento
+  de despejo, não o mundo editado inteiro), 25 colunas foram para 12 arquivos de
+  região e 25 voltaram de lá — e o **save saiu byte-idêntico**, 116.904 bytes,
+  com ou sem o spill. O smoke de determinismo continua idêntico a 1 e 8 threads.
+- **STATUS:** OPEN (remediado, **opt-in**) — `RetainedChunks::new()` não mudou e
+  continua sendo o padrão. O gatilho desta entrada (~1.000 colunas retidas, ou o
+  primeiro servidor dedicado) **não disparou**: na escala da Phase 0, 25 colunas
+  são 500 KiB e 3 ms por coluna é caro demais para pagar por isso. O mecanismo
+  está pronto e medido; ligá-lo por padrão é a decisão que espera o gatilho.
+  A `edited` ainda é memória e ainda não sobrevive ao processo — o que sobrevive
+  agora é o **dado**, que era o custo que crescia.
 
 ### DEBT-0021 — Command System parou em CMD-4; CMD-5 a CMD-15 não existem
 
@@ -606,7 +1369,45 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro load cujo conjunto residente difira do que escreveu o
   journal — na prática, streaming dirigir o carregamento inicial.
 - **TARGET STAGE:** Phase 3
-- **STATUS:** OPEN
+- **RESOLUÇÃO (2026-09-14):** exatamente a remediação proposta. O
+  `recovery::apply` agora arquiva por coluna todo registro que só falhou por
+  residência, e o relatório carrega esse índice em `RecoveryReport::deferred`.
+  O `WorldResidency::recovering(&mut pending)` liga o índice ao streaming: toda
+  coluna que entra recebe os seus registros **antes** que qualquer coisa possa
+  lê-la, na ordem em que foram journalados.
+
+  **Por que adiar é seguro, e não uma quebra da regra de ordem.** O `apply`
+  exige ordem de journal porque uma edição antiga escrita por cima de uma nova
+  produz um mundo que nunca existiu. Dois registros que podem se sobrescrever
+  estão na mesma posição, e a mesma posição está na mesma coluna: preservar a
+  ordem *dentro* de cada coluna basta, e entre colunas não há o que preservar.
+  Um teste fixa isso escrevendo duas vezes na mesma posição e exigindo que a
+  segunda vença.
+
+  **Três decisões:**
+
+  1. **O relatório não ficou menos honesto.** Uma edição adiada continua em
+     `skipped` e `is_complete()` continua falso. O índice **acrescenta** a
+     capacidade de terminar o serviço; não troca o aviso por silêncio.
+  2. **Só o que espera por residência é arquivado.** Um bloco que esta sessão
+     não conhece não fica conhecido esperando, então é reportado e não
+     enfileirado — arquivá-lo significaria retentá-lo contra toda coluna que
+     carregasse, para sempre.
+  3. **Uma edição ainda recusada com a coluna residente vira erro**, não
+     descarte. Ela não estava esperando residência, e engolir isso é como um
+     mundo passa a divergir do próprio journal em silêncio.
+
+  Uma coluna que ninguém traz mantém suas edições no índice, sem aplicar —
+  resultado honesto e **contável** (`PendingEdits::len`), não um silêncio.
+
+  De quebra: `nexora_world::recovery` passou a reexportar `Replay` e `Damage`
+  (como `JournalReplay`/`JournalDamage`). Os dois aparecem na assinatura pública
+  de `apply`, e sem a reexportação todo chamador tinha de depender de
+  `nexora-persistence` por um tipo que só vê através desta API.
+- **STATUS:** **CLOSED** — a recuperação deixou de valer só até onde o conjunto
+  residente alcançava. O slice não muda: cada chunk que ele edita já é residente
+  no checkpoint, então ele continua exigindo zero `skipped` e o save segue
+  byte-idêntico. Quem exercita o caminho adiado são os testes e o streaming.
 
 ### DEBT-0025 — O motor não escreve no journal ainda
 
@@ -681,7 +1482,8 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `CORE.md` §5 pede, e faz vidro e vidro-tingido compartilharem a decisão em
   vez de repeti-la.
   **Fecha só metade do que este item descrevia.** As quatro malhas por chunk do
-  RENDER-10 continuam não existindo — ver `DEBT-0035`.
+  RENDER-10 continuam não existindo — ver `DEBT-0035`, fechado em 2026-09-12
+  com três das quatro; a quarta virou o `DEBT-0036`.
 
 ### DEBT-0027 — Meshing roda na thread que pedir, não em worker
 
@@ -698,7 +1500,13 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   não só mais rápido, porque o worker deixa de tocar o mundo.
 - **TRIGGER:** existir um loop de quadro.
 - **TARGET STAGE:** Phase 2/5
-- **STATUS:** OPEN (medido)
+- **STATUS:** OPEN (medido) — **metade do obstáculo saiu em 2026-09-13.** O
+  `DenseSnapshot` do `DEBT-0029` existe, é `Send`, e há um teste que falha em
+  compilar se deixar de ser. O que falta é só o agendamento: submeter ao job
+  system. A parte difícil — dar ao worker uma entrada que não é o mundo — está
+  feita. *(2026-09-20: o gatilho "existir um loop de quadro" também disparou —
+  ADR-0017. O mesher continua rodando na thread que pedir; o que mudou é que
+  agora dá para dizer em que estágio ele roda e quanto do quadro ele levou.)*
 
 ### DEBT-0028 — Não há malha de LOD
 
@@ -737,7 +1545,39 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   que o worker passa a não tocar o mundo.
 - **TRIGGER:** o primeiro remesh no caminho de um quadro.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** CLOSED (2026-09-13)
+- **RESOLUÇÃO:** `nexora_mesh::DenseSnapshot`. A fixture do benchmark dizia de
+  si mesma que estava *"deliberadamente fora do `nexora-mesh` — a resposta
+  decide se vale a pena, e construir antes seria assumir"*. A resposta veio, e
+  agora é código de engine.
+  **Promover não foi copiar.** A fixture guardava só a superfície por célula e
+  *derivava* a oclusão como "qualquer coisa presente oclui" — verdade quando foi
+  escrita, mentira desde que materiais existem: um snapshot que re-deriva torna
+  o vidro sólido, e um que esquece a camada desenha tudo no passe opaco. Os
+  dois em silêncio. O tipo real **captura toda resposta que a view dá** —
+  superfície, oclusão e camada — em vez de recalcular qualquer uma. O teste que
+  o mantém honesto não é uma propriedade e sim uma igualdade: malhar por um
+  snapshot tem que produzir *exatamente* a malha que malhar pela fonte produziu.
+  **Duas medições, e trocar uma pela outra seria errado.** O número do achado 22
+  (11,2×) exclui o custo de *construir* o snapshot, que é ele próprio uma
+  passada de leituras do mundo. Medido agora, com a construção incluída:
+
+  | | mediana |
+  | --- | ---: |
+  | `mesh.region_16` (direto do mundo) | **3,32 ms** |
+  | `mesh.region_16_with_snapshot` (constrói **e** malha) | **1,22 ms** |
+  | `mesh.region_16_from_snapshot` (snapshot já em mãos) | **296 µs** |
+
+  Primeira malha de uma região: **2,7×**. Remalha com o snapshot em mãos:
+  **11,2×**. Construir custa 0,92 ms, 76% do tempo com snapshot. O snapshot se
+  paga já na primeira vez e se paga muito mais quando a região é malhada de
+  novo sem os voxels terem mudado.
+  Limite de **2 milhões de células** (~18 MiB): o `Extent` sozinho permitiria
+  512³, que como snapshot seria um gigabyte para um job de malha.
+  **Metade do `DEBT-0027` veio junto.** Um snapshot é `Send` e desligado do
+  mundo no instante em que é tirado — há um teste que falha em compilar se
+  deixar de ser. O obstáculo para malhar fora da thread do tick nunca foi
+  agendamento; era um worker segurando `&World`. Esse obstáculo saiu.
 
 ### DEBT-0030 — A inclinação do normal map não tem significado físico
 
@@ -794,6 +1634,8 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   Sobre o conjunto PBR inteiro — vinte mapas, com normal, roughness e oclusão,
   que são contínuos — o alcançável é **6,79×** (zlib -9) e este codificador
   entrega **4,73×**. Ver o `DEBT-0034` para a diferença que sobra.
+  *(Aquela diferença fechou em 2026-09-13: medido de novo sobre um conjunto PBR
+  completo, o alcançável é 8,72× e este codificador entrega 8,52×.)*
 
 ### DEBT-0032 — Metallic é constante porque nenhuma receita tem metal por texel
 
@@ -847,15 +1689,84 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   mil materiais isso é da ordem de 120 MB contra 85 MB.
 - **RISK:** baixo. É espaço, não correção, e o formato de saída continua sendo
   PNG válido para qualquer decodificador.
-- **PROPOSED REMEDIATION:** duas coisas independentes, nesta ordem de retorno:
-  **(1) correspondência preguiçosa** — adiar um byte quando a posição seguinte
-  oferece uma correspondência maior; é ~20 linhas e costuma valer a maior parte
-  da diferença. **(2) Huffman dinâmico** — contar frequências, construir o
-  código canônico e emitir a árvore; é a metade cara e rende menos.
+- **PROPOSED REMEDIATION:** duas coisas independentes: **(1) correspondência
+  preguiçosa** e **(2) Huffman dinâmico**. A ordem de retorno prevista aqui
+  estava **invertida** — ver abaixo.
 - **TRIGGER:** quando o repositório de assets passar de algumas centenas de
   megabytes, ou antes de empacotar uma release.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (medido)
+- **STATUS:** CLOSED (2026-09-13)
+- **RESOLUÇÃO:** **1,3881× → 1,0233×.** Dos 44 316 bytes que separavam do
+  `zlib -9`, sobraram 2 655 — **94% da diferença fechou**. Medido sobre um
+  conjunto PBR completo: 48 imagens, 995 264 bytes de scanlines filtradas.
+
+  | | bytes | tabela | matcher |
+  | --- | ---: | --- | --- |
+  | antes | 158 503 | fixa | guloso, cadeia 32 |
+  | + correspondência preguiçosa | 155 779 | fixa | preguiçoso, cadeia 32 |
+  | + `MAX_CHAIN` 256 | 148 500 | fixa | preguiçoso, cadeia 256 |
+  | **+ Huffman dinâmico** | **116 842** | **dinâmica** | preguiçoso, cadeia 256 |
+  | `zlib -9 Z_FIXED` | 145 278 | fixa | do zlib |
+  | `zlib -9` | 114 187 | dinâmica | do zlib |
+
+  **A previsão desta entrada estava errada, e o jeito de descobrir foi medir.**
+  Ela dizia que a correspondência preguiçosa *"costuma valer a maior parte da
+  diferença"*. Valeu 9%. O que separou os dois lados foi o **controle**: o
+  `zlib` aceita `Z_FIXED`, que mantém o matcher dele e troca a tabela dinâmica
+  pela fixa. Com isso uma medição virou duas, cada variável isolada por vez, e
+  a resposta foi **91% tabela, 9% matching** — o inverso da ordem prevista.
+  A metade descrita aqui como *"a metade cara e rende menos"* rendeu 3,5× mais
+  que a outra.
+
+  Sinal de que o diagnóstico fechava, visível antes de escrever a segunda
+  metade: dos 48 arquivos, **8 não encolheram um byte** com cadeia mais funda —
+  e eram justamente os de pior razão (`forest_soil/height`, `roughness`). São
+  os mapas de maior entropia, onde não há correspondência para achar em cadeia
+  nenhuma, e o custo é inteiramente o de codificar literais. Isto é, a tabela.
+
+  **O que entrou:**
+  - Correspondência preguiçosa: o token não é emitido na posição em que foi
+    achado, e cede a um estritamente maior um byte adiante. O teste não afirma
+    um tamanho, afirma a *decisão*: um oráculo guloso que compartilha a mesma
+    `Chain` e os mesmos emissores, de modo que a diferença entre os dois é a
+    preguiça e nada mais.
+  - `MAX_CHAIN` 32 → 256, com a varredura que o comentário anterior deveria ter
+    tido. O 32 era verdade sob matching guloso e deixou de ser sob preguiçoso.
+  - Blocos de **Huffman dinâmico** (RFC 1951 §3.2.7): código canônico limitado a
+    15 bits, sequência de comprimentos em RLE com o alfabeto de 19 símbolos,
+    HLIT/HDIST/HCLEN. E o lado do `inflate`, que antes recusava bloco dinâmico
+    pelo nome — os dois tipos de bloco Huffman agora dividem um só laço de
+    símbolos e um só conjunto de verificações de limite.
+  - `deflate` passou a **pesar os três** tipos de bloco e emitir o menor. É por
+    isso que nada disto pode aumentar arquivo nenhum: o matching roda uma vez e
+    os dois codificadores recebem os mesmos tokens.
+
+  **Dois defeitos que o trabalho encontrou, e que não eram dele:**
+  1. A limitação de profundidade transcrita do `zlib` estava **errada**, e o
+     `assert` do somatório de Kraft pegou. Um laço guiado por uma contagem de
+     códigos longos demais roda vezes de menos: em 351 de 400 histogramas
+     sintéticos o resultado não era um código prefixo — códigos sobrepostos,
+     fluxo que decodificador nenhum lê. O laço passou a ser guiado pelo
+     **próprio somatório**, que é a condição que importa, e aí fecha em 400 de
+     400.
+  2. O teste `incompressible_data_falls_back_to_stored_rather_than_growing`
+     tinha **parado de testar o fallback**. Ele usava uma sequência de contador
+     descrita como *"sem repetições dentro da janela"*; ela é uma progressão
+     aritmética módulo 256, comprime **20×**, e a asserção passava sem
+     significar nada. Oito bits de entropia por byte não diz se um *localizador
+     de correspondências* acha alguma coisa — são propriedades diferentes. O
+     teste recebeu bytes de fato inaproveitáveis, e o contra-exemplo virou caso
+     próprio.
+
+  **Verificação.** Dois vetores de bloco dinâmico produzidos pelo `zlib`, que
+  não leu este código, mais a etapa de CI que decodifica **todo PNG gerado** com
+  o `zlib` do Python — conferindo CRC de cada chunk, o fluxo `IDAT` inteiro e o
+  byte de filtro de cada scanline. Essa etapa é nova: o `TEXTURE FORGE.md`
+  afirmava que a CI fazia isso e a CI não fazia. E ela foi conferida contra um
+  byte corrompido de propósito, porque conferência que não sabe falhar não
+  confere nada.
+
+  **Fica em aberto:** 2,3%, e agora eles estão no **matcher**, não na tabela.
 
 ### DEBT-0035 — A malha ainda sai numa camada só, não nas quatro do RENDER-10
 
@@ -879,8 +1790,55 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro renderizador que faça blending, ou o primeiro bloco
   `Cutout` (folhagem) no conteúdo.
 - **TARGET STAGE:** Phase 2
+- **STATUS:** CLOSED (2026-09-12)
+- **RESOLUÇÃO:** o gatilho disparou por conta própria — o manifesto de exemplo
+  do Texture Forge trouxe `leaf_canopy` com `blend: cutout`, que é literalmente
+  *"o primeiro bloco `Cutout` no conteúdo"*.
+  `mesh_region` devolve `LayeredMesh` e o `VoxelView` ganhou `layer_of`, com
+  default `Opaque` — o mesmo padrão que fez o `occludes` do `DEBT-0026` ser uma
+  função e não uma reescrita.
+  **A varredura e a fusão não mudaram uma linha.** A separação acontece no
+  momento em que um retângulo é emitido, não varrendo a região três vezes: a
+  fusão gulosa só junta faces de superfícies **iguais**, e uma superfície tem
+  exatamente uma camada, então todo retângulo já pertence a um passe quando
+  passa a existir. `layer_of` é chaveado por `SurfaceId` por isso — não por
+  posição, como o `occludes`.
+  Medido: a geometria é a mesma de antes — **807 retângulos, 3 228 vértices**
+  na região de 16³, os números já registrados — e `mesh.region_16` menos
+  `mesh.cull_only_16` é **0,03 ms**, que é a fusão e o roteamento juntos.
+  **Três camadas, não as quatro do RENDER-10.** A `waterMesh` continua sem
+  existir e não por esquecimento: **nada no motor diz que um bloco é água.**
+  Não há conceito de fluido em `engine/world`, nem em `nexora_asset`, nem uma
+  `MaterialCategory` de líquido. Emitir a camada seria inventar o dado que
+  decide o que entra nela — a mesma recusa que o `DEBT-0026` fez. Ver
+  `DEBT-0036`.
+
+### DEBT-0036 — A camada de água do RENDER-10 não tem dado que a defina
+
+- **SYSTEM:** `engine/mesh`, `engine/simulation::surfaces`, sistema de fluidos
+  (inexistente)
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o resto do `DEBT-0035`. O `RENDER-10` pede quatro malhas por
+  chunk e três foram entregues. A quarta, `waterMesh`, não sai do `BlendMode`:
+  água é uma categoria de **conteúdo**, não um modo de composição. Um bloco de
+  água é `Transparent` como o vidro é, e ainda assim precisa de malha própria —
+  shader próprio, animação de superfície própria, ordem própria contra o resto
+  da transparência. Nada disso um `BlendMode` consegue dizer.
+- **IMPACT:** hoje um bloco de água cairia em `Transparent`, que é onde ele
+  pertence entre as três que existem. Isso está certo até haver um shader de
+  água; a partir daí a água precisa ser desenhada separada e ordenada contra a
+  outra transparência, e uma malha só não permite isso.
+- **RISK:** zero hoje (não há fluidos nem renderizador), médio no primeiro
+  shader de água.
+- **PROPOSED REMEDIATION:** quando o sistema de fluidos existir, é ele que diz
+  quais blocos são fluido. Aí `RenderLayer` ganha uma variante e o mapeamento
+  em `layer_of_blend` ganha um braço — e nada mais, porque o roteamento já
+  acontece por superfície.
+- **TRIGGER:** o sistema de fluidos, ou o primeiro shader de água.
+- **TARGET STAGE:** Phase 2/3
 - **STATUS:** OPEN
-### DEBT-0036 — Uma definição não escolhe paleta: dezesseis pedras são uma pedra com dezesseis sementes
+
+### DEBT-0044 — Uma definição não escolhe paleta: dezesseis pedras são uma pedra com dezesseis sementes
 
 - **SYSTEM:** `tools/texture-forge::recipe`, `engine/asset::document`
 - **CLASS:** ARCHITECTURAL
@@ -900,7 +1858,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   externa (#4) — que é legítimo, mas precisa do caminho de importação que a
   auditoria (§4.6) deliberadamente deixou para depois.
 - **PROPOSED REMEDIATION:** um campo `recipe` opcional no documento de material
-  (schema 2, com migração do 1: ausente = a receita da categoria, que é o
+  (schema 3 — o 2 é o `backend` do `main` —, com migração do 1 e do 2: ausente = a receita da categoria, que é o
   comportamento de hoje) nomeando um preset por `Identifier`
   (`nexora:recipe/granite_light`) e, dentro dele, a rampa de cor e os pesos de
   ruído. `GenerationTrace.preset` já existe e já é gravado — hoje sempre com o
@@ -909,12 +1867,12 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 1 (conteúdo da primeira geração)
 - **STATUS:** RESOLVED — [ADR-0019](docs/adr/ADR-0019-a-recipe-is-data-and-a-material-names-it.md).
   Receitas são documentos em `content/recipes/`, nomeados pelo campo `recipe`
-  do schema 2 do material. Prova: `recipe_book::tests` (receita pálida
+  do schema 3 do material. Prova: `recipe_book::tests` (receita pálida
   renderiza pálida; caminho, categoria e identificador errados são recusados),
   `forge::tests::editing_a_named_recipe_is_noticed_though_the_material_did_not_change`
   e `batch::tests::a_missing_recipe_stops_the_batch_before_anything_is_written`.
 
-### DEBT-0037 — O runtime carrega textura como bytes, porque o decodificador PNG mora no forge
+### DEBT-0045 — O runtime carrega textura como bytes, porque o decodificador PNG mora no forge
 
 - **SYSTEM:** `engine/resource`, `tools/texture-forge::png`, `tools/texture-forge::deflate`
 - **CLASS:** ARCHITECTURAL
@@ -937,8 +1895,9 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   validação de conteúdo em runtime, ou ícone de UI).
 - **TARGET STAGE:** Phase 1 (Resource System)
 - **STATUS:** RESOLVED — [ADR-0022](docs/adr/ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md).
-  `engine/image` tem o `inflate` (agora limitado pelo tamanho que o cabeçalho
-  declara), o `png::decode` e o `TextureLoader`; o forge reexporta, e há um
-  decodificador só. Prova: `engine/image` (PNGs montados à mão, sem o
+  `engine/image` tem o `png::decode` e o `TextureLoader`, e infla com o
+  `nexora_foundation::deflate::inflate_bounded` (limitado pelo tamanho que o
+  cabeçalho declara, nos três tipos de bloco — o inflater próprio da imagem
+  saiu no merge de 2026-09-25); o forge reexporta, e há um decodificador só. Prova: `engine/image` (PNGs montados à mão, sem o
   encoder), `first_generation::the_runtime_reaches_every_first_generation_texture_by_identifier`
   e o slice headless com `--resources` no CI.

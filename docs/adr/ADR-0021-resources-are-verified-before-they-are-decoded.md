@@ -52,7 +52,7 @@ over the job system is additive.
   cache budget small enough to force evictions
   (`tools/texture-forge/tests/first_generation.rs`).
 - **The runtime still cannot decode a PNG.** The decoder lives in the forge,
-  entangled with the encoder. Until it moves (`DEBT-0037`), a texture resource
+  entangled with the encoder. Until it moves (`DEBT-0045`), a texture resource
   is loaded as verified bytes.
 - Resource packs (layering several roots) are not built; one manager reads one
   root.

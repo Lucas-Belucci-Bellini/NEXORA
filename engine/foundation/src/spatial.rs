@@ -402,6 +402,23 @@ impl ChunkShape {
         )
     }
 
+    /// The section address *and* the section-local offset, from one pass.
+    ///
+    /// [`ChunkShape::section_of`] takes the quotient and
+    /// [`ChunkShape::local_of`] the remainder — of the same three divisions, by
+    /// the same runtime divisors. One division instruction yields both, but a
+    /// compiler only fuses them when it can see the pair together, and the
+    /// voxel path calls them on either side of a decision. Asking for both at
+    /// once puts them back within sight of each other.
+    ///
+    /// The sizes are runtime values because `CHUNK & VOXEL ENGINE.md` §3
+    /// forbids assuming a fixed chunk size, so these cannot become shifts.
+    /// Halving how many there are is what is left.
+    #[must_use]
+    pub const fn split_of(self, pos: BlockPos) -> (SectionCoord, LocalPos) {
+        (self.section_of(pos), self.local_of(pos))
+    }
+
     /// The section-local offset of a block position.
     ///
     /// Always in `0..size` on each axis, including for negative world
@@ -651,6 +668,32 @@ mod tests {
             shape.local_of(BlockPos::new(-33, -33, -33)),
             LocalPos::new(31, 31, 31)
         );
+    }
+
+    /// `split_of` exists only to let one division serve two answers. If it
+    /// ever stops giving the same two answers, it is a silent wrong-cell bug in
+    /// the physics lookup rather than a slow one — so the equality is asserted
+    /// across negatives, section boundaries and a non-cubic shape, not just the
+    /// easy quadrant.
+    #[test]
+    fn split_of_agrees_with_computing_each_half_separately() {
+        for shape in [
+            ChunkShape::cubic_default(),
+            ChunkShape::new(16, 32, 8).expect("valid extent"),
+        ] {
+            for x in [-65_i64, -33, -32, -31, -1, 0, 1, 31, 32, 33, 65] {
+                for y in [-33_i64, -1, 0, 1, 7, 8, 31, 32] {
+                    for z in [-32_i64, -1, 0, 1, 15, 16, 33] {
+                        let pos = BlockPos::new(x, y, z);
+                        assert_eq!(
+                            shape.split_of(pos),
+                            (shape.section_of(pos), shape.local_of(pos)),
+                            "{shape:?} at {pos:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

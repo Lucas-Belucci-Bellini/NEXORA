@@ -84,8 +84,13 @@ costs **28.7–32.1 KiB** at every radius from 0 to 6 and every seed tried
 | EMERGENCY | 128 KiB | one 32×32×32 section stored without a palette: past this, the storage model failed, not the budget |
 
 `world.retained` uses the same figures, because the slice edits every column
-and every one of them is held outside the world at once at the far end of the
-walk (measured: the retained high-water equals the whole edited area).
+and so every one of them may be held outside the world. Since region-file
+retention (DEBT-0020, merged from `main` on 2026-09-25) a held column spills
+at the end of the tick that evicted it, so the pool is recorded twice per
+tick -- after eviction, and after the spill. Measured at radius 2: a peak of
+435,024 B (fifteen columns inside one tick) against a ceiling of 3,276,800,
+and zero at the end of every tick. Before the spill existed the peak was the
+whole edited area, 722,304 B.
 
 These are the **slice's** budgets, for the slice's scale. Engine-wide budgets
 for a shipped game are still DEBT-0013's, at Phase 4.

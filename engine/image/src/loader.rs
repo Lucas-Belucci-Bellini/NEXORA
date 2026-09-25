@@ -2,7 +2,7 @@
 //!
 //! `nexora_resource` hands a loader bytes whose size and hash already match
 //! the manifest (ADR-0021); this is the loader that knows the format. It is
-//! where DEBT-0037 closes: the runtime can now go from
+//! where DEBT-0045 closes: the runtime can now go from
 //! `nexora:texture/stone/basalt/albedo` to pixels without the tool that wrote
 //! them.
 

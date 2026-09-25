@@ -30,7 +30,7 @@ use crate::material::{
     MATERIAL_SCHEMA_VERSION,
 };
 use crate::provenance::{
-    AssetStatus, GenerationTrace, License, Modification, Provenance, ProvenanceClass,
+    AssetStatus, Backend, GenerationTrace, License, Modification, Provenance, ProvenanceClass,
     ReleaseStatus, Timestamp,
 };
 use crate::texture::{MapRole, Resolution};
@@ -52,7 +52,7 @@ const MATERIAL_FIELDS: [&str; 12] = [
 ];
 
 /// The first schema that carries `recipe`.
-const RECIPE_SCHEMA: u32 = 2;
+const RECIPE_SCHEMA: u32 = 3;
 
 /// Render a material as a JSON document.
 #[must_use]
@@ -174,7 +174,7 @@ pub fn from_json(document: &Json) -> Result<SurfaceMaterial> {
             node.field("height")?.as_u32()?,
         )?
     };
-    let provenance = provenance_from_json(document.field("provenance")?)?;
+    let provenance = provenance_from_json(document.field("provenance")?, schema)?;
 
     let mut builder = SurfaceMaterial::builder(id, category, resolution, provenance)
         .named(document.field("name")?.as_text()?)
@@ -211,13 +211,15 @@ pub fn from_json(document: &Json) -> Result<SurfaceMaterial> {
         builder = builder.wants(MapRole::parse(entry.as_text()?)?);
     }
 
-    // Version 1 predates the field, and a version 1 document that carries it
-    // is not one any build wrote. From version 2 it is required, null or not:
+    // Versions 1 and 2 predate the field, and such a document that carries it
+    // is not one any build wrote. From version 3 it is required, null or not:
     // the absence of a recipe is a statement, and it is written as one.
     if schema.0 < RECIPE_SCHEMA {
         if document.optional_field("recipe")?.is_some() {
-            return Err(unreadable("a schema 1 document cannot name a recipe")
-                .with_context("schema", schema.to_string()));
+            return Err(
+                unreadable("a document older than schema 3 cannot name a recipe")
+                    .with_context("schema", schema.to_string()),
+            );
         }
     } else if let Json::Text(recipe) = document.field("recipe")? {
         builder = builder.recipe(Identifier::parse(recipe)?);
@@ -320,6 +322,7 @@ fn generation_to_json(trace: &GenerationTrace) -> Json {
         "generator_version".to_owned(),
         Json::Integer(i64::from(trace.generator_version.0)),
     );
+    fields.insert("backend".to_owned(), Json::text(trace.backend.as_str()));
     fields.insert(
         "pipeline".to_owned(),
         trace
@@ -370,7 +373,7 @@ fn generation_to_json(trace: &GenerationTrace) -> Json {
     Json::Object(fields)
 }
 
-fn provenance_from_json(node: &Json) -> Result<Provenance> {
+fn provenance_from_json(node: &Json, schema: MaterialSchemaVersion) -> Result<Provenance> {
     reject_unknown_fields(
         node,
         &[
@@ -405,14 +408,17 @@ fn provenance_from_json(node: &Json) -> Result<Provenance> {
         reviewer: text_or_null(node.field("reviewer")?)?,
         reviewed_at: timestamp_or_null(node.field("reviewed_at")?)?,
         notes: text_or_null(node.field("notes")?)?,
-        generation: generation_from_json(node.field("generation")?)?,
+        generation: generation_from_json(node.field("generation")?, schema)?,
         recorded_at: Timestamp::parse_rfc3339_utc(node.field("recorded_at")?.as_text()?)?,
     };
     provenance.validate()?;
     Ok(provenance)
 }
 
-fn generation_from_json(node: &Json) -> Result<Option<GenerationTrace>> {
+fn generation_from_json(
+    node: &Json,
+    schema: MaterialSchemaVersion,
+) -> Result<Option<GenerationTrace>> {
     if matches!(node, Json::Null) {
         return Ok(None);
     }
@@ -421,6 +427,7 @@ fn generation_from_json(node: &Json) -> Result<Option<GenerationTrace>> {
         &[
             "generator",
             "generator_version",
+            "backend",
             "pipeline",
             "pipeline_version",
             "preset",
@@ -454,6 +461,19 @@ fn generation_from_json(node: &Json) -> Result<Option<GenerationTrace>> {
         pipeline_version: match node.field("pipeline_version")? {
             Json::Null => None,
             other => Some(ContentPipelineVersion(other.as_u32()?)),
+        },
+        backend: match node.optional_field("backend")? {
+            Some(value) => Backend::parse(value.as_text()?)?,
+            // Absent only in a schema-1 document, and a schema-1 document was
+            // necessarily written by the procedural generator, because it was
+            // the only one that existed. Not a guess — the one answer the
+            // format's own history allows.
+            None if schema.0 < 2 => Backend::Procedural,
+            None => {
+                return Err(unreadable(
+                    "a generation record must say which backend produced it",
+                ))
+            }
         },
         preset: identifier_or_null(node.field("preset")?)?,
         seed: parse_hex_u64(node.field("seed")?.as_text()?)?,
@@ -870,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn a_schema_1_document_reads_as_a_material_with_no_recipe() {
+    fn a_document_older_than_schema_3_reads_as_a_material_with_no_recipe() {
         // The checked-in definitions were written at version 1. They must keep
         // loading, and keep hashing the same, or every generated material in
         // the tree would be regenerated for nothing.
@@ -886,18 +906,32 @@ mod tests {
             rich_material().appearance_hash()
         );
 
-        // Version 1 cannot carry the field; version 2 must.
+        // A schema 2 document, as the build before recipes wrote it, reads
+        // the same way.
+        let mut second = to_json(&rich_material());
+        if let Json::Object(fields) = &mut second {
+            fields.insert("schema".to_owned(), Json::Integer(2));
+            fields.remove("recipe");
+        }
+        let restored = from_json(&second).expect("version 2 still reads");
+        assert!(restored.recipe().is_none());
+        assert_eq!(
+            restored.appearance_hash(),
+            rich_material().appearance_hash()
+        );
+
+        // Versions 1 and 2 cannot carry the field; version 3 must.
         if let Json::Object(fields) = &mut document {
             fields.insert("recipe".to_owned(), Json::Null);
         }
         let err = from_json(&document).expect_err("schema 1 with a recipe");
-        assert!(err.to_string().contains("schema 1"), "{err}");
+        assert!(err.to_string().contains("schema 3"), "{err}");
 
         let mut current = to_json(&rich_material());
         if let Json::Object(fields) = &mut current {
             fields.remove("recipe");
         }
-        let err = from_json(&current).expect_err("schema 2 without the field");
+        let err = from_json(&current).expect_err("schema 3 without the field");
         assert!(err.to_string().contains("recipe"), "{err}");
     }
 

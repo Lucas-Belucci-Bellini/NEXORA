@@ -28,6 +28,7 @@
 //! §1: the Core provides rules and contracts; content must not reach into it.
 
 pub mod config;
+pub mod deflate;
 pub mod diagnostics;
 pub mod error;
 pub mod hashing;

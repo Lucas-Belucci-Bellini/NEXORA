@@ -31,9 +31,12 @@ use crate::texture::{MapRole, Resolution};
 
 /// Schema version this build writes and reads.
 ///
-/// Version 2 added `recipe`. A version 1 document is read as a material with
-/// no recipe, which is exactly what it described: the category's own look.
-pub const MATERIAL_SCHEMA_VERSION: MaterialSchemaVersion = MaterialSchemaVersion(2);
+/// Version 2 made a generation record name the backend that produced it.
+/// Version 3 added `recipe`. Older documents are read as what they described:
+/// a version 1 generation came from the procedural backend, the only one that
+/// existed, and a document before version 3 names no recipe -- the category's
+/// own look.
+pub const MATERIAL_SCHEMA_VERSION: MaterialSchemaVersion = MaterialSchemaVersion(3);
 
 /// Path prefix a recipe identifier conventionally uses.
 pub const RECIPE_PATH_PREFIX: &str = "recipe/";

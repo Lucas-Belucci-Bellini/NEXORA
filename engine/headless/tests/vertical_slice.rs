@@ -148,12 +148,31 @@ fn the_streaming_stage_evicts_and_restores_without_losing_an_edit() {
         report.streaming_generated > 0,
         "the walk never left the region the slice had already generated"
     );
-    // The slice edits every column it generated, so retention holds all of
+    // The slice edits every column it generated, so retention takes all of
     // them and nothing else: the chunks the walk generated along the way are
     // regenerable and are dropped rather than kept.
     assert_eq!(
-        report.streaming_retained_peak, report.chunks_generated,
-        "retention should hold exactly the edited columns"
+        report.streaming_spilled, report.chunks_generated,
+        "retention should take exactly the edited columns"
+    );
+    // And `DEBT-0020`: it never holds them all at once, because each tick's
+    // evictions go to their region files at the end of that tick. The peak is
+    // bounded by one tick's eviction budget, not by how much was edited.
+    assert!(
+        report.streaming_retained_peak > 0,
+        "nothing was ever held, so the spill was never exercised"
+    );
+    assert!(
+        report.streaming_retained_peak < report.chunks_generated,
+        "memory held every edited column at once, which is what spilling is for"
+    );
+    assert_eq!(
+        report.streaming_read_back, report.streaming_restored,
+        "every column that came back came back off disk"
+    );
+    assert!(
+        report.streaming_region_writes < report.streaming_spilled,
+        "columns sharing a region should cost one write between them"
     );
     assert!(
         report.streaming_generated as usize > report.chunks_generated,
@@ -350,6 +369,8 @@ fn the_report_renders_every_field() {
         "physics substeps",
         "character drop",
         "streaming ticks",
+        "frames",
+        "input",
         "chunks retained",
         "memory",
         "world.chunks",
@@ -362,6 +383,60 @@ fn the_report_renders_every_field() {
             "the report omits `{expected}`:\n{rendered}"
         );
     }
+}
+
+/// The walk runs on the engine's frame loop, and every fixed step is one tick.
+///
+/// This is what keeps the loop load-bearing here rather than decorative: stop
+/// driving the walk with it and `frame_steps` falls to zero while
+/// `streaming_ticks` keeps climbing. The two counts are deterministic because
+/// the delta handed to the loop is scripted - the slice is a proof, and the
+/// real per-frame distribution is the benchmark's job.
+#[test]
+fn the_walk_runs_on_the_frame_loop_and_every_step_is_one_tick() {
+    let scratch = Scratch::new("frames");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+
+    assert!(report.frames > 0, "the walk ran no frames at all");
+    assert_eq!(
+        report.frame_steps,
+        u64::from(report.streaming_ticks),
+        "every fixed step runs exactly one streaming tick"
+    );
+    assert_eq!(
+        report.frames, report.frame_steps,
+        "a delta of exactly one step buys exactly one step"
+    );
+    assert_eq!(
+        report.frame_steps_dropped, 0,
+        "a scripted one-step delta can never fall behind its own schedule"
+    );
+}
+
+/// The walk is what the input system says the player asked for.
+///
+/// `stream_a_walk` already fails if the derived route is not the route the
+/// slice is specified to walk, so reaching this test at all means the chain
+/// from scancode to interest source held. What is checked here is that the
+/// input stage really ran on every frame rather than once at the start, and
+/// that the taps are the ones the script contains.
+#[test]
+fn the_walk_is_driven_by_the_input_system_and_not_by_a_list_of_stops() {
+    let scratch = Scratch::new("input");
+    let report = run_slice(&config(&scratch, "world.nxsv")).expect("slice");
+
+    assert_eq!(
+        report.input_frames, report.frames,
+        "input is sampled at the top of every frame, not once per leg"
+    );
+    assert_eq!(
+        report.input_intents, 16,
+        "eight taps out and back, each with the release on the frame after it"
+    );
+    assert!(
+        report.input_intents < report.input_frames,
+        "most frames carry no intent at all, which is what makes the ones that do worth reporting"
+    );
 }
 
 #[test]
@@ -527,4 +602,24 @@ fn a_resource_index_missing_what_the_content_asks_for_is_refused_whole() {
         text.contains("nexora:material/stone/basalt: no albedo map"),
         "{text}"
     );
+}
+
+#[test]
+fn the_first_generation_content_survives_every_stage() {
+    // Every path that reads a world back -- the save, the journal replay, the
+    // region store -- has to register the content, or a world that saves
+    // stones cannot open them. The region store was the one that did not.
+    let scratch = Scratch::new("content-stages");
+    let config = SliceConfig {
+        content: Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../content/first-generation/blocks.json"),
+        ),
+        ..config(&scratch, "world.nxsv")
+    };
+    let report = run_slice(&config).expect("the slice completes with content");
+    assert_eq!(report.content_blocks, 16);
+    assert_eq!(report.content_surfaces, 16);
+    assert_eq!(report.probes_verified, report.blocks_edited);
+    assert_eq!(report.recovered_probes, report.probes_verified);
 }

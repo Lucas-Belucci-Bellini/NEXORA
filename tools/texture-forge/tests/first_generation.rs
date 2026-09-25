@@ -1,6 +1,6 @@
 //! The first visual generation, held to its own catalog.
 //!
-//! Regenerates everything `content/first-generation/manifest.json` lists, from
+//! Regenerates everything `content/first-generation/plan.json` lists, from
 //! the checked-in definitions and recipes, and checks it against
 //! `content/first-generation/CATALOG.md` byte for byte. A change to a recipe,
 //! the renderer or the PNG encoder fails here, naming the asset, so the catalog
@@ -13,9 +13,9 @@ use nexora_asset::texture::{ChannelLayout, MapRole, Resolution};
 use nexora_foundation::hashing::fnv1a64;
 use nexora_image::TextureLoader;
 use nexora_resource::{BytesLoader, ResourceKind, ResourceManager};
-use nexora_texture_forge::batch::{Plan, Policy};
 use nexora_texture_forge::forge::Forge;
 use nexora_texture_forge::layout;
+use nexora_texture_forge::plan::{Plan, Policy};
 use nexora_texture_forge::recipe_book::RecipeBook;
 
 fn content() -> PathBuf {
@@ -56,18 +56,23 @@ fn catalogued() -> BTreeMap<String, u64> {
 fn the_first_generation_is_what_its_catalog_says_it_is() {
     let out = scratch("out");
     let plan =
-        Plan::load(&content().join("first-generation/manifest.json")).expect("the manifest reads");
+        Plan::load(&content().join("first-generation/plan.json")).expect("the build plan reads");
     assert!(plan.is_valid(), "{:?}", plan.problems);
     assert_eq!(
         plan.policy,
         Policy::first_generation(),
-        "the first generation's manifest must carry the first generation's rule"
+        "the first generation's build plan must carry the first generation's rule"
     );
 
+    assert!(
+        !plan.policy.allows_previews(),
+        "a 32x32 preview beside a 16x16 map would break the first generation's rule"
+    );
     let forge = Forge::new(&out)
         .unwrap()
+        .without_previews()
         .with_recipes(RecipeBook::at(content().join("recipes")));
-    let report = plan.run(&forge, false).expect("the batch runs");
+    let report = plan.run(&forge, false).expect("the build runs");
     assert!(report.succeeded(), "{report:?}");
     assert_eq!(report.tally().written, plan.entries.len());
 
@@ -157,9 +162,10 @@ fn the_first_generation_is_what_its_catalog_says_it_is() {
 #[test]
 fn the_runtime_reaches_every_first_generation_texture_by_identifier() {
     let out = scratch("resources");
-    let plan = Plan::load(&content().join("first-generation/manifest.json")).unwrap();
+    let plan = Plan::load(&content().join("first-generation/plan.json")).unwrap();
     let forge = Forge::new(&out)
         .unwrap()
+        .without_previews()
         .with_recipes(RecipeBook::at(content().join("recipes")));
     assert!(plan.run(&forge, false).unwrap().succeeded());
     forge.write_index().expect("the INDEX stage");
@@ -167,7 +173,7 @@ fn the_runtime_reaches_every_first_generation_texture_by_identifier() {
     // Small enough that sixteen textures cannot all stay resident: the budget
     // must hold while every one of them is still served.
     let budget = 2 * 1024;
-    let mut resources = ResourceManager::open(&out, budget).expect("the manifest reads");
+    let mut resources = ResourceManager::open(&out, budget).expect("the build plan reads");
     let catalog = catalogued();
     let textures = BytesLoader(ResourceKind::Texture);
     for entry in &plan.entries {

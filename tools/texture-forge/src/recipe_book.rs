@@ -22,7 +22,7 @@
 //! ```
 //!
 //! That is what turns sixteen stones into sixteen stones rather than one stone
-//! with sixteen seeds (`DEBT-0036`): a new family member is a new file of
+//! with sixteen seeds (`DEBT-0044`): a new family member is a new file of
 //! numbers, not new code, which is the goal `NEXORA ART DIRECTION AND
 //! PROCEDURAL VARIATION.md` sets.
 //!

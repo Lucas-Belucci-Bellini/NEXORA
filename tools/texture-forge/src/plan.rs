@@ -1,9 +1,9 @@
-//! Batch generation from a manifest.
+//! Build plans: the definitions a set is made of, generated under a policy.
 //!
 //! Texture Forge FASE 7: *"batch por manifesto — manifesto inválido falha
-//! alto"*. A manifest is the checked-in list of what a batch generates, so
-//! the thing that makes a run reproducible lives in the repository rather than
-//! in someone's shell history:
+//! alto"*. A build plan is the checked-in list of definition files a run
+//! generates, each with its seed, so the thing that makes a run reproducible
+//! lives in the repository rather than in someone's shell history:
 //!
 //! ```json
 //! {
@@ -18,15 +18,24 @@
 //! }
 //! ```
 //!
+//! # Not a batch manifest
+//!
+//! [`crate::manifest`] *declares* materials inline, from defaults, and is how a
+//! new set is sketched. A build plan *points at* definitions that already
+//! exist as files -- with their recipes, provenance notes and review history
+//! -- and is how a set that has been authored is rebuilt, exactly. The first
+//! generation is the second kind: sixteen stones, each one written and
+//! reviewed by hand, and a policy they are all held to.
+//!
 //! # Failing loudly means failing before anything is written
 //!
-//! A manifest is read in two passes. The first reads every definition it
+//! A plan is read in two passes. The first reads every definition it
 //! names and checks all of them — paths, parsing, duplicate identifiers, the
 //! naming rules, the policy — and **collects every problem** rather than
 //! stopping at the first, for the reason [`crate::forge::Listing`] does: one
 //! bad entry should not hide the forty beside it. Only a plan with no problems
-//! at all may run. A batch that generated the first half of a broken manifest
-//! and then stopped would leave a tree that matches neither the old manifest
+//! at all may run. A build that generated the first half of a broken plan
+//! and then stopped would leave a tree that matches neither the old plan
 //! nor the new one, which is the state nobody can reason about.
 //!
 //! Once it runs, a material the forge refuses or fails on is reported and the
@@ -37,7 +46,7 @@
 //!
 //! The operator's rule for 2026 is *"PRIMEIRA GERAÇÃO = 16×16"*, with no
 //! normal, roughness or height maps. A rule a person has to remember is a rule
-//! that breaks on the three-thousandth asset, so a manifest can carry it:
+//! that breaks on the three-thousandth asset, so a plan can carry it:
 //! `"resolution"` pins every definition's size, and `"maps"` lists the only
 //! optional maps a definition may want (albedo is always required, so `[]`
 //! means albedo alone). `null` in either field means that dimension is not
@@ -46,8 +55,8 @@
 //! # Paths are content, and content is untrusted
 //!
 //! `NEXORA SECURITY THREAT MODEL.md` treats content as a hostile source. A
-//! manifest names files relative to its own directory; an absolute path or a
-//! `..` segment is refused, so a manifest can never make the forge read
+//! plan names files relative to its own directory; an absolute path or a
+//! `..` segment is refused, so a plan can never make the forge read
 //! outside the tree it was checked in with.
 
 use std::collections::BTreeMap;
@@ -63,21 +72,21 @@ use nexora_foundation::ident::Identifier;
 use crate::forge::{Forge, Outcome, WriteStatus};
 use crate::layout;
 
-/// The newest manifest schema this build reads.
-pub const MANIFEST_SCHEMA: u32 = 1;
+/// The newest plan schema this build reads.
+pub const PLAN_SCHEMA: u32 = 1;
 
-/// Most entries a manifest may list.
+/// Most entries a plan may list.
 ///
 /// The whole first-generation backlog is a few thousand assets. Sixty-five
 /// thousand is far past anything legitimate, and a bound is what keeps a
-/// hostile manifest from being a way to exhaust memory.
+/// hostile plan from being a way to exhaust memory.
 pub const MAX_ENTRIES: usize = 65_536;
 
-const MANIFEST_FIELDS: [&str; 5] = ["schema", "name", "seed", "policy", "materials"];
+const PLAN_FIELDS: [&str; 5] = ["schema", "name", "seed", "policy", "materials"];
 const POLICY_FIELDS: [&str; 2] = ["resolution", "maps"];
 const ENTRY_FIELDS: [&str; 2] = ["definition", "seed"];
 
-/// What every definition in a manifest must satisfy.
+/// What every definition in a plan must satisfy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
     /// The exact size every definition must declare, when pinned.
@@ -89,6 +98,16 @@ pub struct Policy {
 }
 
 impl Policy {
+    /// Whether a lit preview may be written beside the maps.
+    ///
+    /// Only when the policy leaves the maps open. A policy that lists what
+    /// may be written lists maps, and a preview is not one; at twice the
+    /// edge it would also be the one file breaking a pinned resolution.
+    #[must_use]
+    pub const fn allows_previews(&self) -> bool {
+        self.maps.is_none()
+    }
+
     /// The first visual generation: 16×16, albedo alone.
     ///
     /// # Panics
@@ -110,7 +129,7 @@ impl Policy {
             let actual = material.resolution();
             if actual != pinned {
                 found.push(format!(
-                    "{} is {}x{}; the manifest pins every material to {}x{}",
+                    "{} is {}x{}; the plan pins every material to {}x{}",
                     material.id(),
                     actual.width,
                     actual.height,
@@ -123,7 +142,7 @@ impl Policy {
             for role in material.wanted_maps() {
                 if !role.is_required() && !allowed.contains(role) {
                     found.push(format!(
-                        "{} wants the {} map, which the manifest does not allow",
+                        "{} wants the {} map, which the plan does not allow",
                         material.id(),
                         role.as_str()
                     ));
@@ -134,20 +153,20 @@ impl Policy {
     }
 }
 
-/// One definition a manifest names, read and ready to generate.
+/// One definition a plan names, read and ready to generate.
 #[derive(Debug, Clone)]
 pub struct Entry {
-    /// Its position in the manifest's list, from zero.
+    /// Its position in the plan's list, from zero.
     pub index: usize,
     /// The file it was read from.
     pub source: PathBuf,
     /// The definition.
     pub definition: SurfaceMaterial,
-    /// The seed it is generated with: its own, or the manifest's.
+    /// The seed it is generated with: its own, or the plan's.
     pub seed: u64,
 }
 
-/// Something wrong with one entry of a manifest.
+/// Something wrong with one entry of a plan.
 #[derive(Debug)]
 pub struct Problem {
     /// Which entry, by its position in the list (from zero).
@@ -158,33 +177,33 @@ pub struct Problem {
     pub error: Error,
 }
 
-/// A manifest, read and checked, and not yet run.
+/// A plan, read and checked, and not yet run.
 #[derive(Debug)]
 pub struct Plan {
-    /// The manifest's name, for reports.
+    /// The plan's name, for reports.
     pub name: String,
     /// The seed entries without their own use.
     pub seed: u64,
     /// What every definition had to satisfy.
     pub policy: Policy,
-    /// Every entry that read back and passed, in manifest order.
+    /// Every entry that read back and passed, in plan order.
     pub entries: Vec<Entry>,
     /// Every entry that did not. A plan with any of these does not run.
     pub problems: Vec<Problem>,
 }
 
 impl Plan {
-    /// Read a manifest file and every definition it names.
+    /// Read a plan file and every definition it names.
     ///
     /// # Errors
     ///
-    /// Returns an error when the manifest itself cannot be read or is not a
-    /// manifest: bad JSON, an unknown or missing field, a newer schema, no
+    /// Returns an error when the plan itself cannot be read or is not a
+    /// plan: bad JSON, an unknown or missing field, a newer schema, no
     /// entries, too many. A problem with one *entry* is not an error here; it
     /// is collected in [`Plan::problems`], so every one of them is reported.
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|cause| {
-            invalid("the manifest could not be read")
+            invalid("the plan could not be read")
                 .with_context("path", path.display().to_string())
                 .with_context("cause", cause.to_string())
         })?;
@@ -192,20 +211,20 @@ impl Plan {
         Self::from_text(&text, base)
     }
 
-    /// Read a manifest from text, resolving entries against a directory.
+    /// Read a plan from text, resolving entries against a directory.
     ///
     /// # Errors
     ///
     /// See [`Plan::load`].
     pub fn from_text(text: &str, base: &Path) -> Result<Self> {
         let document = json::parse(text)?;
-        reject_unknown(&document, &MANIFEST_FIELDS, "manifest")?;
+        reject_unknown(&document, &PLAN_FIELDS, "build plan")?;
 
         let schema = document.field("schema")?.as_u32()?;
-        if schema == 0 || schema > MANIFEST_SCHEMA {
-            return Err(invalid("the manifest schema is not one this build reads")
+        if schema == 0 || schema > PLAN_SCHEMA {
+            return Err(invalid("the plan schema is not one this build reads")
                 .with_context("schema", schema.to_string())
-                .with_context("supported", MANIFEST_SCHEMA.to_string()));
+                .with_context("supported", PLAN_SCHEMA.to_string()));
         }
         let name = document.field("name")?.as_text()?.to_owned();
         let seed = parse_seed(document.field("seed")?)?;
@@ -214,15 +233,13 @@ impl Plan {
         let listed = document.field("materials")?.as_array()?;
         if listed.is_empty() {
             return Err(invalid(
-                "the manifest lists no materials; an empty batch is a mistake",
+                "the plan lists no materials; an empty build is a mistake",
             ));
         }
         if listed.len() > MAX_ENTRIES {
-            return Err(
-                invalid("the manifest lists more entries than a batch accepts")
-                    .with_context("entries", listed.len().to_string())
-                    .with_context("limit", MAX_ENTRIES.to_string()),
-            );
+            return Err(invalid("the plan lists more entries than a build accepts")
+                .with_context("entries", listed.len().to_string())
+                .with_context("limit", MAX_ENTRIES.to_string()));
         }
 
         let mut plan = Self {
@@ -279,9 +296,9 @@ impl Plan {
     /// Every entry whose recipe the forge cannot resolve.
     ///
     /// Separate from [`Plan::problems`] because it depends on the forge's
-    /// recipe book, which the manifest does not choose. Checked by
+    /// recipe book, which the plan does not choose. Checked by
     /// [`Plan::run`] before anything is written, for the same reason the
-    /// manifest is: a batch that stops at entry forty over a missing recipe
+    /// plan is: a build that stops at entry forty over a missing recipe
     /// has already written thirty-nine.
     #[must_use]
     pub fn unresolved(&self, forge: &Forge) -> Vec<Problem> {
@@ -301,7 +318,7 @@ impl Plan {
             .collect()
     }
 
-    /// Generate every entry, in manifest order.
+    /// Generate every entry, in plan order.
     ///
     /// # Errors
     ///
@@ -309,23 +326,21 @@ impl Plan {
     /// names a recipe the forge cannot resolve. A material that fails or is
     /// refused once the run has started is not an error: it is recorded in
     /// the report and the run continues.
-    pub fn run(&self, forge: &Forge, force: bool) -> Result<BatchReport> {
+    pub fn run(&self, forge: &Forge, force: bool) -> Result<BuildReport> {
         if !self.is_valid() {
-            return Err(
-                invalid("the manifest has problems, so nothing was generated")
-                    .with_context("manifest", self.name.clone())
-                    .with_context("problems", self.problems.len().to_string()),
-            );
+            return Err(invalid("the plan has problems, so nothing was generated")
+                .with_context("plan", self.name.clone())
+                .with_context("problems", self.problems.len().to_string()));
         }
         let unresolved = self.unresolved(forge);
         if !unresolved.is_empty() {
             return Err(invalid(
-                "the manifest names recipes that cannot be resolved, so nothing was generated",
+                "the plan names recipes that cannot be resolved, so nothing was generated",
             )
-            .with_context("manifest", self.name.clone())
+            .with_context("plan", self.name.clone())
             .with_context("problems", unresolved.len().to_string()));
         }
-        let mut report = BatchReport::default();
+        let mut report = BuildReport::default();
         for entry in &self.entries {
             let result = forge.generate(&entry.definition, entry.seed, force);
             report.entries.push(EntryReport {
@@ -356,7 +371,7 @@ impl Plan {
 
         let violations = self.policy.violations(&definition);
         if let Some(first) = violations.first() {
-            let mut error = invalid("the definition breaks the manifest's policy")
+            let mut error = invalid("the definition breaks the plan's policy")
                 .with_context("violation", first.clone());
             for more in &violations[1..] {
                 error = error.with_context("violation", more.clone());
@@ -372,7 +387,7 @@ impl Plan {
     }
 }
 
-/// What happened to one entry of a batch.
+/// What happened to one entry of a build.
 #[derive(Debug)]
 pub struct EntryReport {
     /// The material.
@@ -393,14 +408,14 @@ impl EntryReport {
     }
 }
 
-/// What a batch did, entry by entry.
+/// What a build did, entry by entry.
 #[derive(Debug, Default)]
-pub struct BatchReport {
-    /// Every entry, in manifest order.
+pub struct BuildReport {
+    /// Every entry, in plan order.
     pub entries: Vec<EntryReport>,
 }
 
-/// How many entries of a batch ended each way.
+/// How many entries of a build ended each way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tally {
     /// Not there before, written now.
@@ -409,6 +424,8 @@ pub struct Tally {
     pub unchanged: usize,
     /// There and different; replaced at a new revision.
     pub replaced: usize,
+    /// Lost or damaged files given back, same revision, same bytes.
+    pub restored: usize,
     /// There and different, and not forced.
     pub refused: usize,
     /// Generation, validation or the filesystem failed.
@@ -419,7 +436,7 @@ impl Tally {
     /// Every entry counted.
     #[must_use]
     pub const fn total(&self) -> usize {
-        self.written + self.unchanged + self.replaced + self.refused + self.failed
+        self.written + self.unchanged + self.replaced + self.restored + self.refused + self.failed
     }
 }
 
@@ -427,18 +444,19 @@ impl std::fmt::Display for Tally {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} materials: {} written, {} unchanged, {} replaced, {} refused, {} failed",
+            "{} materials: {} written, {} unchanged, {} replaced, {} restored, {} refused, {} failed",
             self.total(),
             self.written,
             self.unchanged,
             self.replaced,
+            self.restored,
             self.refused,
             self.failed
         )
     }
 }
 
-impl BatchReport {
+impl BuildReport {
     /// How many entries ended each way.
     #[must_use]
     pub fn tally(&self) -> Tally {
@@ -449,6 +467,7 @@ impl BatchReport {
                     WriteStatus::Written => tally.written += 1,
                     WriteStatus::Unchanged => tally.unchanged += 1,
                     WriteStatus::Replaced => tally.replaced += 1,
+                    WriteStatus::Restored => tally.restored += 1,
                     WriteStatus::Refused => tally.refused += 1,
                 },
                 Err(_) => tally.failed += 1,
@@ -460,8 +479,8 @@ impl BatchReport {
     /// Whether every entry now stands as its definition describes.
     ///
     /// A refusal counts against it: the material on disk is not the one the
-    /// manifest describes, which is exactly what a caller asking "did the
-    /// batch succeed" needs to hear.
+    /// plan describes, which is exactly what a caller asking "did the
+    /// build succeed" needs to hear.
     #[must_use]
     pub fn succeeded(&self) -> bool {
         let tally = self.tally();
@@ -479,7 +498,7 @@ fn contained(written: &str) -> Result<PathBuf> {
         match component {
             Component::Normal(_) | Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(invalid("an entry path leaves the manifest's directory")
+                return Err(invalid("an entry path leaves the plan's directory")
                     .with_context("path", written.to_owned()));
             }
         }
@@ -540,18 +559,16 @@ fn reject_unknown(node: &Json, known: &[&str], section: &'static str) -> Result<
     };
     for key in fields.keys() {
         if !known.contains(&key.as_str()) {
-            return Err(
-                invalid("the manifest carries a field this build does not know")
-                    .with_context("section", section)
-                    .with_context("field", key.clone()),
-            );
+            return Err(invalid("the plan carries a field this build does not know")
+                .with_context("section", section)
+                .with_context("field", key.clone()));
         }
     }
     Ok(())
 }
 
 fn invalid(message: &'static str) -> Error {
-    Error::new(Domain::Content, "batch", message).with_recovery(Recovery::Reject)
+    Error::new(Domain::Content, "build-plan", message).with_recovery(Recovery::Reject)
 }
 
 #[cfg(test)]
@@ -563,7 +580,7 @@ mod tests {
     /// A directory nothing else in the suite writes to.
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "nexora-batch-{}-{name}-{:?}",
+            "nexora-build-plan-{}-{name}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -594,7 +611,7 @@ mod tests {
         std::fs::write(dir.join(file), document::to_text(material)).unwrap();
     }
 
-    fn manifest(policy: &str, entries: &[&str]) -> String {
+    fn plan_text(policy: &str, entries: &[&str]) -> String {
         let listed: Vec<String> = entries
             .iter()
             .map(|file| format!(r#"{{ "definition": "{file}", "seed": null }}"#))
@@ -608,7 +625,7 @@ mod tests {
     const FIRST_GENERATION: &str = r#"{ "resolution": { "width": 16, "height": 16 }, "maps": [] }"#;
 
     #[test]
-    fn a_batch_generates_every_entry_and_a_second_pass_changes_nothing() {
+    fn a_build_generates_every_entry_and_a_second_pass_changes_nothing() {
         let content = scratch("run-content");
         let out = scratch("run-out");
         author(
@@ -621,9 +638,9 @@ mod tests {
             "b.json",
             &definition("nexora:material/b", 16, &[], 0.5),
         );
-        let text = manifest("null", &["a.json", "b.json"]);
+        let text = plan_text("null", &["a.json", "b.json"]);
 
-        let plan = Plan::from_text(&text, &content).expect("a valid manifest");
+        let plan = Plan::from_text(&text, &content).expect("a valid plan");
         assert!(plan.is_valid(), "{:?}", plan.problems);
         assert_eq!(plan.entries.len(), 2);
 
@@ -637,7 +654,7 @@ mod tests {
                 ..Tally::default()
             }
         );
-        // Manifest order, not directory order or identifier order.
+        // Plan order, not directory order or identifier order.
         let order: Vec<String> = first.entries.iter().map(|e| e.id.to_string()).collect();
         assert_eq!(order, ["nexora:material/a", "nexora:material/b"]);
 
@@ -648,7 +665,7 @@ mod tests {
                 unchanged: 2,
                 ..Tally::default()
             },
-            "a deterministic batch rewrites nothing"
+            "a deterministic build rewrites nothing"
         );
         assert_eq!(forge.list().unwrap().len(), 2);
 
@@ -657,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn the_manifest_seed_is_used_unless_an_entry_names_its_own() {
+    fn the_plan_seed_is_used_unless_an_entry_names_its_own() {
         let content = scratch("seed");
         author(
             &content,
@@ -718,7 +735,7 @@ mod tests {
         );
         std::fs::write(content.join("broken.json"), "{ not json").unwrap();
 
-        let text = manifest(
+        let text = plan_text(
             FIRST_GENERATION,
             &[
                 "good.json",
@@ -730,7 +747,7 @@ mod tests {
                 "../escape.json",
             ],
         );
-        let plan = Plan::from_text(&text, &content).expect("the manifest itself parses");
+        let plan = Plan::from_text(&text, &content).expect("the plan itself parses");
         assert!(!plan.is_valid());
         assert_eq!(plan.entries.len(), 1, "only good.json passes");
 
@@ -748,7 +765,7 @@ mod tests {
             "{}",
             said(2)
         );
-        assert!(said(5).contains("leaves the manifest"), "{}", said(5));
+        assert!(said(5).contains("leaves the plan"), "{}", said(5));
         assert_eq!(plan.problems[5].definition, "../escape.json");
 
         let forge = Forge::new(&out).unwrap();
@@ -795,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_manifest_is_an_error_not_a_plan() {
+    fn a_malformed_plan_is_an_error_not_a_plan() {
         let base = Path::new(".");
         let cases = [
             ("{ not json", "json"),
@@ -860,7 +877,7 @@ mod tests {
             &definition("nexora:material/b", 16, &[], 0.9),
         );
         let forge = Forge::new(&out).unwrap();
-        Plan::from_text(&manifest("null", &["a.json", "b.json"]), &content)
+        Plan::from_text(&plan_text("null", &["a.json", "b.json"]), &content)
             .unwrap()
             .run(&forge, false)
             .unwrap();
@@ -871,7 +888,7 @@ mod tests {
             "a.json",
             &definition("nexora:material/a", 16, &[], 0.1),
         );
-        let plan = Plan::from_text(&manifest("null", &["a.json", "b.json"]), &content).unwrap();
+        let plan = Plan::from_text(&plan_text("null", &["a.json", "b.json"]), &content).unwrap();
         let report = plan.run(&forge, false).unwrap();
         assert!(!report.succeeded(), "a refusal is not success");
         assert_eq!(report.entries[0].status(), "refused");
@@ -887,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_recipe_stops_the_batch_before_anything_is_written() {
+    fn a_missing_recipe_stops_the_build_before_anything_is_written() {
         let content = scratch("recipe-content");
         let out = scratch("recipe-out");
         author(
@@ -906,8 +923,8 @@ mod tests {
         .unwrap();
         author(&content, "b.json", &named);
 
-        let plan = Plan::from_text(&manifest("null", &["a.json", "b.json"]), &content).unwrap();
-        assert!(plan.is_valid(), "the manifest itself is fine");
+        let plan = Plan::from_text(&plan_text("null", &["a.json", "b.json"]), &content).unwrap();
+        assert!(plan.is_valid(), "the plan itself is fine");
 
         let forge = Forge::new(&out).unwrap();
         let unresolved = plan.unresolved(&forge);

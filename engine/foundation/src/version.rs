@@ -176,9 +176,15 @@ pub struct VersionSet {
 pub const ENGINE_VERSION: EngineVersion = EngineVersion::new(0, 0, 1);
 
 /// Save container layout version this build writes.
-pub const SAVE_FORMAT_VERSION: SaveFormatVersion = SaveFormatVersion(1);
+pub const SAVE_FORMAT_VERSION: SaveFormatVersion = SaveFormatVersion(2);
 
 /// Oldest save container layout this build can still read.
+///
+/// Deliberately **not** raised alongside `SAVE_FORMAT_VERSION`. Format 2 frames
+/// each section with how it is coded (`DEBT-0003`); format 1 stored every
+/// section raw. Reading a format-1 save costs one branch in the decoder, and
+/// refusing one would have thrown away every world written before the change
+/// for no reason but convenience.
 pub const MIN_SUPPORTED_SAVE_FORMAT: SaveFormatVersion = SaveFormatVersion(1);
 
 /// World schema version this build writes.

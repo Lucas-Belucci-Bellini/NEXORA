@@ -2,7 +2,7 @@
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24
-- **Closes:** `DEBT-0037`
+- **Closes:** `DEBT-0045`
 - **Amends:** the Texture Forge audit (`docs/texture-forge/AUDITORIA.md` §6),
   which placed PNG entirely in the tool because, at the time, only the tool
   touched a PNG
@@ -50,11 +50,15 @@ now decodes with the same code the runtime does.
 - A tampered file is refused by the resource index's hash before the decoder
   sees it (ADR-0021); a well-hashed file that is not a PNG this project writes
   is refused by the decoder, by name.
-- **Known limit, deliberate:** dynamic-Huffman deflate blocks are not read. So
-  the runtime cannot open a PNG written by an arbitrary external tool — only
-  what the forge wrote, which is what the resource index vouches for. The
-  import path for external images (audit §4.6) is where a full inflater
-  belongs, behind its own limits.
+- **Known limit, lifted at merge (2026-09-25):** this ADR shipped an inflater
+  of its own that read stored and fixed-Huffman blocks only, because those
+  were all the forge wrote. `main` meanwhile taught the compressor dynamic
+  blocks and put a complete inflater in `nexora_foundation::deflate`, so the
+  runtime's decoder would have refused every PNG the forge now writes. The
+  engine's own inflater is gone: `png::decode` inflates with the foundation's,
+  which gained `inflate_bounded` so the **declared-size bound this ADR is
+  about still holds**, on all three block types. One implementation of
+  RFC 1951 in the workspace, read against `zlib` in CI.
 
 ## Compatibility
 

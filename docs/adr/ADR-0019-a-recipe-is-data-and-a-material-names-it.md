@@ -2,10 +2,14 @@
 
 - **Status:** ACCEPTED
 - **Date:** 2026-09-24
-- **Closes:** `DEBT-0036` (*"Uma definição não escolhe paleta: dezesseis pedras
+- **Closes:** `DEBT-0044` (*"Uma definição não escolhe paleta: dezesseis pedras
   são uma pedra com dezesseis sementes"*)
-- **Changes:** the material document schema, 1 → 2 (serialization and public
+- **Changes:** the material document schema, 2 → 3 (serialization and public
   identifiers, both on the index's list of what needs an ADR)
+- **Amended at merge (2026-09-25):** written as 1 → 2 while `main`, in
+  parallel, took schema 2 for the texture-forge backend seam (a generation
+  record names its `backend`). `main`'s number stands; `recipe` is schema 3,
+  and every step below reads with that number
 
 ## Context
 
@@ -49,11 +53,11 @@ Option 3.
 
 - `SurfaceMaterial` gains `recipe: Option<Identifier>`. `engine/asset` holds the
   **reference** only; what a recipe contains is the tool's business.
-- The material document goes to **schema 2**, where `"recipe"` is required and
-  is an identifier or `null`. Schema 1 documents still read, as `recipe = null`;
-  a schema 1 document that carries the field is refused, because no build wrote
-  one. An older build refuses schema 2 by the existing "written by a newer
-  build" rule.
+- The material document goes to **schema 3**, where `"recipe"` is required and
+  is an identifier or `null`. Schema 1 and 2 documents still read, as
+  `recipe = null`; an older document that carries the field is refused,
+  because no build wrote one. An older build refuses schema 3 by the existing
+  "written by a newer build" rule.
 - `appearance_hash` includes the recipe **only when present**, so every
   material without one keeps its hash, its derived seed and its pixels.
 - A recipe lives at a path derived from its identifier —
@@ -83,11 +87,11 @@ Option 3.
 ## Migration
 
 None required. Every checked-in definition is schema 1 and reads unchanged;
-every generated `material.json` is rewritten as schema 2 the next time it is
+every generated `material.json` is rewritten as schema 3 the next time it is
 generated, and the forge reports it `unchanged` until then because neither the
 appearance hash nor the fingerprint (absent on both sides) moved.
 
 ## Compatibility
 
-A schema 2 document cannot be read by a build older than this ADR, and says so
+A schema 3 document cannot be read by a build older than this ADR, and says so
 by name rather than failing on an unknown field.

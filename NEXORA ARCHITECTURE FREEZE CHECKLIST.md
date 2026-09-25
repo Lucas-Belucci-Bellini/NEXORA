@@ -40,7 +40,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | RHI boundary | [x] | [ ] | no display or GPU to verify against (ADR-0005) |
 | Input boundary | [x] | [ ] | meaningless without a window |
 | Audio boundary | [x] | [ ] | — |
-| Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0021); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0022); resource packs do not layer, and deflate's dynamic-Huffman blocks are not read |
+| Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0021); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0022); it inflates with the foundation's `inflate_bounded`, all three deflate block types, one inflater in the workspace; resource packs do not layer |
 | Streaming lifecycle | [x] | [~] | `request · cancel · set_interest · tick` of `STREAMING SYSTEM.md` are built (ADR-0008), and of its test list fast travel, save-before-evict and low-memory pressure are covered (`engine/streaming::system` tests); the slice's **initial** load is still explicit, through the job system rather than through streaming (DEBT-0018, DEBT-0024), and dimension transfer and reconnect have no subsystem to test against. *Corrected 2026-09-25: the row said `[ ]` and predated ADR-0008.* |
 | Headless mode | [x] | [x] | `nexora-headless` |
 

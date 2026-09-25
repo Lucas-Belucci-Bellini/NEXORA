@@ -9,14 +9,13 @@
 //!
 //! A PNG header states its dimensions before its pixel data begins, so the
 //! size the zlib stream may inflate to is known in advance and passed to
-//! [`crate::inflate::inflate_bounded`]. A file whose stream expands past its
+//! [`nexora_foundation::deflate::inflate_bounded`]. A file whose stream expands past its
 //! own header's promise stops at that byte.
 
 use nexora_asset::texture::{ChannelLayout, Resolution};
+use nexora_foundation::deflate::inflate_bounded;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::hashing::crc32;
-
-use crate::inflate::inflate_bounded;
 
 /// The eight bytes that begin every PNG file.
 pub const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];

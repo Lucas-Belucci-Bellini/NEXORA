@@ -28,8 +28,8 @@
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::time::WorldDuration;
 
-use crate::body::{BodyDescriptor, BodyId, BodyType, RigidBody, SleepState};
-use crate::collision::{resolve, sweep_axis, Contact, Resolution};
+use crate::body::{BodyDescriptor, BodyId, BodyType, ClearSpan, RigidBody, SleepState};
+use crate::collision::{cell_span, resolve_from, sweep_axis, Contact, Resolution, StartState};
 use crate::gravity::GravityField;
 use crate::material::{MaterialId, MaterialTable, PhysicsMaterial};
 use crate::math::{Aabb, Axis, Vec3};
@@ -107,6 +107,77 @@ struct Slot {
     body: Option<RigidBody>,
 }
 
+/// A run of substeps against one source.
+///
+/// Bodies remember the cells they were last proven free of solids in
+/// (`DEBT-0012`), and that proof is only worth anything for the source that
+/// made it. A revision is a `u64` with no owner: `World` counts its edits from
+/// zero, any other source that opts in also starts somewhere, and two of them
+/// will agree on the number while describing different terrain. Believing such
+/// a proof leaves a body standing inside a block.
+///
+/// **Holding the source is what settles it.** A `Stepper` borrows `&'s S` for
+/// as long as the proof can be consulted, so every substep it runs is answered
+/// by the same live object — the borrow checker says so, and nothing else has
+/// to. That is the same argument `WorldVoxels` uses for its section cache, and
+/// it is deliberately not an address comparison: a source built on the stack
+/// for one step and a *different* source built the same way for the next land
+/// on the same address routinely, which
+/// `two_sources_at_one_address_do_not_share_a_proof` pins.
+///
+/// Opening a session mints a number that has never been used, so a proof from
+/// an earlier session cannot match. [`PhysicsWorld::step_once`] and
+/// [`PhysicsWorld::advance`] open one for the single call and close it again:
+/// correct, and never skipping. Keeping the optimisation means keeping the
+/// session.
+///
+/// The world is still reachable through [`Stepper::world_mut`] mid-session,
+/// which is safe for the same reason `center` is public — the proof is keyed on
+/// the *cells* a body occupies, so anything that moves it out of them stops the
+/// proof matching.
+#[derive(Debug)]
+pub struct Stepper<'w, 's, S: VoxelSource + ?Sized> {
+    world: &'w mut PhysicsWorld,
+    source: &'s S,
+}
+
+impl<S: VoxelSource + ?Sized> Stepper<'_, '_, S> {
+    /// Fold elapsed world time in and run the substeps it earns.
+    pub fn advance(&mut self, elapsed: WorldDuration) -> StepReport {
+        let StepPlan { substeps, dropped } = self.world.step.accumulate(elapsed);
+        let seconds = self.world.step.seconds_per_step();
+        let mut stats = StepStats::default();
+        for _ in 0..substeps {
+            stats.merge(self.world.step_once_in_session(self.source, seconds));
+        }
+        StepReport {
+            substeps,
+            dropped_substeps: dropped,
+            stats,
+        }
+    }
+
+    /// Run exactly one substep of `seconds`.
+    ///
+    /// A non-finite or non-positive duration does nothing.
+    pub fn step_once(&mut self, seconds: f64) -> StepStats {
+        self.world.step_once_in_session(self.source, seconds)
+    }
+
+    /// The world being stepped.
+    #[must_use]
+    pub fn world(&self) -> &PhysicsWorld {
+        self.world
+    }
+
+    /// The world being stepped, mutably — to wake bodies, spawn them or read
+    /// them back without closing the session.
+    #[must_use]
+    pub fn world_mut(&mut self) -> &mut PhysicsWorld {
+        self.world
+    }
+}
+
 /// Bodies, materials, gravity and the timestep that drives them.
 #[derive(Debug, Clone)]
 pub struct PhysicsWorld {
@@ -117,6 +188,12 @@ pub struct PhysicsWorld {
     free: Vec<u32>,
     live: usize,
     retired_slots: usize,
+    /// Which stepping session the bodies' clear-span proofs belong to.
+    ///
+    /// Minted by [`PhysicsWorld::against`] and never reused: a proof from an
+    /// earlier session can only fail to match. See [`Stepper`] for why a
+    /// proof needs to name the session that made it at all (`DEBT-0038`).
+    proof_session: u64,
 }
 
 impl PhysicsWorld {
@@ -131,6 +208,7 @@ impl PhysicsWorld {
             free: Vec::new(),
             live: 0,
             retired_slots: 0,
+            proof_session: 0,
         }
     }
 
@@ -340,30 +418,58 @@ impl PhysicsWorld {
         woken
     }
 
+    /// Open a stepping session against one source.
+    ///
+    /// Hold the returned [`Stepper`] across the substeps that share a source.
+    /// Everything a body has proven about the terrain around it survives inside
+    /// one session and nowhere else, so this is what keeps `DEBT-0012`'s
+    /// optimisation alive — and what makes it safe.
+    ///
+    /// [`PhysicsWorld::advance`] and [`PhysicsWorld::step_once`] open a session
+    /// of their own for the single call. They are correct, and they never skip.
+    pub fn against<'w, 's, S: VoxelSource + ?Sized>(
+        &'w mut self,
+        source: &'s S,
+    ) -> Stepper<'w, 's, S> {
+        // A fresh number every time, so a proof from a previous session cannot
+        // match by accident. Wrapping rather than saturating: saturating would
+        // pin every future session to the same value and make every stale proof
+        // match, and the wrap is 2^64 sessions away.
+        self.proof_session = self.proof_session.wrapping_add(1);
+        Stepper {
+            source,
+            world: self,
+        }
+    }
+
     /// Fold elapsed world time in and run the substeps it earns.
+    ///
+    /// Opens and closes a session of its own, so nothing a body proves here is
+    /// carried into the next call. Callers that step the same source in a loop
+    /// should hold one [`Stepper`] instead — see [`PhysicsWorld::against`].
     pub fn advance<S: VoxelSource + ?Sized>(
         &mut self,
         source: &S,
         elapsed: WorldDuration,
     ) -> StepReport {
-        let StepPlan { substeps, dropped } = self.step.accumulate(elapsed);
-        let seconds = self.step.seconds_per_step();
-        let mut stats = StepStats::default();
-        for _ in 0..substeps {
-            stats.merge(self.step_once(source, seconds));
-        }
-        StepReport {
-            substeps,
-            dropped_substeps: dropped,
-            stats,
-        }
+        self.against(source).advance(elapsed)
     }
 
     /// Run exactly one substep of `seconds`.
     ///
     /// Exposed for tests and for callers that drive their own accumulator. A
     /// non-finite or non-positive duration does nothing.
+    ///
+    /// Opens a session of its own; see [`PhysicsWorld::advance`].
     pub fn step_once<S: VoxelSource + ?Sized>(&mut self, source: &S, seconds: f64) -> StepStats {
+        self.against(source).step_once(seconds)
+    }
+
+    fn step_once_in_session<S: VoxelSource + ?Sized>(
+        &mut self,
+        source: &S,
+        seconds: f64,
+    ) -> StepStats {
         let mut stats = StepStats::default();
         if !seconds.is_finite() || seconds <= 0.0 {
             return stats;
@@ -373,6 +479,8 @@ impl PhysicsWorld {
         // Cloned so the per-body loop can borrow the world mutably. The table
         // is small and this is once per substep, not once per body.
         let materials = self.materials.clone();
+        // Read for the same reason, before the loop takes `self.slots`.
+        let proof_session = self.proof_session;
 
         for index in 0..self.slots.len() {
             let Some(body) = self.slots[index].body.as_mut() else {
@@ -396,6 +504,7 @@ impl PhysicsWorld {
                     let outcome = integrate_dynamic(
                         body,
                         source,
+                        proof_session,
                         &materials,
                         gravity,
                         gravity_magnitude,
@@ -439,6 +548,7 @@ struct BodyOutcome {
 fn integrate_dynamic<S: VoxelSource + ?Sized>(
     body: &mut RigidBody,
     source: &S,
+    session: u64,
     materials: &MaterialTable,
     gravity: Vec3,
     gravity_magnitude: f64,
@@ -455,8 +565,48 @@ fn integrate_dynamic<S: VoxelSource + ?Sized>(
     body.clamp_speed();
 
     let motion = body.velocity.scaled(seconds);
-    let resolution = resolve_with_step_up(source, body.aabb(), motion, body.step_height);
+    // DEBT-0012. The check for having started inside terrain is skipped only
+    // when the same body sits in the same cells against a source that says it
+    // has not changed. Any of those three failing runs the check, and a source
+    // that will not name a revision fails the first one always.
+    let revision = source.revision();
+    let start = match (revision, body.clear_span()) {
+        // `cell_span` is only computed once the cheap halves of the proof hold.
+        // A source that names no revision must not pay for machinery it has
+        // opted out of — the flat-ground control caught exactly that when the
+        // span was computed unconditionally.
+        //
+        // `proof.session == session` is DEBT-0038: it is what says the answer
+        // came from *this* source rather than from another one that happened to
+        // be counting from the same number.
+        (Some(now), Some(proof))
+            if proof.session == session
+                && proof.revision == now
+                && (proof.low, proof.high) == cell_span(body.aabb()) =>
+        {
+            StartState::Clear
+        }
+        _ => StartState::Unknown,
+    };
+    let resolution = resolve_with_step_up(source, body.aabb(), motion, body.step_height, start);
     body.center = resolution.aabb.center();
+    // Re-arm only from a check that actually ran and found nothing. A skipped
+    // check proves nothing new, and a body that could not be freed is not
+    // clear by any reading.
+    if start == StartState::Unknown {
+        body.set_clear_span(match revision {
+            Some(now) if !resolution.stuck && resolution.depenetration == Vec3::ZERO => {
+                let (low, high) = cell_span(resolution.aabb);
+                Some(ClearSpan {
+                    session,
+                    revision: now,
+                    low,
+                    high,
+                })
+            }
+            _ => None,
+        });
+    }
 
     let own = materials.get(body.material);
     let mut contacts = 0;
@@ -581,8 +731,9 @@ fn resolve_with_step_up<S: VoxelSource + ?Sized>(
     aabb: Aabb,
     motion: Vec3,
     step_height: f64,
+    start: StartState,
 ) -> Resolution {
-    let plain = resolve(source, aabb, motion);
+    let plain = resolve_from(source, aabb, motion, start);
     if step_height <= 0.0 || !(plain.is_blocked(Axis::X) || plain.is_blocked(Axis::Z)) {
         return plain;
     }
@@ -640,7 +791,304 @@ fn resolve_with_step_up<S: VoxelSource + ?Sized>(
 mod tests {
     use super::*;
     use crate::body::{SLEEP_SPEED_THRESHOLD, SLEEP_STEPS};
-    use crate::voxel::{EmptySpace, FlatGround};
+    use crate::voxel::{EmptySpace, FlatGround, VoxelShape};
+    use nexora_foundation::spatial::BlockPos;
+
+    /// A floor that can gain a block, counts what is asked of it, and names a
+    /// revision — the three things `DEBT-0012`'s skip depends on.
+    struct MutableGround {
+        surface_y: i64,
+        /// An extra solid cell, placed after the fact.
+        placed: std::cell::Cell<Option<(i64, i64, i64)>>,
+        revision: std::cell::Cell<u64>,
+        /// How many cells have been asked about, ever.
+        asked: std::cell::Cell<u64>,
+        /// Whether to answer `revision`, or refuse to say.
+        names_a_revision: bool,
+    }
+
+    impl MutableGround {
+        fn at(surface_y: i64) -> Self {
+            Self {
+                surface_y,
+                placed: std::cell::Cell::new(None),
+                revision: std::cell::Cell::new(1),
+                asked: std::cell::Cell::new(0),
+                names_a_revision: true,
+            }
+        }
+
+        /// The same ground, from a source that will not name a revision.
+        const fn silent(mut self) -> Self {
+            self.names_a_revision = false;
+            self
+        }
+
+        /// The same floor with one extra solid cell, and a revision that does
+        /// not admit it — because it counted from where every one of these
+        /// counts from. A *different world* wearing the same number.
+        fn with_block_at(cell: (i64, i64, i64)) -> Self {
+            let ground = Self::at(0);
+            ground.placed.set(Some(cell));
+            ground
+        }
+
+        /// Put a solid block at a cell, and say so.
+        fn place(&self, cell: (i64, i64, i64)) {
+            self.placed.set(Some(cell));
+            self.revision.set(self.revision.get() + 1);
+        }
+
+        fn asked_since(&self, mark: u64) -> u64 {
+            self.asked.get() - mark
+        }
+    }
+
+    impl VoxelSource for MutableGround {
+        fn shape_at(&self, position: BlockPos) -> VoxelShape {
+            self.asked.set(self.asked.get() + 1);
+            if position.y < self.surface_y {
+                return VoxelShape::SOLID;
+            }
+            match self.placed.get() {
+                Some(cell) if cell == (position.x, position.y, position.z) => VoxelShape::SOLID,
+                _ => VoxelShape::Empty,
+            }
+        }
+
+        fn revision(&self) -> Option<u64> {
+            self.names_a_revision.then(|| self.revision.get())
+        }
+    }
+
+    /// Everywhere, for waking.
+    fn everywhere() -> Aabb {
+        Aabb::new(
+            Vec3::new(-1.0e6, -1.0e6, -1.0e6),
+            Vec3::new(1.0e6, 1.0e6, 1.0e6),
+        )
+        .expect("valid")
+    }
+
+    /// Settle a body onto the ground and return its handle.
+    ///
+    /// It is re-woken every step, and stays that way for the rest of the test.
+    /// A **sleeping** body is skipped by `step_once` entirely, so it never runs
+    /// the check and there is nothing here to measure or to break — which is
+    /// itself worth stating: `DEBT-0012` is a cost only awake bodies pay, and
+    /// the benchmark defeats sleeping for the same reason.
+    fn settled_on(session: &mut Stepper<'_, '_, MutableGround>, y: f64) -> BodyId {
+        let id = session
+            .world_mut()
+            .spawn(BodyDescriptor::dynamic().at(Vec3::new(0.5, y, 0.5)))
+            .expect("spawns");
+        for _ in 0..240 {
+            awake_step(session);
+        }
+        id
+    }
+
+    /// One awake step, inside the session.
+    fn awake_step(session: &mut Stepper<'_, '_, MutableGround>) {
+        session.world_mut().wake_in(everywhere());
+        session.step_once(1.0 / 60.0);
+    }
+
+    /// The whole point of `DEBT-0012`: a body that is not going anywhere, in a
+    /// world that is not changing, should stop being asked whether it is inside
+    /// terrain. Counting the questions is the only way to see that happen —
+    /// a timing test would prove it on one machine and nothing on another.
+    #[test]
+    fn a_resting_body_stops_being_asked_whether_it_started_inside_terrain() {
+        let ground = MutableGround::at(0);
+        let mut watched = world();
+        let mut session = watched.against(&ground);
+        settled_on(&mut session, 4.0);
+
+        let mark = ground.asked.get();
+        for _ in 0..10 {
+            awake_step(&mut session);
+        }
+        let with_revision = ground.asked_since(mark);
+
+        // The control: the same ground, the same fall, the same ten steps, from
+        // a source that will not say whether it changed. Everything differs by
+        // one method, so the difference is that method.
+        let silent = MutableGround::at(0).silent();
+        let mut same = world();
+        let mut quiet = same.against(&silent);
+        settled_on(&mut quiet, 4.0);
+        let mark = silent.asked.get();
+        for _ in 0..10 {
+            awake_step(&mut quiet);
+        }
+        let without = silent.asked_since(mark);
+
+        // An exact figure rather than "fewer", because it is exact: a settled
+        // body asks about two cells a step, one of them being the check for
+        // having started inside terrain, and that one is gone. Half the world
+        // reads a resting body makes, for the whole of its rest.
+        assert_eq!(
+            (with_revision, without),
+            (10, 20),
+            "ten settled steps asked {with_revision} cells with a revision and \
+             {without} without"
+        );
+    }
+
+    /// The defect the check exists for, and the reason its `NOTA` says removing
+    /// it is not an option: a block placed where a body already stands must
+    /// still push the body out. The skip must not survive the world changing.
+    #[test]
+    fn a_block_placed_inside_a_resting_body_still_ejects_it() {
+        let ground = MutableGround::at(0);
+        let mut world = world();
+        let mut session = world.against(&ground);
+        let id = settled_on(&mut session, 4.0);
+        let resting = session.world().body(id).expect("live").center;
+        assert!(
+            resting.y < 4.0,
+            "the body should have fallen to the floor first, not stayed at {}",
+            resting.y
+        );
+
+        // Straight through where it is standing.
+        ground.place((0, resting.y.floor() as i64, 0));
+        session.world_mut().wake_in(everywhere());
+        let report = session.step_once(1.0 / 60.0);
+
+        assert_eq!(
+            report.depenetrated, 1,
+            "the body is inside a block and must be pushed out of it"
+        );
+        // Which way it leaves is `depenetrate`'s business — the smallest push,
+        // and on a tie the lowest axis, which for a body sitting square in a
+        // cell is sideways rather than up. What this test is about is that it
+        // leaves.
+        let after = session.world().body(id).expect("live").aabb();
+        assert!(
+            !crate::collision::overlaps_solid(&ground, after),
+            "the body is still inside solid terrain at {:?}",
+            after.center()
+        );
+    }
+
+    /// A source that will not name a revision must be treated as though it
+    /// changes constantly. This is the default every source gets, and getting
+    /// it wrong is the difference between slow and broken.
+    #[test]
+    fn a_source_that_names_no_revision_is_never_trusted_to_have_stayed_still() {
+        let ground = MutableGround::at(0).silent();
+        let mut world = world();
+        let mut session = world.against(&ground);
+        settled_on(&mut session, 4.0);
+
+        let mark = ground.asked.get();
+        awake_step(&mut session);
+        let first = ground.asked_since(mark);
+
+        let mark = ground.asked.get();
+        for _ in 0..10 {
+            awake_step(&mut session);
+        }
+        assert_eq!(
+            ground.asked_since(mark),
+            first * 10,
+            "without a revision every step must cost exactly what the first one did"
+        );
+    }
+
+    /// `DEBT-0038`. The cheap way to tell two sources apart is to compare their
+    /// addresses, and it does not work: a source built for one step and a
+    /// *different* source built the same way for the next sit at the same
+    /// address. Here that is guaranteed rather than hoped for — it is the same
+    /// variable — and both grounds report revision 1, because each counted from
+    /// where it started.
+    ///
+    /// Under an address-and-revision check, the body resting on the first floor
+    /// would be believed to be clear of the second one, and would be left
+    /// standing inside three blocks of rock.
+    #[test]
+    fn two_sources_at_one_address_do_not_share_a_proof() {
+        let mut source = MutableGround::at(0);
+        let first_address = std::ptr::from_ref(&source) as usize;
+
+        let mut world = world();
+        let id = {
+            let mut session = world.against(&source);
+            settled_on(&mut session, 4.0)
+        };
+        let resting = world.body(id).expect("live").center;
+
+        // Same place in memory, different world: the same floor with a block
+        // through where the body is standing. Note what the borrow checker has
+        // already done here — the session had to end before `source` could be
+        // replaced, so this substitution is not expressible while a proof is
+        // live. The flat API below is the one that has to be safe on its own.
+        source = MutableGround::with_block_at((0, resting.y.floor() as i64, 0));
+        assert_eq!(
+            first_address,
+            std::ptr::from_ref(&source) as usize,
+            "the two sources must share an address or this test tests nothing"
+        );
+        assert_eq!(
+            source.revision(),
+            Some(1),
+            "and they must agree on a revision, which is the collision itself"
+        );
+
+        world.wake_in(everywhere());
+        let report = world.step_once(&source, 1.0 / 60.0);
+
+        assert_eq!(
+            report.depenetrated, 1,
+            "the check was skipped on the strength of a proof the old source made"
+        );
+        let after = world.body(id).expect("live").aabb();
+        assert!(
+            !crate::collision::overlaps_solid(&source, after),
+            "the body is still inside solid terrain at {:?}",
+            after.center()
+        );
+    }
+
+    /// The contract [`PhysicsWorld::step_once`] and [`PhysicsWorld::advance`]
+    /// carry: they open a session for the one call and close it, so nothing is
+    /// carried across and the check runs every time. Slower, and correct
+    /// without the caller having to know anything.
+    #[test]
+    fn a_proof_does_not_survive_the_end_of_its_session() {
+        let ground = MutableGround::at(0);
+        let mut held = world();
+        let mut session = held.against(&ground);
+        settled_on(&mut session, 4.0);
+        let mark = ground.asked.get();
+        for _ in 0..10 {
+            awake_step(&mut session);
+        }
+        let inside_one_session = ground.asked_since(mark);
+
+        // The same ten steps, each in a session of its own.
+        let other = MutableGround::at(0);
+        let mut reopened = world();
+        {
+            let mut session = reopened.against(&other);
+            settled_on(&mut session, 4.0);
+        }
+        let mark = other.asked.get();
+        for _ in 0..10 {
+            reopened.wake_in(everywhere());
+            reopened.step_once(&other, 1.0 / 60.0);
+        }
+        let one_session_each = other.asked_since(mark);
+
+        assert_eq!(
+            (inside_one_session, one_session_each),
+            (10, 20),
+            "a held session asked {inside_one_session} cells and ten separate \
+             ones asked {one_session_each}"
+        );
+    }
 
     fn world() -> PhysicsWorld {
         PhysicsWorld::new(

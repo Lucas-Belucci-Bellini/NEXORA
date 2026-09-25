@@ -9,8 +9,10 @@
 //! resource manifest ─► verified bytes ─► png::decode ─► TextureMap
 //!   (ADR-0021)          (size + hash)     (bounded inflate)
 //! ```
-
-pub mod inflate;
+//!
+//! The inflater is `nexora_foundation::deflate`'s, the same one the save
+//! codec and the encoder's own tests use: one implementation of RFC 1951 in
+//! the workspace, reading all three block types.
 pub mod loader;
 pub mod png;
 
