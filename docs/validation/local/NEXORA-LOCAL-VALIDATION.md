@@ -6,9 +6,9 @@ describes HEAD. See `docs/validation/local/README.md`.
 
 | | |
 | --- | --- |
-| commit | `700eed684e6bdfa66494e6b6d2a0495ebc1068a2` |
+| commit | `79910836fd3994f71e4809f44ef6ff373050b395` |
 | branch | `main` |
-| generated | 2026-09-25T02:03:07+00:00 |
+| generated | 2026-09-25T02:10:56+00:00 |
 | OS | Windows 10 (AMD64) |
 | CPU | AMD Ryzen 5 5500 — 12 logical |
 | memory | 17043542016 bytes |
@@ -20,13 +20,13 @@ describes HEAD. See `docs/validation/local/README.md`.
 
 | check | status | seconds | summary |
 | --- | --- | ---: | --- |
-| `build_release` | **PASS** | 22.9 | exit 0 |
-| `tests` | **PASS** | 117.3 | 1138 passed, 0 failed |
-| `headless_slice` | **PASS** | 0.7 | queries 76 answered, 2 refused; memory 2 pools, worst nominal, 0 suspected leaks; probes verified 76; result OK |
+| `build_release` | **PASS** | 0.2 | exit 0 |
+| `tests` | **PASS** | 59.5 | 1138 passed, 0 failed |
+| `headless_slice` | **PASS** | 0.6 | queries 76 answered, 2 refused; memory 2 pools, worst nominal, 0 suspected leaks; probes verified 76; result OK |
 | `headless_slice_content` | **PASS** | 0.6 | queries 92 answered, 2 refused; content blocks 16 (16 surfaces in the mesh); memory 2 pools, worst nominal, 0 suspected leaks; probes verified 92; result OK |
 | `forge_first_generation` | **PASS** | 0.1 | build nexora-first-generation: 16 materials: 16 written, 0 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed; index <scratch>\fg\resources.json (32 resources) |
 | `headless_slice_textures` | **PASS** | 0.3 | queries 44 answered, 2 refused; content blocks 16 (16 surfaces in the mesh); content textures 16 (resolved, verified and decoded); memory 3 pools, worst nominal, 0 suspected leaks; probes verified 44; result OK |
-| `benchmark_cpu` | **PASS** | 4.8 | see the report's benchmark section |
+| `benchmark_cpu` | **PASS** | 5.0 | see the report's benchmark section |
 
 ## What this machine could not validate, and why
 
