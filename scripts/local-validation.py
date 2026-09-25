@@ -327,6 +327,58 @@ def _lines(*prefixes):
     return pick
 
 
+# --------------------------------------------------------------------------
+# preflight: is this machine able to build anything at all?
+
+WINDOWS_LINKER = (
+    "Rust on Windows links with Microsoft's C++ linker (link.exe), and it is not installed.\n"
+    "Install the Visual Studio Build Tools with the C++ workload, then open a NEW terminal:\n"
+    "  winget install Microsoft.VisualStudio.2022.BuildTools --override "
+    "\"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"\n"
+    "or download them from https://visualstudio.microsoft.com/visual-cpp-build-tools/ and tick\n"
+    "\"Desktop development with C++\". Visual Studio Code is a different product and does not include it."
+)
+UNIX_LINKER = {
+    "Darwin": "Install Apple's command line tools, then retry:  xcode-select --install",
+    "Linux": "Install a C toolchain, then retry:  sudo apt install build-essential  (or your distribution's equivalent)",
+}
+
+
+def explain_build_failure(output: str, system: str) -> str:
+    """Turn a failed probe build into the one thing to install."""
+    if "link.exe" in output:
+        return WINDOWS_LINKER
+    if re.search(r"linker `(cc|clang|gcc)` not found", output):
+        return UNIX_LINKER.get(system, "Install a C toolchain (a linker named cc), then retry.")
+    return "A one-line Rust program did not build here; the compiler said:\n" + "\n".join(tail(output))
+
+
+def preflight() -> list:
+    """Problems that would stop every check, found in seconds instead of
+    after minutes of building. Empty means the machine can build."""
+    problems = []
+    for tool, how in (
+        ("git", "https://git-scm.com/downloads"),
+        ("cargo", "https://rustup.rs"),
+        ("rustc", "https://rustup.rs"),
+    ):
+        if shutil.which(tool) is None:
+            problems.append(f"`{tool}` is not on PATH -- install it from {how}, then open a new terminal.")
+    if problems:
+        return problems
+    probe = Path(tempfile.mkdtemp(prefix="nexora-local-validation-preflight-"))
+    try:
+        source = probe / "probe.rs"
+        source.write_text("fn main() {}\n", encoding="utf-8")
+        # From the repository, so rustup uses (and installs) the pinned toolchain.
+        code, out, _ = _run(["rustc", str(source), "-o", str(probe / _exe("probe"))], timeout=900)
+        if code != 0:
+            problems.append(explain_build_failure(out, platform.system()))
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+    return problems
+
+
 def run_checks(scratch: Path, quick: bool) -> list:
     release = REPO / "target" / "release"
     headless = str(release / _exe("nexora-headless"))
@@ -553,6 +605,12 @@ def self_test() -> int:
     leaked = str(Path(tempfile.gettempdir()) / "nexora-local-validation-abc123" / "fg")
     assert scrub(leaked) == str(Path("<scratch>") / "fg"), scrub(leaked)
     assert _lines("result")("result             OK\nother") == "result OK"
+    missing_msvc = "error: linker `link.exe` not found\n  = note: program not found"
+    assert "Build Tools" in explain_build_failure(missing_msvc, "Windows")
+    assert "Desktop development with C++" in explain_build_failure(missing_msvc, "Windows")
+    assert "xcode-select" in explain_build_failure("error: linker `cc` not found", "Darwin")
+    assert "build-essential" in explain_build_failure("error: linker `cc` not found", "Linux")
+    assert "said" in explain_build_failure("error[E0425]: something else", "Linux")
     print("local-validation self-test: ok")
     return 0
 
@@ -576,10 +634,23 @@ def main() -> int:
     chk.add_argument("--report", type=Path, default=REPO / REPORT_DIR / REPORT_JSON)
     chk.add_argument("--allow-missing", action="store_true", help="exit 0 when there is no report")
     sub.add_parser("self-test", help="check the classification rules")
+    sub.add_parser("preflight", help="check this machine can build, in seconds, before a full run")
     args = parser.parse_args()
 
     if args.verb == "self-test":
         return self_test()
+
+    if args.verb == "preflight" or args.verb == "run":
+        print("preflight: can this machine build Rust?", flush=True)
+        problems = preflight()
+        if problems:
+            for problem in problems:
+                print(f"\nNOT READY: {problem}")
+            print("\nNothing was built and no report was written. Fix the above and run again.")
+            return 4
+        print("preflight: ok")
+        if args.verb == "preflight":
+            return 0
 
     if args.verb == "run":
         host = detect_host()

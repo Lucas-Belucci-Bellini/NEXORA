@@ -122,7 +122,9 @@ above and no dependencies.
 The development container has no GPU and no display, so evidence from a real
 machine enters the repository as a report
 ([`docs/validation/local/`](docs/validation/local/README.md)). With Rust
-(`rustup`), Git and Python 3 installed:
+(`rustup`), Git and Python 3 installed — and on Windows the Visual Studio C++
+Build Tools, which Rust needs to link (the script's preflight says so, and how
+to install them, before it builds anything):
 
 ```bash
 python3 scripts/local-validation.py run        # Windows: py scripts\local-validation.py run
