@@ -51,7 +51,7 @@ not local evidence, and a committed one would claim hardware that was not there.
 | `headless_slice_content` | the same with the first-generation stones |
 | `forge_first_generation` | the forge builds the 16×16 set from its plan |
 | `headless_slice_textures` | the runtime resolves, verifies and decodes that set |
-| `benchmark_cpu` | the full CPU benchmark: the **second machine** DEBT-0013 waits for |
+| `benchmark_cpu` | the full CPU benchmark, judged against every published budget. The first report that kept it closed DEBT-0013 (baseline Appendix I) |
 
 ## What it cannot validate yet, and says so
 

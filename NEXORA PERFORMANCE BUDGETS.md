@@ -59,3 +59,17 @@ UNRESIDENT → persistent summary/state only
 
 ## Acceptance
 A system is not production-ready until its expected scale and measurable budget are documented.
+
+## Published
+
+| system | scale | dimension | TARGET | WARNING | CRITICAL | EMERGENCY | source |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| slice memory pools | per chunk column | `MEMORY` | 40 KiB | 48 KiB | 64 KiB | 128 KiB | ADR-0024, enforced in CI |
+| physics | one substep, 1,000 awake bodies | `SIMULATION_TIME` | 250 µs | 500 µs | 1 ms | 2 ms | `nexora_physics::budget`, measured on two machines (`docs/benchmarks/PHASE-0-BASELINE.md`, Appendix I) |
+
+Time budgets are judged in every benchmark run (*Published budgets*) and are
+**not** gated in CI: a shared runner's clock is noise, and memory, which is a
+property of the data structures, is the dimension CI enforces. A time budget
+is published only after measurements on more than one machine agree in
+*shape*. Appendix I shows that I/O and job scheduling do not agree yet, which
+is why neither has published.

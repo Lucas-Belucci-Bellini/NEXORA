@@ -54,7 +54,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | AI decision pipeline | [x] | [ ] | `NEXORA AI DECISION ARCHITECTURE.md` |
 | LOD transitions | [x] | [~] | the `FULL → REGIONAL → ABSTRACT → UNRESIDENT` ladder, hysteresis and eviction are built and tested (`engine/streaming`, ADR-0008); the two middle tiers hold no distinct data until the regional simulation exists (DEBT-0019) |
 | Streaming residency | [x] | [x] | interest, priority, budgets with backpressure, and eviction that persists before it drops — including the case where the write fails and the chunk is *not* dropped (ADR-0008) |
-| Performance budgets | [x] | [~] | the `MEMORY` dimension is published and enforced for the slice's pools, from measured per-column figures (ADR-0024); time budgets are not, because a shared runner's clock is noise (DEBT-0013) |
+| Performance budgets | [x] | [~] | the `MEMORY` dimension is published and enforced for the slice's pools, from measured per-column figures (ADR-0024); the first **time** budget is published too: physics, one substep of 1,000 awake bodies, 250 µs / 500 µs / 1 ms / 2 ms, measured on two machines and judged in every benchmark run (`nexora_physics::budget`, DEBT-0013 closed; baseline Appendix I). It is not gated in CI, because a shared runner's clock is noise. I/O and job scheduling differ between the two machines in shape, not just in scale, and have no time budget yet |
 | Deterministic requirements | [x] | [~] | RNG, generation and saves are deterministic and tested; replay is not built |
 
 ## World
@@ -129,19 +129,19 @@ Work continues on what can be verified headless — the roadmap's own rule is
 that a phase advances on its technical criteria, and the criteria that remain
 need hardware this environment does not have. Nothing here claims otherwise.
 
-**Local evidence (2026-09-25): two reports, one machine** —
+**Local evidence (2026-09-25): three reports, one machine** —
 [`docs/validation/local/NEXORA-LOCAL-VALIDATION.md`](docs/validation/local/NEXORA-LOCAL-VALIDATION.md).
-The current one ran on commit `7991083`, a real Windows 10 machine (AMD Ryzen 5
-5500, 12 threads, 16 GiB, AMD Radeon RX 6650 XT). Release build, **1138
+The current one ran on commit `0b7bcec`, a real Windows 10 machine (AMD Ryzen
+5 5500, 12 threads, 16 GiB, AMD Radeon RX 6650 XT). Release build, **1138
 tests**, the slice with and without the first generation, the forge's build of
-it and the textures: all `VERIFIED_ON_LOCAL_HARDWARE`. The first report, on
-`700eed6`, said the same. Every GPU item stays `NOT_IMPLEMENTED`. The reports
-prove the machine has a GPU, not that the engine can use one, and they move
-neither blocker. Both predate the script fix that keeps the whole CPU benchmark
-(merged after the second run), so DEBT-0013 still has no second machine's
-numbers; the next run records them. The report describes a commit before
-`engine/rhi` existed, so the RHI's null backend has not yet run on that
-machine. The previous note, kept for the record:
+it, the textures and the whole CPU benchmark: all `VERIFIED_ON_LOCAL_HARDWARE`
+for that commit. The two earlier reports (`700eed6`, `7991083`) said the same
+but lost the benchmark's numbers, which the script now keeps. The third report's
+numbers closed DEBT-0013 (baseline Appendix I). Every GPU item stays
+`NOT_IMPLEMENTED`: the reports prove the machine has a GPU, not that the engine
+can use one, and they move neither blocker. The report predates `engine/rhi`,
+so it reads as `STALE_LOCAL_EVIDENCE` against `HEAD`, and the RHI's null backend
+has not yet run on that machine. The previous note, kept for the record:
 
 **Before the first report:** The bridge exists —
 `scripts/local-validation.py` and [`docs/validation/local/`](docs/validation/local/README.md):

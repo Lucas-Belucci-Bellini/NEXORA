@@ -92,7 +92,12 @@ jobs:
       - name: Smoke test the benchmark harness
         run: |
           ./target/release/nexora-benchmark --smoke \
-            --scratch "${RUNNER_TEMP}/bench" > /dev/null
+            --scratch "${RUNNER_TEMP}/bench" > "${RUNNER_TEMP}/bench.txt"
+          # Physics' published budget is judged in every run (DEBT-0013). Its
+          # class is not gated: time, unlike memory, depends on the runner.
+          grep '^published budgets (1):$' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^  physics.thousand_bodies_step  *median .* · [a-z]*, p95 .* · [a-z]*$' \
+            "${RUNNER_TEMP}/bench.txt" > /dev/null
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and

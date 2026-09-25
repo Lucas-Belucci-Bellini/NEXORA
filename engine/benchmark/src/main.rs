@@ -139,6 +139,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
 
     Ok(Report {
         measurements,
+        budgets: suites::published_budgets()?,
         unmeasured: suites::unmeasured_stages(),
         // Captured last, so peak memory reflects the whole run.
         environment: Environment::capture(),

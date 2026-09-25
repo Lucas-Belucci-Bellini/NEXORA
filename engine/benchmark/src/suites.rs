@@ -57,7 +57,7 @@ use nexora_world::world::{World, WorldDescriptor};
 use crate::conformance::SweepFixture;
 use crate::{
     consume, measure, measure_throughput, record_bytes, record_quantity, Budget, Measurement,
-    Unmeasured,
+    Published, Unmeasured,
 };
 
 /// Counts the questions a source is asked, so the lookup can be priced by
@@ -2353,6 +2353,22 @@ pub fn measured_stages() -> Vec<&'static str> {
         "save/load",
         "headless server",
     ]
+}
+
+/// Budgets the engine's systems have published, each against the measurement
+/// it was derived from.
+///
+/// # Errors
+///
+/// Returns an error when a published budget's thresholds do not rise, which
+/// is a mistake in the constants rather than in this run.
+pub fn published_budgets() -> Result<Vec<Published>> {
+    let [target, warning, critical, emergency] = nexora_physics::CROWD_SUBSTEP.thresholds();
+    Ok(vec![Published {
+        measurement: "physics.thousand_bodies_step",
+        owner: "physics (`physics::budget`, DEBT-0013)",
+        budget: FrameBudget::new(target, warning, critical, emergency)?,
+    }])
 }
 
 /// The stages of the plan's vertical slice that Phase 0 cannot measure.

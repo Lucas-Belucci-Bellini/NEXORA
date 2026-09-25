@@ -1096,8 +1096,29 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   a partir de uma execução de um container compartilhado seria precisão não
   merecida.
 - **TRIGGER:** segunda máquina medida, ou entrada na Phase 4.
+- **RESOLUTION (2026-09-25):** a segunda máquina chegou pela ponte de validação
+  local: um Ryzen 5 5500 com Windows 10, no relatório 3. Todas as linhas de
+  física ficaram 1,27–1,58× mais lentas no container, na mesma ordem: a
+  diferença entre as máquinas é um fator, não uma forma
+  (`docs/benchmarks/PHASE-0-BASELINE.md`, Apêndice I, achado 27). O orçamento
+  publicado é `nexora_physics::budget::CROWD_SUBSTEP`, para um substep de 1.000
+  corpos acordados:
+  - **TARGET 250 µs** — o pior p95 medido (168 µs) mais metade;
+  - **WARNING 500 µs**;
+  - **CRITICAL 1 ms**;
+  - **EMERGENCY 2 ms** — oito substeps de recuperação de 2 ms enchem um quadro
+    de 60 Hz, e a partir daí a física sozinha não deixa o quadro se recuperar.
+
+  Os testes do módulo prendem essa derivação às constantes de onde ela vem. O
+  benchmark classifica a medição contra o orçamento em toda execução
+  (**Published budgets**), e o CI confere que a linha existe. A classe não é
+  cobrada no CI, porque tempo, ao contrário de memória, depende do runner. Nas
+  duas máquinas, mediana e p95 caem em `target`. O mesmo achado mostra por que
+  **I/O e o job system não podem publicar** a partir destas duas máquinas: o
+  disco é ~3× mais lento no Windows, e acordar thread é 2–4× mais lento no
+  container.
 - **TARGET STAGE:** Phase 4
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-09-25)
 
 ### DEBT-0014 — Corpos não colidem com corpos
 

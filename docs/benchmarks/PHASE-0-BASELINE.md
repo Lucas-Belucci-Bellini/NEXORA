@@ -1885,3 +1885,90 @@ caller at all, no remap file has been written to disk, and `validate_remote` has
 never examined a snapshot that crossed a network. That is `DEBT-0043`, and it
 waits on the same host `DEBT-0041` waits on — whoever owns the clock owns the
 devices.
+
+# Appendix I — a second machine (2026-09-25)
+
+Every number above came from one shared Linux container. `DEBT-0013` held the
+physics budget back until something else had been measured, because a
+threshold taken from a single shared runner would claim precision nobody had
+earned. The local validation bridge (`docs/validation/local/`) delivered that
+second machine: its third report keeps the whole benchmark.
+
+| | machine A | machine B |
+| --- | --- | --- |
+| what | a real desktop | the shared container everything above ran in |
+| OS | Windows 10, AMD64 | Linux, x86_64 |
+| CPU | AMD Ryzen 5 5500, 12 logical | 4 logical, shared |
+| commit | `0b7bcec` (local report 3) | `8b9b824`, two runs; `engine/physics`, `engine/benchmark`, `engine/world` and `engine/simulation` are unchanged since `0b7bcec` |
+| toolchain | rustc 1.94.1 | rustc 1.94.1 |
+
+## Finding 27 — the machines differ by a factor in compute, and by the opposite factor on disk
+
+### Physics: one factor, one order
+
+| measurement | A median | B median (two runs) | B / A |
+| --- | ---: | ---: | ---: |
+| `physics.character_step` | 370.4 ns | 502.8–504.8 ns | 1.36 |
+| `physics.thousand_bodies_step` | 84.62 µs | 113.89–116.36 µs | 1.36 |
+| `physics.thousand_bodies_step_flat` | 80.62 µs | 106.91–110.04 µs | 1.35 |
+| `physics.voxel_lookup` | 12.3 ns | 16.8–17.0 ns | 1.37 |
+| `physics.axis_sweep` | 29.1 ns | 36.9–38.3 ns | 1.29 |
+| `physics.box_sweep` | 144.6 ns | 215.2–215.9 ns | 1.49 |
+| `physics.depenetration_check` | 48.6 ns | 75.8–77.9 ns | 1.58 |
+| `physics.raycast_40m` | 839.8 ns | 1.09 µs | 1.30 |
+| `physics.thousand_sleeping_step` | 850.0 ns | 1.08 µs | 1.27 |
+
+Every physics row is 1.27–1.58× slower on B, and the rows keep their order on
+both machines. The ratios the earlier findings rest on survive the move: the
+flat fixture is still ~95% of the terrain case (95.3% on A, 94–95% on B), so
+Finding 10's diagnosis still holds after 10b–10e. Sleeping still saves about
+100× (99.6× on A, 105–108× on B).
+
+### Everything else: not one factor
+
+Across all 69 timed rows the median B/A ratio is **1.29**, but the spread is
+wide, and it points both ways:
+
+| row | A | B | B / A |
+| --- | ---: | ---: | ---: |
+| `journal.append_unsynced` | 2.81 µs | 0.81 µs | **0.29** |
+| `save.region_write_one_dirty` | 9.03 ms | 2.70 ms | **0.30** |
+| `journal.append_durable` | 544.95 µs | 181.21 µs | **0.33** |
+| `save.region_write_all` | 41.05 ms | 14.95 ms | **0.36** |
+| `worldgen.chunk_32` | 1.11 ms | 1.31–1.35 ms | 1.20 |
+| `mesh.region_32` | 12.13 ms | 15.07–15.43 ms | 1.26 |
+| `save.crc32_64kib` | 263.67 µs | 354.12–355.16 µs | 1.35 |
+| `jobs.batch_1000_barrier_submit_all` | 790.20 µs | ~1.8 ms | 2.30 |
+| `jobs.submit_wait_roundtrip` | 7.82 µs | 29.67–35.26 µs | **4.15** |
+
+**Disk is about three times slower on A**, and a fsync'd journal record costs
+545 µs there against 181 µs here. The container's storage is not a desktop's
+NTFS volume, and a durability budget taken from it would be three times too
+generous. **The job system is two to four times slower on B**: 4 shared
+logical CPUs against 12 dedicated ones, and a round trip that wakes a thread
+is the measurement most exposed to that. Compute kernels sit in between, at
+1.2–1.6×.
+
+One row moved between B's two runs for no reason: `entity.spawn` read 1.19 µs
+and then 177.8 ns. It is the noisiest row on both machines (rel. σ 39.5% on A),
+and Appendix H already says what a single run of it is worth.
+
+### What this licenses, and what it does not
+
+- **Physics can publish.** Two machines, one factor, one order: the threshold
+  can be set from the structure of the numbers instead of from one run. The
+  budget is `nexora_physics::budget::CROWD_SUBSTEP`, derived in that module's
+  documentation. TARGET is 250 µs: machine B's worst p95 (168.01 µs) with half
+  again to spare. That margin also covers Appendix H's 29.9% build-to-build
+  spread for the flat step. EMERGENCY is 2 ms, from frame arithmetic, not
+  measurement: eight catch-up substeps of 2 ms fill a 60 Hz frame. On both
+  machines the median and the p95 land in `target`. The benchmark now prints
+  that verdict in every run, under **Published budgets**.
+- **I/O cannot publish from these two.** The factor between them is 3× in the
+  other direction, and B's disk is the unusual one. A durability or save
+  budget needs a third machine, or a decision to budget against the slowest
+  one measured.
+- **The job system cannot publish from B.** A 4-CPU shared runner prices
+  thread wake-ups at up to four times what a desktop does. `DEBT-0009`'s
+  numbers are B's and should be read as a ceiling, not an estimate.
+- **Nothing here is a GPU number.** DEBT-0008 is untouched.

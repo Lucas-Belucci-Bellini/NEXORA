@@ -36,6 +36,8 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use nexora_runtime::frame::FrameBudget;
+
 pub mod conformance;
 pub mod suites;
 
@@ -316,11 +318,29 @@ pub fn executable_size_bytes() -> Option<u64> {
     std::fs::metadata(path).ok().map(|meta| meta.len())
 }
 
+/// Thresholds a system published, and the measurement that is judged by them.
+///
+/// `NEXORA PERFORMANCE BUDGETS.md` asks every major system for `TARGET`,
+/// `WARNING`, `CRITICAL` and `EMERGENCY`. A benchmark is where those meet a
+/// number, so the report classifies every run against them rather than
+/// leaving a reader to compare two tables by eye.
+#[derive(Debug, Clone, Copy)]
+pub struct Published {
+    /// The measurement the budget is written against, by name.
+    pub measurement: &'static str,
+    /// Who published it, and where the derivation lives.
+    pub owner: &'static str,
+    /// The four thresholds.
+    pub budget: FrameBudget,
+}
+
 /// A complete benchmark run.
 #[derive(Debug, Clone)]
 pub struct Report {
     /// Measurements, in the order they ran.
     pub measurements: Vec<Measurement>,
+    /// Budgets systems have published, judged against this run.
+    pub budgets: Vec<Published>,
     /// Stages the plan asks for that Phase 0 cannot provide.
     pub unmeasured: Vec<Unmeasured>,
     /// Description of the machine the numbers came from.
@@ -365,6 +385,27 @@ impl Environment {
     }
 }
 
+/// A budget's measurement in this run, as `time · class` for its median and
+/// its p95. A measurement this run did not take says so instead of passing.
+fn judged(report: &Report, published: &Published) -> (String, String) {
+    let Some(measurement) = report
+        .measurements
+        .iter()
+        .find(|measurement| measurement.name == published.measurement)
+    else {
+        return ("not run".to_owned(), "not run".to_owned());
+    };
+    let class = |nanos: f64| {
+        let spent = Duration::from_nanos(nanos.max(0.0) as u64);
+        format!(
+            "{} · {}",
+            format_time(nanos),
+            published.budget.classify(spent).as_str()
+        )
+    };
+    (class(measurement.median()), class(measurement.p95()))
+}
+
 /// Render a report as a Markdown document.
 #[must_use]
 pub fn format_markdown(report: &Report) -> String {
@@ -397,6 +438,30 @@ pub fn format_markdown(report: &Report) -> String {
             "| `{}` | {} | {} | {} | {} |",
             measurement.name, median, p95, spread, measurement.note
         );
+    }
+
+    if !report.budgets.is_empty() {
+        let _ = writeln!(out, "\n### Published budgets\n");
+        let _ = writeln!(
+            out,
+            "| measurement | owner | target | warning | critical | emergency | median | p95 |"
+        );
+        let _ = writeln!(out, "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |");
+        for published in &report.budgets {
+            let budget = &published.budget;
+            let limit = |threshold: Duration| format_time(threshold.as_nanos() as f64);
+            let (median, p95) = judged(report, published);
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {} | {} | {} | {} | {median} | {p95} |",
+                published.measurement,
+                published.owner,
+                limit(budget.target()),
+                limit(budget.warning()),
+                limit(budget.critical()),
+                limit(budget.emergency()),
+            );
+        }
     }
 
     if !report.unmeasured.is_empty() {
@@ -461,6 +526,18 @@ pub fn format_text(report: &Report) -> String {
             "{:<width$}  {median:>12}  {p95:>12}  {spread:>7}",
             measurement.name
         );
+    }
+
+    if !report.budgets.is_empty() {
+        let _ = writeln!(out, "\npublished budgets ({}):", report.budgets.len());
+        for published in &report.budgets {
+            let (median, p95) = judged(report, published);
+            let _ = writeln!(
+                out,
+                "  {:<32} median {median}, p95 {p95}",
+                published.measurement
+            );
+        }
     }
 
     if !report.unmeasured.is_empty() {
@@ -636,6 +713,7 @@ mod tests {
     fn a_report_renders_both_measurements_and_gaps() {
         let report = Report {
             measurements: vec![measurement_from(&[1_000.0])],
+            budgets: Vec::new(),
             unmeasured: vec![Unmeasured {
                 name: "frame time",
                 reason: "no renderer",
@@ -650,6 +728,53 @@ mod tests {
 
         let text = format_text(&report);
         assert!(text.contains("not measured (1)"), "{text}");
+    }
+
+    #[test]
+    fn a_published_budget_judges_the_run_and_says_when_it_did_not_run() {
+        let budget = FrameBudget::new(
+            Duration::from_micros(1),
+            Duration::from_micros(2),
+            Duration::from_micros(4),
+            Duration::from_micros(8),
+        )
+        .unwrap();
+        // measurement_from names its measurement `test`.
+        let report = Report {
+            measurements: vec![measurement_from(&[500.0, 500.0, 3_000.0])],
+            budgets: vec![
+                Published {
+                    measurement: "test",
+                    owner: "tests",
+                    budget,
+                },
+                Published {
+                    measurement: "absent",
+                    owner: "tests",
+                    budget,
+                },
+            ],
+            unmeasured: Vec::new(),
+            environment: Environment::capture(),
+        };
+
+        let markdown = format_markdown(&report);
+        assert!(markdown.contains("### Published budgets"), "{markdown}");
+        assert!(markdown.contains("500.0 ns · target"), "{markdown}");
+        assert!(markdown.contains("3.00 µs · critical"), "{markdown}");
+        assert!(
+            markdown.contains(
+                "| `absent` | tests | 1.00 µs | 2.00 µs | 4.00 µs | 8.00 µs | not run | not run |"
+            ),
+            "{markdown}"
+        );
+
+        let text = format_text(&report);
+        assert!(text.contains("published budgets (2)"), "{text}");
+        assert!(
+            text.contains("median 500.0 ns · target, p95 3.00 µs · critical"),
+            "{text}"
+        );
     }
 
     #[test]
