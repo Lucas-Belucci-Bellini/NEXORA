@@ -2388,7 +2388,7 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
         },
         Unmeasured {
             name: "RHI",
-            reason: "boundary specified, no backend implemented",
+            reason: "a native backend exists (ADR-0026); the benchmark does not drive it yet (DEBT-0008)",
         },
         Unmeasured {
             name: "camera",

@@ -124,6 +124,12 @@ validation script records `rhi_native` as `SKIPPED` with that reason.
   colour fails the draw proof, and a readback that keeps the row padding
   fails the upload proof. The kit's generation, epoch and deferral checks,
   which moved out of the null backend, still fail their tests when removed.
+- In CI, on the first push, each of the three APIs passed on a different
+  runner, through the same probe:
+  **Vulkan** on Linux (`llvmpipe`, lavapipe), **Direct3D 12** on Windows
+  (`Microsoft Basic Render Driver`, WARP) and **Metal** on macOS (`Apple
+  Paravirtual device`). All three are software or virtual devices, not
+  hardware.
 - `local-validation.py run --quick` records `rhi_native` as PASS in the
   container. That is not local evidence, and the script refuses to write it
   to `docs/validation/local/`.
