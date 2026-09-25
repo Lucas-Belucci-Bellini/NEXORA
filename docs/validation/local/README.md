@@ -14,6 +14,12 @@ python3 scripts/local-validation.py run --quick  # no test suite, smoke benchmar
 git add docs/validation/local/ && git commit -m "NEXORA: local validation on <machine class>"
 ```
 
+On Windows the interpreter is usually `py` or `python`, not `python3`:
+`py scripts\local-validation.py run`. Needs Rust through `rustup` (the pinned
+toolchain installs itself on first build), Git, and Python 3.8 or newer. The
+`platforms` job in CI runs `run --quick` on Windows and macOS runners, so this
+path is exercised on both before anyone is asked to use it.
+
 It writes two files here:
 
 | file | for |

@@ -291,3 +291,50 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  # The operator's path, on the operator's platforms. `local-validation.py run`
+  # is what someone runs on a real machine to produce evidence
+  # (docs/validation/local/), and the container this repository is developed
+  # in is Linux: this is where "it works on Windows and macOS" is checked
+  # before anyone is asked to run it there. The report goes to the runner's
+  # temp directory -- a runner is not local hardware, and the script refuses
+  # to treat it as such.
+  platforms:
+    name: operator path on ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows
+            runner: windows-latest
+            python: python
+          - label: macos
+            runner: macos-latest
+            python: python3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: platforms-${{ matrix.label }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # The full report runs the test suite; nothing else runs it off Linux.
+      - name: Test on this platform
+        run: cargo test --workspace --all-targets
+
+      - name: Run the local validation script, quick mode
+        shell: bash
+        run: |
+          ${{ matrix.python }} scripts/local-validation.py self-test
+          ${{ matrix.python }} scripts/local-validation.py run --quick \
+            --out "${RUNNER_TEMP}/local-validation"
+          cat "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"

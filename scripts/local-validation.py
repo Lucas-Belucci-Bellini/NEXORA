@@ -90,6 +90,9 @@ def _run(args, timeout=None, cwd=REPO):
             stderr=subprocess.STDOUT,
             timeout=timeout,
             text=True,
+            # The engine's tools write UTF-8 on every OS; the locale's code
+            # page (cp1252 on many Windows machines) would misread it.
+            encoding="utf-8",
             errors="replace",
         )
         return done.returncode, done.stdout, time.monotonic() - began
@@ -290,6 +293,9 @@ def git_state() -> dict:
 
 
 def check(id_, args, summary_from=None, timeout=3600):
+    # A full run takes minutes; say what is running so a quiet terminal does
+    # not look like a hang.
+    print(f"running  {id_} ...", flush=True)
     code, out, seconds = _run(args, timeout=timeout)
     status = "PASS" if code == 0 else "FAIL"
     summary = summary_from(out) if summary_from and code == 0 else None
@@ -555,6 +561,11 @@ def self_test() -> int:
 
 
 def main() -> int:
+    # A Windows console may use a code page that cannot print every character
+    # a tool emits; replace those rather than dying on them.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="verb", required=True)
     run = sub.add_parser("run", help="run every check this machine can, and write the report")

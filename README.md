@@ -56,7 +56,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 1060 tests
+cargo test --workspace          # 1138 tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -116,6 +116,23 @@ binaries it is about to package on each platform**, and publishes the archives
 with a `SHA256SUMS` covering them. No release has been cut yet, so building
 from source is currently the only way to get it — which is the three commands
 above and no dependencies.
+
+### On your own machine: the local validation report
+
+The development container has no GPU and no display, so evidence from a real
+machine enters the repository as a report
+([`docs/validation/local/`](docs/validation/local/README.md)). With Rust
+(`rustup`), Git and Python 3 installed:
+
+```bash
+python3 scripts/local-validation.py run        # Windows: py scripts\local-validation.py run
+python3 scripts/local-validation.py check      # is the report still about HEAD?
+```
+
+It builds, tests, runs the slice with and without the first-generation
+content, builds the 16×16 set and decodes it, runs the CPU benchmark, and
+writes `docs/validation/local/NEXORA-LOCAL-VALIDATION.{json,md}` — without any
+hostname, user name, serial or absolute path. Commit those two files.
 
 ## Measuring it
 
