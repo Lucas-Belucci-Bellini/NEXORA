@@ -80,7 +80,7 @@ jobs:
       - name: Smoke test the native RHI backend
         run: |
           ./target/release/nexora-rhi-probe | tee "${RUNNER_TEMP}/rhi-probe.txt"
-          grep '^conformance        9/9 cases on wgpu$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+          grep '^conformance        11/11 cases on wgpu$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
           grep '^draw               16 of 16 texels shaded by the GPU$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
 
       # The window host on Xvfb: a real X11 window, a Vulkan surface on it, the
@@ -91,7 +91,7 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 640x480x24" ./target/release/nexora-window-probe \
             | tee "${RUNNER_TEMP}/window-probe.txt"
-          grep '^conformance        9/9 cases on wgpu, presenting$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+          grep '^conformance        11/11 cases on wgpu, presenting$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
           grep '^frame              65536 of 65536 window texels show the 16x16 target, read back from the surface$' \
             "${RUNNER_TEMP}/window-probe.txt" > /dev/null
           grep '^presented          61 frames, 60 of them by the probe$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
@@ -108,7 +108,7 @@ jobs:
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # The RHI's null backend, held to the suite every backend must pass,
           # with no GPU initialized (ADR-0025). Its pool is the third above.
-          grep '^rhi                null backend, conformance 9/9 cases, no GPU initialized$' \
+          grep '^rhi                null backend, conformance 11/11 cases, no GPU initialized$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones must register, show its own surface in a mesh, and survive

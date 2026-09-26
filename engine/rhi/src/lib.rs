@@ -24,9 +24,10 @@
 //!   memory accounting every backend shares, so a rule is written once.
 //!
 //! The first native backend is `nexora-rhi-wgpu` (ADR-0026). It lives in its
-//! own crate because it takes the engine's one external dependency, and this
-//! crate does not know which backend is under it. There is no window and no
-//! surface yet.
+//! own crate because it takes an external dependency, and this crate does not
+//! know which backend is under it. It presents to a window through
+//! `nexora-window` (ADR-0027). Since ADR-0028 a pipeline declares its vertex
+//! layout, its binding slots and its depth test, and a draw supplies them.
 
 pub mod api;
 pub mod conformance;
@@ -35,10 +36,12 @@ pub mod kit;
 pub mod null;
 
 pub use api::{
-    BufferHandle, Command, CommandList, Fence, PipelineHandle, Rhi, Slot, TextureHandle,
+    Binding, BufferHandle, ClearValue, Command, CommandList, Fence, PipelineHandle, Rhi, Slot,
+    TextureHandle,
 };
 pub use desc::{
-    BufferDesc, Capabilities, PipelineDesc, ShaderStage, TextureDesc, TextureFormat, Usage,
-    COPY_ALIGNMENT,
+    BindingKind, BufferDesc, Capabilities, Compare, DepthState, Filter, PipelineDesc, ShaderStage,
+    TextureDesc, TextureFormat, Usage, VertexAttribute, VertexFormat, COPY_ALIGNMENT, MAX_BINDINGS,
+    MAX_VERTEX_ATTRIBUTES, UNIFORM_ALIGNMENT,
 };
 pub use null::{NullRhi, NullStats};

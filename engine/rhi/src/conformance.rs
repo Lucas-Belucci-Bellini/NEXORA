@@ -12,13 +12,14 @@
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 
-use crate::api::{Command, CommandList, Fence, Rhi};
+use crate::api::{Binding, ClearValue, Command, CommandList, Fence, Rhi};
 use crate::desc::{
-    BufferDesc, PipelineDesc, ShaderStage, TextureDesc, TextureFormat, Usage, COPY_ALIGNMENT,
+    BindingKind, BufferDesc, Compare, DepthState, Filter, PipelineDesc, ShaderStage, TextureDesc,
+    TextureFormat, Usage, VertexAttribute, VertexFormat, COPY_ALIGNMENT, MAX_BINDINGS,
 };
 
 /// The cases, in the order [`run`] runs them.
-pub const CASES: [&str; 9] = [
+pub const CASES: [&str; 11] = [
     "capabilities",
     "descriptor-rules",
     "stale-handles",
@@ -26,21 +27,53 @@ pub const CASES: [&str; 9] = [
     "fence-order",
     "deferred-destruction",
     "draw-rules",
+    "binding-rules",
+    "clear-rules",
     "present",
     "at-rest",
 ];
 
-/// A vertex and a fragment shader the backend under test accepts.
+/// The vertex layout [`TestShaders::bound_vertex`] reads: a position of four
+/// `f32` at location 0 and a texture coordinate of two at location 1, 24
+/// bytes a vertex.
+pub const BOUND_ATTRIBUTES: [VertexAttribute; 2] = [
+    VertexAttribute {
+        location: 0,
+        format: VertexFormat::Float32x4,
+        offset: 0,
+    },
+    VertexAttribute {
+        location: 1,
+        format: VertexFormat::Float32x2,
+        offset: 16,
+    },
+];
+
+/// The binding slots [`TestShaders::bound_fragment`] reads: a uniform in
+/// slot 0 (a `vec4<f32>` tint, 16 bytes), a colour texture in slot 1 and a
+/// nearest sampler in slot 2.
+pub const BOUND_SLOTS: [BindingKind; 3] = [
+    BindingKind::Uniform,
+    BindingKind::Texture,
+    BindingKind::Sampler(Filter::Nearest),
+];
+
+/// Shaders the backend under test accepts.
 ///
 /// The suite cannot write shaders: which language a backend reads is its own
-/// business until ADR-0025's successor decides it. A backend that does not
+/// business (ADR-0026 chose WGSL for the first one). A backend that does not
 /// validate shaders can use [`TestShaders::opaque`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestShaders {
-    /// Accepted as a pipeline's vertex stage.
+    /// Accepted as a pipeline's vertex stage, reading a position of four
+    /// `f32` at location 0.
     pub vertex: ShaderStage,
-    /// Accepted as a pipeline's fragment stage.
+    /// Accepted as a pipeline's fragment stage, reading no bindings.
     pub fragment: ShaderStage,
+    /// A vertex stage reading [`BOUND_ATTRIBUTES`].
+    pub bound_vertex: ShaderStage,
+    /// A fragment stage reading [`BOUND_SLOTS`] (ADR-0028).
+    pub bound_fragment: ShaderStage,
 }
 
 impl TestShaders {
@@ -54,7 +87,9 @@ impl TestShaders {
         };
         Self {
             vertex: stage.clone(),
-            fragment: stage,
+            fragment: stage.clone(),
+            bound_vertex: stage.clone(),
+            bound_fragment: stage,
         }
     }
 }
@@ -86,6 +121,8 @@ pub fn run(rhi: &mut dyn Rhi, shaders: &TestShaders) -> Result<Conformance> {
             "fence-order" => fence_order(rhi),
             "deferred-destruction" => deferred_destruction(rhi, baseline),
             "draw-rules" => draw_rules(rhi, shaders),
+            "binding-rules" => binding_rules(rhi, shaders),
+            "clear-rules" => clear_rules(rhi),
             "present" => present(rhi),
             _ => at_rest(rhi, baseline),
         };
@@ -140,7 +177,27 @@ fn pipeline(shaders: &TestShaders, targets: Vec<TextureFormat>) -> PipelineDesc 
         vertex: shaders.vertex.clone(),
         fragment: shaders.fragment.clone(),
         vertex_stride: 16,
+        attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+        bindings: Vec::new(),
+        depth: None,
         targets,
+    }
+}
+
+/// A pipeline over [`BOUND_ATTRIBUTES`] and [`BOUND_SLOTS`], with a depth test.
+fn bound_pipeline(shaders: &TestShaders) -> PipelineDesc {
+    PipelineDesc {
+        label: "conformance bound".into(),
+        vertex: shaders.bound_vertex.clone(),
+        fragment: shaders.bound_fragment.clone(),
+        vertex_stride: 24,
+        attributes: BOUND_ATTRIBUTES.to_vec(),
+        bindings: BOUND_SLOTS.to_vec(),
+        depth: Some(DepthState {
+            compare: Compare::LessEqual,
+            write: true,
+        }),
+        targets: vec![TextureFormat::Rgba8Unorm],
     }
 }
 
@@ -373,6 +430,8 @@ fn draw_rules(rhi: &mut dyn Rhi, shaders: &TestShaders) -> Result<()> {
             pipeline: pipe,
             buffer: vertices,
             target,
+            depth: None,
+            bindings: Vec::new(),
             vertices: count,
         })
     };
@@ -402,6 +461,220 @@ fn draw_rules(rhi: &mut dyn Rhi, shaders: &TestShaders) -> Result<()> {
     rhi.destroy_texture(target)?;
     rhi.destroy_buffer(vertices)?;
     rhi.destroy_pipeline(pipe)
+}
+
+fn binding_rules(rhi: &mut dyn Rhi, shaders: &TestShaders) -> Result<()> {
+    // The vertex layout: what a vertex holds is declared, and checked.
+    let mut outside = bound_pipeline(shaders);
+    outside.attributes[1].offset = 20;
+    ensure(
+        rhi.create_pipeline(&outside).is_err(),
+        "a vertex attribute that runs past the stride is refused",
+    )?;
+    let mut twice = bound_pipeline(shaders);
+    twice.attributes[1].location = 0;
+    ensure(
+        rhi.create_pipeline(&twice).is_err(),
+        "two vertex attributes at one location are refused",
+    )?;
+    let mut none = bound_pipeline(shaders);
+    none.attributes.clear();
+    ensure(
+        rhi.create_pipeline(&none).is_err(),
+        "a pipeline with no vertex attributes is refused",
+    )?;
+    let mut crowded = bound_pipeline(shaders);
+    crowded.bindings = vec![BindingKind::Uniform; MAX_BINDINGS + 1];
+    ensure(
+        rhi.create_pipeline(&crowded).is_err(),
+        "more binding slots than the limit are refused",
+    )?;
+    if !rhi.capabilities().supports(TextureFormat::Depth32Float) {
+        return Ok(());
+    }
+
+    let pipe = rhi.create_pipeline(&bound_pipeline(shaders))?;
+    let flat = rhi.create_pipeline(&pipeline(shaders, vec![TextureFormat::Rgba8Unorm]))?;
+    let vertices = rhi.create_buffer(&buffer(72, Usage::VERTEX | Usage::COPY_DST))?;
+    let tint = rhi.create_buffer(&buffer(16, Usage::UNIFORM | Usage::COPY_DST))?;
+    let ragged = rhi.create_buffer(&buffer(20, Usage::UNIFORM))?;
+    let not_uniform = rhi.create_buffer(&buffer(16, Usage::VERTEX))?;
+    let image = rhi.create_texture(&texture(
+        8,
+        TextureFormat::Rgba8Unorm,
+        Usage::SAMPLED | Usage::COPY_DST,
+    ))?;
+    let target = rhi.create_texture(&texture(
+        8,
+        TextureFormat::Rgba8Unorm,
+        Usage::RENDER_TARGET | Usage::SAMPLED,
+    ))?;
+    let depth = rhi.create_texture(&texture(
+        8,
+        TextureFormat::Depth32Float,
+        Usage::RENDER_TARGET,
+    ))?;
+    let small_depth = rhi.create_texture(&texture(
+        4,
+        TextureFormat::Depth32Float,
+        Usage::RENDER_TARGET,
+    ))?;
+    let bindings = |uniform, texture| {
+        vec![
+            Binding::Uniform(uniform),
+            Binding::Texture(texture),
+            Binding::Sampler,
+        ]
+    };
+    let draw = |pipeline, depth, bindings| {
+        one(Command::Draw {
+            pipeline,
+            buffer: vertices,
+            target,
+            depth,
+            bindings,
+            vertices: 3,
+        })
+    };
+
+    // A frame: clear, fill the bindings, draw with depth.
+    let mut frame = CommandList::new("conformance bound frame");
+    frame
+        .push(Command::Clear {
+            texture: target,
+            value: ClearValue::Color([0.0, 0.0, 0.0, 1.0]),
+        })
+        .push(Command::Clear {
+            texture: depth,
+            value: ClearValue::Depth(1.0),
+        })
+        .push(Command::WriteBuffer {
+            buffer: tint,
+            offset: 0,
+            data: [1.0f32; 4].iter().flat_map(|v| v.to_le_bytes()).collect(),
+        })
+        .push(Command::WriteTexture {
+            texture: image,
+            data: vec![255; 8 * 8 * 4],
+        })
+        .push(Command::WriteBuffer {
+            buffer: vertices,
+            offset: 0,
+            data: vec![0; 72],
+        })
+        .push(Command::Draw {
+            pipeline: pipe,
+            buffer: vertices,
+            target,
+            depth: Some(depth),
+            bindings: bindings(tint, image),
+            vertices: 3,
+        });
+    let drawn = rhi.submit(frame)?;
+
+    ensure(
+        rhi.submit(draw(pipe, Some(depth), Vec::new())).is_err(),
+        "a draw that leaves its pipeline's binding slots empty is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(
+            pipe,
+            Some(depth),
+            vec![Binding::Sampler, Binding::Texture(image), Binding::Sampler],
+        ))
+        .is_err(),
+        "a binding of the wrong kind for its slot is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(pipe, Some(depth), bindings(not_uniform, image)))
+            .is_err(),
+        "a uniform binding without UNIFORM usage is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(pipe, Some(depth), bindings(ragged, image)))
+            .is_err(),
+        "a uniform binding whose size is not in 16-byte steps is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(pipe, Some(depth), bindings(tint, target)))
+            .is_err(),
+        "a draw that samples its own target is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(pipe, None, bindings(tint, image))).is_err(),
+        "a depth-tested draw without a depth texture is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(pipe, Some(small_depth), bindings(tint, image)))
+            .is_err(),
+        "a depth texture of another size than the target is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(pipe, Some(image), bindings(tint, image)))
+            .is_err(),
+        "a colour texture given as the depth texture is refused",
+    )?;
+    ensure(
+        rhi.submit(draw(flat, Some(depth), Vec::new())).is_err(),
+        "a depth texture for a pipeline without a depth test is refused",
+    )?;
+    settle(rhi, drawn)?;
+
+    for texture in [small_depth, depth, target, image] {
+        rhi.destroy_texture(texture)?;
+    }
+    for buffer in [not_uniform, ragged, tint, vertices] {
+        rhi.destroy_buffer(buffer)?;
+    }
+    rhi.destroy_pipeline(flat)?;
+    rhi.destroy_pipeline(pipe)
+}
+
+fn clear_rules(rhi: &mut dyn Rhi) -> Result<()> {
+    let target =
+        rhi.create_texture(&texture(8, TextureFormat::Rgba8Unorm, Usage::RENDER_TARGET))?;
+    let sampled = rhi.create_texture(&texture(8, TextureFormat::Rgba8Unorm, Usage::SAMPLED))?;
+    let clear = |texture, value| one(Command::Clear { texture, value });
+    let cleared = rhi.submit(clear(target, ClearValue::Color([0.25, 0.5, 0.75, 1.0])))?;
+    ensure(
+        rhi.submit(clear(sampled, ClearValue::Color([0.0; 4])))
+            .is_err(),
+        "a clear of a texture that is not a render target is refused",
+    )?;
+    ensure(
+        rhi.submit(clear(target, ClearValue::Color([1.5, 0.0, 0.0, 1.0])))
+            .is_err(),
+        "a clear value outside [0, 1] is refused",
+    )?;
+    ensure(
+        rhi.submit(clear(target, ClearValue::Color([f32::NAN, 0.0, 0.0, 1.0])))
+            .is_err(),
+        "a clear value that is not a number is refused",
+    )?;
+    ensure(
+        rhi.submit(clear(target, ClearValue::Depth(1.0))).is_err(),
+        "a depth clear of a colour texture is refused",
+    )?;
+    let mut depth = None;
+    if rhi.capabilities().supports(TextureFormat::Depth32Float) {
+        let texture = rhi.create_texture(&texture(
+            8,
+            TextureFormat::Depth32Float,
+            Usage::RENDER_TARGET,
+        ))?;
+        ensure(
+            rhi.submit(clear(texture, ClearValue::Color([0.0; 4])))
+                .is_err(),
+            "a colour clear of a depth texture is refused",
+        )?;
+        depth = Some(texture);
+    }
+    settle(rhi, cleared)?;
+    if let Some(texture) = depth {
+        rhi.destroy_texture(texture)?;
+    }
+    rhi.destroy_texture(sampled)?;
+    rhi.destroy_texture(target)
 }
 
 fn present(rhi: &mut dyn Rhi) -> Result<()> {

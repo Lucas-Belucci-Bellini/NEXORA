@@ -9,6 +9,7 @@
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_rhi::{
     BufferDesc, Command, CommandList, PipelineDesc, Rhi, TextureDesc, TextureFormat, Usage,
+    VertexAttribute, VertexFormat,
 };
 
 use crate::{conformance_shaders, WgpuRhi};
@@ -94,6 +95,9 @@ pub fn run(rhi: &mut WgpuRhi) -> Result<Proof> {
         vertex: shaders.vertex,
         fragment: shaders.fragment,
         vertex_stride: 16,
+        attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+        bindings: Vec::new(),
+        depth: None,
         targets: vec![TextureFormat::Rgba8Unorm],
     })?;
     let mut draw = CommandList::new("proof draw");
@@ -106,6 +110,8 @@ pub fn run(rhi: &mut WgpuRhi) -> Result<Proof> {
         pipeline,
         buffer,
         target,
+        depth: None,
+        bindings: Vec::new(),
         vertices: 3,
     });
     let fence = rhi.submit(draw)?;

@@ -13,8 +13,13 @@ use std::sync::Arc;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::memory::MemoryPool;
 
-use crate::api::{BufferHandle, Command, CommandList, PipelineHandle, Slot, TextureHandle};
-use crate::desc::{refused, BufferDesc, PipelineDesc, TextureDesc, Usage, COPY_ALIGNMENT};
+use crate::api::{
+    Binding, BufferHandle, ClearValue, Command, CommandList, PipelineHandle, Slot, TextureHandle,
+};
+use crate::desc::{
+    refused, BindingKind, BufferDesc, PipelineDesc, TextureDesc, TextureFormat, Usage,
+    COPY_ALIGNMENT, UNIFORM_ALIGNMENT,
+};
 
 /// A live resource: its descriptor, what it costs, when it was last used, and
 /// whatever the backend keeps for it.
@@ -351,6 +356,8 @@ impl<B, T, P> Resources<B, T, P> {
                 pipeline,
                 buffer,
                 target,
+                depth,
+                bindings,
                 vertices,
             } => {
                 let pipe = self.pipeline(*pipeline)?;
@@ -378,6 +385,8 @@ impl<B, T, P> Resources<B, T, P> {
                         .with_context("needed", needed.to_string())
                         .with_context("size", vertex.desc.size.to_string()));
                 }
+                self.check_depth(&pipe.desc, &out.desc, *depth, checked)?;
+                self.check_bindings(&pipe.desc, *target, bindings, checked)?;
                 checked.uses.extend([
                     Use::Pipeline(pipeline.0),
                     Use::Buffer(buffer.0),
@@ -385,7 +394,130 @@ impl<B, T, P> Resources<B, T, P> {
                 ]);
                 checked.draws += 1;
             }
+            Command::Clear { texture, value } => {
+                let live = self.texture(*texture)?;
+                if !live.desc.usage.contains(Usage::RENDER_TARGET) {
+                    return Err(refused("a clear needs RENDER_TARGET usage")
+                        .with_context("label", &live.desc.label));
+                }
+                let (fits, in_range) = match value {
+                    ClearValue::Color(rgba) => (
+                        live.desc.format.is_color(),
+                        rgba.iter().all(|c| (0.0..=1.0).contains(c)),
+                    ),
+                    ClearValue::Depth(depth) => {
+                        (!live.desc.format.is_color(), (0.0..=1.0).contains(depth))
+                    }
+                };
+                if !fits {
+                    return Err(refused(
+                        "a colour clears a colour texture, a depth a depth texture",
+                    )
+                    .with_context("label", &live.desc.label)
+                    .with_context("format", live.desc.format.as_str()));
+                }
+                if !in_range {
+                    // NaN fails `contains` as well, so it is refused here too.
+                    return Err(refused("a clear value must be finite and within [0, 1]")
+                        .with_context("label", &live.desc.label));
+                }
+                checked.uses.push(Use::Texture(texture.0));
+            }
             Command::Marker(_) => {}
+        }
+        Ok(())
+    }
+}
+
+impl<B, T, P> Resources<B, T, P> {
+    /// A draw has a depth texture exactly when its pipeline tests depth, and
+    /// that texture is a depth render target the size of the colour target.
+    fn check_depth(
+        &self,
+        pipe: &PipelineDesc,
+        target: &TextureDesc,
+        depth: Option<TextureHandle>,
+        checked: &mut Checked,
+    ) -> Result<()> {
+        match (pipe.depth, depth) {
+            (None, None) => Ok(()),
+            (Some(_), None) | (None, Some(_)) => Err(refused(
+                "a draw has a depth texture exactly when its pipeline has a depth test",
+            )
+            .with_context("pipeline", &pipe.label)),
+            (Some(_), Some(handle)) => {
+                let live = self.texture(handle)?;
+                let fits = live.desc.format == TextureFormat::Depth32Float
+                    && live.desc.usage.contains(Usage::RENDER_TARGET)
+                    && live.desc.width == target.width
+                    && live.desc.height == target.height;
+                if !fits {
+                    return Err(refused(
+                        "a draw's depth texture is a depth render target the size of its target",
+                    )
+                    .with_context("label", &live.desc.label)
+                    .with_context("format", live.desc.format.as_str())
+                    .with_context("size", format!("{}x{}", live.desc.width, live.desc.height))
+                    .with_context("target", format!("{}x{}", target.width, target.height)));
+                }
+                checked.uses.push(Use::Texture(handle.0));
+                Ok(())
+            }
+        }
+    }
+
+    /// One binding per slot, of the slot's kind, each resource usable that
+    /// way, and no texture both read and written by the same draw.
+    fn check_bindings(
+        &self,
+        pipe: &PipelineDesc,
+        target: TextureHandle,
+        bindings: &[Binding],
+        checked: &mut Checked,
+    ) -> Result<()> {
+        if bindings.len() != pipe.bindings.len() {
+            return Err(refused("a draw supplies one binding per pipeline slot")
+                .with_context("pipeline", &pipe.label)
+                .with_context("slots", pipe.bindings.len().to_string())
+                .with_context("bindings", bindings.len().to_string()));
+        }
+        for (slot, (kind, binding)) in pipe.bindings.iter().zip(bindings).enumerate() {
+            let slot = slot.to_string();
+            match (kind, binding) {
+                (BindingKind::Uniform, Binding::Uniform(buffer)) => {
+                    let live = self.buffer(*buffer)?;
+                    if !live.desc.usage.contains(Usage::UNIFORM)
+                        || live.desc.size % UNIFORM_ALIGNMENT != 0
+                    {
+                        return Err(refused(
+                            "a uniform binding needs UNIFORM usage and a size in 16-byte steps",
+                        )
+                        .with_context("label", &live.desc.label)
+                        .with_context("slot", slot));
+                    }
+                    checked.uses.push(Use::Buffer(buffer.0));
+                }
+                (BindingKind::Texture, Binding::Texture(texture)) => {
+                    let live = self.texture(*texture)?;
+                    if !live.desc.usage.contains(Usage::SAMPLED) || !live.desc.format.is_color() {
+                        return Err(refused("a texture binding needs a SAMPLED colour texture")
+                            .with_context("label", &live.desc.label)
+                            .with_context("slot", slot));
+                    }
+                    if *texture == target {
+                        return Err(refused("a draw cannot sample the texture it draws into")
+                            .with_context("label", &live.desc.label)
+                            .with_context("slot", slot));
+                    }
+                    checked.uses.push(Use::Texture(texture.0));
+                }
+                (BindingKind::Sampler(_), Binding::Sampler) => {}
+                _ => {
+                    return Err(refused("a binding is not of its pipeline slot's kind")
+                        .with_context("pipeline", &pipe.label)
+                        .with_context("slot", slot));
+                }
+            }
         }
         Ok(())
     }

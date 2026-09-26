@@ -762,9 +762,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
     `local-validation.py` rodam os probes na máquina do operador, e até haver
     um relatório, o backend e a janela foram verificados num driver conforme e
     num servidor X virtual, não em hardware nem num desktop;
-  - **regra provisória de vértice**: sem formato de vértice no contrato, o
-    backend lê a posição como até quatro `f32` escolhidos pelo stride. O
-    renderer traz o formato de verdade.
+  - ~~**regra provisória de vértice**~~ — **resolvida** (2026-09-26,
+    [ADR-0028](docs/adr/ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md)):
+    o pipeline declara seus atributos de vértice, os slots de binding
+    (uniform, textura, sampler) e o teste de profundidade; a regra do stride
+    saiu do backend.
 - **STATUS:** IN PROGRESS
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk

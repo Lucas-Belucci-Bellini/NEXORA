@@ -43,8 +43,9 @@ use nexora_rhi::conformance::TestShaders;
 use nexora_rhi::desc::{check_buffer, check_pipeline, check_texture, refused};
 use nexora_rhi::kit::{device_lost, no_surface, presentable, Accounting, Resources};
 use nexora_rhi::{
-    BufferDesc, BufferHandle, Capabilities, Command, CommandList, Fence, PipelineDesc,
-    PipelineHandle, Rhi, ShaderStage, TextureDesc, TextureFormat, TextureHandle, Usage,
+    Binding, BindingKind, BufferDesc, BufferHandle, Capabilities, ClearValue, Command, CommandList,
+    Compare, Fence, Filter, PipelineDesc, PipelineHandle, Rhi, ShaderStage, TextureDesc,
+    TextureFormat, TextureHandle, Usage, VertexFormat,
 };
 
 /// The engine's own ceiling on device memory, in bytes.
@@ -57,8 +58,12 @@ pub const DEFAULT_MEMORY: u64 = 1024 * 1024 * 1024;
 /// How long [`Rhi::wait`] waits for one fence before it calls the GPU hung.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A WGSL vertex and fragment shader pair that every pipeline in the
-/// conformance suite accepts: position in, one flat colour out.
+/// The WGSL the conformance suite runs on this backend.
+///
+/// `vs_main`/`fs_main`: position in, one flat colour out.
+/// `vs_bound`/`fs_bound`: the suite's bound layout (ADR-0028), a position and
+/// a texture coordinate in, the texture sampled through the sampler and
+/// multiplied by the uniform tint.
 pub const CONFORMANCE_WGSL: &str = r"
 @vertex
 fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
@@ -68,6 +73,32 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+}
+
+struct Tint {
+    color: vec4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> tint: Tint;
+@group(0) @binding(1) var image: texture_2d<f32>;
+@group(0) @binding(2) var image_sampler: sampler;
+
+struct Varyings {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_bound(@location(0) position: vec4<f32>, @location(1) uv: vec2<f32>) -> Varyings {
+    var out: Varyings;
+    out.position = position;
+    out.uv = uv;
+    return out;
+}
+
+@fragment
+fn fs_bound(in: Varyings) -> @location(0) vec4<f32> {
+    return textureSample(image, image_sampler, in.uv) * tint.color;
 }
 ";
 
@@ -81,6 +112,14 @@ pub fn conformance_shaders() -> TestShaders {
         },
         fragment: ShaderStage {
             entry: "fs_main".into(),
+            code: CONFORMANCE_WGSL.as_bytes().to_vec(),
+        },
+        bound_vertex: ShaderStage {
+            entry: "vs_bound".into(),
+            code: CONFORMANCE_WGSL.as_bytes().to_vec(),
+        },
+        bound_fragment: ShaderStage {
+            entry: "fs_bound".into(),
             code: CONFORMANCE_WGSL.as_bytes().to_vec(),
         },
     }
@@ -136,8 +175,15 @@ struct TextureObject {
     view: wgpu::TextureView,
 }
 
-/// One pipeline per target format the descriptor allows.
-type PipelineObject = Vec<(TextureFormat, wgpu::RenderPipeline)>;
+/// What a pipeline keeps: one native pipeline per target format the
+/// descriptor allows, the layout of its binding slots, and a sampler for each
+/// sampler slot (`None` for the others).
+#[derive(Debug)]
+struct PipelineObject {
+    variants: Vec<(TextureFormat, wgpu::RenderPipeline)>,
+    layout: wgpu::BindGroupLayout,
+    samplers: Vec<Option<wgpu::Sampler>>,
+}
 
 /// The native backend. See the crate documentation.
 #[derive(Debug)]
@@ -619,17 +665,23 @@ impl WgpuRhi {
                     pipeline,
                     buffer,
                     target,
+                    depth,
+                    bindings,
                     vertices,
                 } => {
                     let out = self.resources.texture(*target)?;
-                    let pipe = self
-                        .resources
-                        .pipeline(*pipeline)?
-                        .native
+                    let object = &self.resources.pipeline(*pipeline)?.native;
+                    let pipe = object
+                        .variants
                         .iter()
                         .find(|(format, _)| *format == out.desc.format)
                         .map(|(_, pipe)| pipe)
                         .ok_or_else(|| refused("no pipeline variant for the target's format"))?;
+                    let group = self.bind_group(object, bindings)?;
+                    let depth_view = match depth {
+                        Some(handle) => Some(&self.resources.texture(*handle)?.native.view),
+                        None => None,
+                    };
                     let vertex = &self.resources.buffer(*buffer)?.native;
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("nexora draw"),
@@ -642,19 +694,113 @@ impl WgpuRhi {
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
-                        depth_stencil_attachment: None,
+                        depth_stencil_attachment: depth_view.map(|view| {
+                            wgpu::RenderPassDepthStencilAttachment {
+                                view,
+                                depth_ops: Some(wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                }),
+                                stencil_ops: None,
+                            }
+                        }),
                         timestamp_writes: None,
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
                     pass.set_pipeline(pipe);
+                    if let Some(group) = &group {
+                        pass.set_bind_group(0, group, &[]);
+                    }
                     pass.set_vertex_buffer(0, vertex.slice(..));
                     pass.draw(0..*vertices, 0..1);
+                }
+                Command::Clear { texture, value } => {
+                    let live = self.resources.texture(*texture)?;
+                    let view = &live.native.view;
+                    let (color, depth) = match value {
+                        ClearValue::Color([r, g, b, a]) => (
+                            Some(wgpu::RenderPassColorAttachment {
+                                view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: f64::from(*r),
+                                        g: f64::from(*g),
+                                        b: f64::from(*b),
+                                        a: f64::from(*a),
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            None,
+                        ),
+                        ClearValue::Depth(depth) => (
+                            None,
+                            Some(wgpu::RenderPassDepthStencilAttachment {
+                                view,
+                                depth_ops: Some(wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(*depth),
+                                    store: wgpu::StoreOp::Store,
+                                }),
+                                stencil_ops: None,
+                            }),
+                        ),
+                    };
+                    // A pass with no draws does exactly its loads and stores.
+                    drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("nexora clear"),
+                        color_attachments: &[color],
+                        depth_stencil_attachment: depth,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    }));
                 }
                 Command::Marker(label) => encoder.insert_debug_marker(label),
             }
         }
         Ok(encoder.finish())
+    }
+
+    /// The bind group for one draw, in the pipeline's slot order. `None` for
+    /// a pipeline without slots. The shared rules have already checked each
+    /// binding's kind and usage.
+    fn bind_group(
+        &self,
+        object: &PipelineObject,
+        bindings: &[Binding],
+    ) -> Result<Option<wgpu::BindGroup>> {
+        if bindings.is_empty() {
+            return Ok(None);
+        }
+        let mut entries = Vec::with_capacity(bindings.len());
+        for ((slot, binding), sampler) in (0u32..).zip(bindings).zip(&object.samplers) {
+            let resource = match (binding, sampler) {
+                (Binding::Uniform(buffer), _) => {
+                    self.resources.buffer(*buffer)?.native.as_entire_binding()
+                }
+                (Binding::Texture(texture), _) => wgpu::BindingResource::TextureView(
+                    &self.resources.texture(*texture)?.native.view,
+                ),
+                (Binding::Sampler, Some(sampler)) => wgpu::BindingResource::Sampler(sampler),
+                (Binding::Sampler, None) => {
+                    return Err(refused("a sampler binding in a slot with no sampler"));
+                }
+            };
+            entries.push(wgpu::BindGroupEntry {
+                binding: slot,
+                resource,
+            });
+        }
+        Ok(Some(self.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("nexora draw"),
+                layout: &object.layout,
+                entries: &entries,
+            },
+        )))
     }
 
     /// A buffer holding `bytes`, ready to copy from.
@@ -759,19 +905,64 @@ impl Rhi for WgpuRhi {
         check_pipeline(desc, &self.caps)?;
         let vertex = self.shader("vertex", &desc.vertex, &desc.label)?;
         let fragment = self.shader("fragment", &desc.fragment, &desc.label)?;
-        let attributes = [wgpu::VertexAttribute {
-            format: position_format(desc.vertex_stride),
-            offset: 0,
-            shader_location: 0,
-        }];
+        let attributes: Vec<_> = desc
+            .attributes
+            .iter()
+            .map(|attribute| wgpu::VertexAttribute {
+                format: vertex_format(attribute.format),
+                offset: u64::from(attribute.offset),
+                shader_location: attribute.location,
+            })
+            .collect();
+        let entries: Vec<_> = (0u32..)
+            .zip(&desc.bindings)
+            .map(|(slot, kind)| layout_entry(slot, *kind))
+            .collect();
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(&desc.label),
+                entries: &entries,
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(&desc.label),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        let samplers = desc
+            .bindings
+            .iter()
+            .map(|kind| match kind {
+                BindingKind::Sampler(mode) => {
+                    Some(self.device.create_sampler(&wgpu::SamplerDescriptor {
+                        label: Some(&desc.label),
+                        address_mode_u: wgpu::AddressMode::ClampToEdge,
+                        address_mode_v: wgpu::AddressMode::ClampToEdge,
+                        mag_filter: filter(*mode),
+                        min_filter: filter(*mode),
+                        ..Default::default()
+                    }))
+                }
+                _ => None,
+            })
+            .collect();
+        let depth_stencil = desc.depth.map(|state| wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(state.write),
+            depth_compare: Some(compare(state.compare)),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        });
         let mut variants = Vec::with_capacity(desc.targets.len());
         for format in &desc.targets {
-            let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let pipeline = self
                 .device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(&desc.label),
-                    layout: None,
+                    layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
                         module: &vertex,
                         entry_point: Some(&desc.vertex.entry),
@@ -783,7 +974,7 @@ impl Rhi for WgpuRhi {
                         })],
                     },
                     primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
+                    depth_stencil: depth_stencil.clone(),
                     multisample: wgpu::MultisampleState::default(),
                     fragment: Some(wgpu::FragmentState {
                         module: &fragment,
@@ -798,15 +989,23 @@ impl Rhi for WgpuRhi {
                     multiview_mask: None,
                     cache: None,
                 });
-            if let Some(error) = block_on(scope.pop()) {
-                return Err(refused("the pipeline did not link")
-                    .with_context("label", &desc.label)
-                    .with_context("format", format.as_str())
-                    .with_context("cause", error.to_string()));
-            }
             variants.push((*format, pipeline));
         }
-        Ok(self.resources.insert_pipeline(desc.clone(), variants))
+        if let Some(error) = block_on(scope.pop()) {
+            // The shaders compiled, so what failed is how they meet the
+            // layout: a binding or an attribute the shader reads differently.
+            return Err(refused("the pipeline did not link")
+                .with_context("label", &desc.label)
+                .with_context("cause", error.to_string()));
+        }
+        Ok(self.resources.insert_pipeline(
+            desc.clone(),
+            PipelineObject {
+                variants,
+                layout,
+                samplers,
+            },
+        ))
     }
 
     fn destroy_buffer(&mut self, buffer: BufferHandle) -> Result<()> {
@@ -977,17 +1176,52 @@ const fn extent(width: u32, height: u32) -> wgpu::Extent3d {
     }
 }
 
-/// The position attribute's format, from the vertex stride.
-///
-/// The contract has no vertex format yet: the renderer will bring one. Until
-/// then a vertex is its position, up to four floats, and whatever the stride
-/// leaves after it is ignored. Recorded as an interim rule in DEBT-0046.
-const fn position_format(stride: u32) -> wgpu::VertexFormat {
-    match stride {
-        4 => wgpu::VertexFormat::Float32,
-        8 => wgpu::VertexFormat::Float32x2,
-        12 => wgpu::VertexFormat::Float32x3,
-        _ => wgpu::VertexFormat::Float32x4,
+const fn vertex_format(format: VertexFormat) -> wgpu::VertexFormat {
+    match format {
+        VertexFormat::Float32 => wgpu::VertexFormat::Float32,
+        VertexFormat::Float32x2 => wgpu::VertexFormat::Float32x2,
+        VertexFormat::Float32x3 => wgpu::VertexFormat::Float32x3,
+        VertexFormat::Float32x4 => wgpu::VertexFormat::Float32x4,
+        VertexFormat::Unorm8x4 => wgpu::VertexFormat::Unorm8x4,
+        VertexFormat::Uint32 => wgpu::VertexFormat::Uint32,
+    }
+}
+
+const fn compare(compare: Compare) -> wgpu::CompareFunction {
+    match compare {
+        Compare::Less => wgpu::CompareFunction::Less,
+        Compare::LessEqual => wgpu::CompareFunction::LessEqual,
+        Compare::Always => wgpu::CompareFunction::Always,
+    }
+}
+
+const fn filter(filter: Filter) -> wgpu::FilterMode {
+    match filter {
+        Filter::Nearest => wgpu::FilterMode::Nearest,
+        Filter::Linear => wgpu::FilterMode::Linear,
+    }
+}
+
+/// Slot `n` is `@group(0) @binding(n)`, visible to both stages.
+fn layout_entry(slot: u32, kind: BindingKind) -> wgpu::BindGroupLayoutEntry {
+    let ty = match kind {
+        BindingKind::Uniform => wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        BindingKind::Texture => wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        BindingKind::Sampler(_) => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+    };
+    wgpu::BindGroupLayoutEntry {
+        binding: slot,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty,
+        count: None,
     }
 }
 

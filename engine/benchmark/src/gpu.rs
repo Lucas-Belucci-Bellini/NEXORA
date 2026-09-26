@@ -17,6 +17,7 @@
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_rhi::{
     BufferDesc, Command, CommandList, PipelineDesc, Rhi, TextureDesc, TextureFormat, Usage,
+    VertexAttribute, VertexFormat,
 };
 use nexora_rhi_wgpu::{conformance_shaders, proof, WgpuRhi};
 
@@ -281,6 +282,9 @@ pub fn rhi(budget: Budget, mesh_vertices: u64) -> Result<RhiStage> {
         vertex: shaders.vertex,
         fragment: shaders.fragment,
         vertex_stride: VERTEX_BYTES as u32,
+        attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+        bindings: Vec::new(),
+        depth: None,
         targets: vec![TextureFormat::Rgba8Unorm],
     })?;
     let mut upload = CommandList::new("triangle");
@@ -305,6 +309,8 @@ pub fn rhi(budget: Budget, mesh_vertices: u64) -> Result<RhiStage> {
                     pipeline,
                     buffer,
                     target,
+                    depth: None,
+                    bindings: Vec::new(),
                     vertices: 3,
                 });
                 let fence = rhi.submit(list)?;

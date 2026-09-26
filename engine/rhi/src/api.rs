@@ -42,8 +42,33 @@ handle!(
     PipelineHandle
 );
 
+/// What a draw puts in one of its pipeline's binding slots
+/// ([`crate::desc::BindingKind`]), in slot order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Binding {
+    /// A uniform buffer for a [`crate::desc::BindingKind::Uniform`] slot.
+    Uniform(BufferHandle),
+    /// A colour texture for a [`crate::desc::BindingKind::Texture`] slot.
+    /// It may not also be the draw's target.
+    Texture(TextureHandle),
+    /// The pipeline's own sampler, for a [`crate::desc::BindingKind::Sampler`]
+    /// slot. Named so a draw lists every slot, and a mismatch is visible.
+    Sampler,
+}
+
+/// What a [`Command::Clear`] writes to every texel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ClearValue {
+    /// Red, green, blue, alpha, each finite and in `[0, 1]`, for a colour
+    /// texture.
+    Color([f32; 4]),
+    /// A depth, finite and in `[0, 1]`, for a depth texture. `1.0` is the far
+    /// plane, where a frame's depth starts.
+    Depth(f32),
+}
+
 /// One recorded GPU operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Copy bytes from the CPU into a buffer at `offset`. The buffer needs
     /// [`crate::Usage::COPY_DST`]; offset and length are multiples of
@@ -75,15 +100,29 @@ pub enum Command {
         /// Where to draw; needs [`crate::Usage::RENDER_TARGET`] and a format
         /// the pipeline declared.
         target: TextureHandle,
+        /// The depth texture, exactly when the pipeline has a depth test: a
+        /// [`crate::TextureFormat::Depth32Float`] render target of the
+        /// target's size.
+        depth: Option<TextureHandle>,
+        /// One per pipeline binding slot, in order and of the slot's kind.
+        bindings: Vec<Binding>,
         /// How many vertices.
         vertices: u32,
+    },
+    /// Set every texel of a render target to `value`: a colour for a colour
+    /// target, a depth for a depth texture. How a frame starts.
+    Clear {
+        /// What to clear; needs [`crate::Usage::RENDER_TARGET`].
+        texture: TextureHandle,
+        /// What to write.
+        value: ClearValue,
     },
     /// A debug marker, for captures and validation layers. No effect.
     Marker(String),
 }
 
 /// Commands recorded together and submitted as one unit.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CommandList {
     /// Shown in debug markers and errors.
     pub label: String,

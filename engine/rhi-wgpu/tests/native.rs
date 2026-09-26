@@ -11,7 +11,7 @@ use nexora_foundation::memory::{MemoryBudget, MemoryClass, MemoryLedger, PoolSpe
 use nexora_rhi::conformance::{self, CASES};
 use nexora_rhi::{
     BufferDesc, Command, CommandList, PipelineDesc, Rhi, ShaderStage, TextureDesc, TextureFormat,
-    Usage,
+    Usage, VertexAttribute, VertexFormat,
 };
 use nexora_rhi_wgpu::{conformance_shaders, proof, WgpuRhi};
 
@@ -65,6 +65,9 @@ fn shaders_are_validated_by_the_driver_stack_not_only_shaped() {
             vertex: broken,
             fragment: good.fragment.clone(),
             vertex_stride: 16,
+            attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+            bindings: Vec::new(),
+            depth: None,
             targets: vec![TextureFormat::Rgba8Unorm],
         })
         .expect_err("not WGSL");
@@ -81,6 +84,9 @@ fn shaders_are_validated_by_the_driver_stack_not_only_shaped() {
             vertex: missing_entry,
             fragment: good.fragment,
             vertex_stride: 16,
+            attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+            bindings: Vec::new(),
+            depth: None,
             targets: vec![TextureFormat::Rgba8Unorm],
         })
         .is_err());
@@ -125,6 +131,9 @@ fn a_list_runs_in_the_order_it_was_recorded() {
             vertex: shaders.vertex,
             fragment: shaders.fragment,
             vertex_stride: 16,
+            attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+            bindings: Vec::new(),
+            depth: None,
             targets: vec![TextureFormat::Rgba8Unorm],
         })
         .unwrap();
@@ -139,6 +148,8 @@ fn a_list_runs_in_the_order_it_was_recorded() {
         pipeline,
         buffer,
         target,
+        depth: None,
+        bindings: Vec::new(),
         vertices: 3,
     })
     .push(Command::WriteBuffer {
@@ -246,4 +257,199 @@ fn without_a_window_the_backend_says_it_cannot_present_and_does_not() {
     assert!(rhi.resize(64, 64).is_err(), "nothing to resize");
     rhi.destroy_texture(target).unwrap();
     assert_eq!(rhi.allocated_bytes(), 0);
+}
+
+/// ADR-0028 on a driver: a texture sampled through a nearest sampler lands
+/// on the target texel for texel, a uniform tints it, and the depth test keeps
+/// the nearest draw. Each claim is read back, not assumed from acceptance.
+#[test]
+fn bindings_samplers_and_depth_reach_the_gpu() {
+    use nexora_rhi::conformance::{BOUND_ATTRIBUTES, BOUND_SLOTS};
+    use nexora_rhi::{Binding, ClearValue, Compare, DepthState};
+
+    let Some(mut rhi) = backend() else { return };
+    const EDGE: u32 = 16;
+    let quadrants = [
+        [255u8, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 255, 255],
+    ];
+    let mut image_texels = Vec::new();
+    for y in 0..EDGE {
+        for x in 0..EDGE {
+            let q = usize::from(x >= EDGE / 2) + 2 * usize::from(y >= EDGE / 2);
+            image_texels.extend_from_slice(&quadrants[q]);
+        }
+    }
+    let color = |usage| TextureDesc {
+        label: "bound".into(),
+        width: EDGE,
+        height: EDGE,
+        format: TextureFormat::Rgba8Unorm,
+        usage,
+    };
+    let image = rhi
+        .create_texture(&color(Usage::SAMPLED | Usage::COPY_DST))
+        .unwrap();
+    let target = rhi
+        .create_texture(&color(Usage::RENDER_TARGET | Usage::COPY_SRC))
+        .unwrap();
+    let depth = rhi
+        .create_texture(&TextureDesc {
+            format: TextureFormat::Depth32Float,
+            usage: Usage::RENDER_TARGET,
+            ..color(Usage::RENDER_TARGET)
+        })
+        .unwrap();
+    let tint = rhi
+        .create_buffer(&BufferDesc {
+            label: "tint".into(),
+            size: 16,
+            usage: Usage::UNIFORM | Usage::COPY_DST,
+        })
+        .unwrap();
+    // A triangle covering the target at depth `z`, with texture coordinates
+    // that put texel (0, 0) at the top-left, as the RHI lays texels out.
+    let triangle = |z: f32| -> Vec<u8> {
+        [
+            [-1.0f32, -1.0, z, 1.0, 0.0, 1.0],
+            [3.0, -1.0, z, 1.0, 2.0, 1.0],
+            [-1.0, 3.0, z, 1.0, 0.0, -1.0],
+        ]
+        .iter()
+        .flatten()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+    };
+    let shaders = conformance_shaders();
+    let pipeline = rhi
+        .create_pipeline(&PipelineDesc {
+            label: "bound".into(),
+            vertex: shaders.bound_vertex,
+            fragment: shaders.bound_fragment,
+            vertex_stride: 24,
+            attributes: BOUND_ATTRIBUTES.to_vec(),
+            bindings: BOUND_SLOTS.to_vec(),
+            depth: Some(DepthState {
+                compare: Compare::Less,
+                write: true,
+            }),
+            targets: vec![TextureFormat::Rgba8Unorm],
+        })
+        .unwrap();
+    let rgba = |c: [f32; 4]| -> Vec<u8> { c.iter().flat_map(|v| v.to_le_bytes()).collect() };
+
+    // Three triangles, middle, farther and nearer, each in its own buffer.
+    let buffers: Vec<_> = [0.5f32, 0.7, 0.3]
+        .iter()
+        .map(|z| {
+            let buffer = rhi
+                .create_buffer(&BufferDesc {
+                    label: "triangle".into(),
+                    size: 72,
+                    usage: Usage::VERTEX | Usage::COPY_DST,
+                })
+                .unwrap();
+            (buffer, triangle(*z))
+        })
+        .collect();
+
+    let draw = |buffer| Command::Draw {
+        pipeline,
+        buffer,
+        target,
+        depth: Some(depth),
+        bindings: vec![
+            Binding::Uniform(tint),
+            Binding::Texture(image),
+            Binding::Sampler,
+        ],
+        vertices: 3,
+    };
+    let mut frame = CommandList::new("bound frame");
+    frame
+        .push(Command::Clear {
+            texture: target,
+            value: ClearValue::Color([0.0, 0.0, 0.0, 1.0]),
+        })
+        .push(Command::Clear {
+            texture: depth,
+            value: ClearValue::Depth(1.0),
+        })
+        .push(Command::WriteTexture {
+            texture: image,
+            data: image_texels.clone(),
+        });
+    for (buffer, bytes) in &buffers {
+        frame.push(Command::WriteBuffer {
+            buffer: *buffer,
+            offset: 0,
+            data: bytes.clone(),
+        });
+    }
+    // Middle, untinted: the image, texel for texel.
+    frame
+        .push(Command::WriteBuffer {
+            buffer: tint,
+            offset: 0,
+            data: rgba([1.0, 1.0, 1.0, 1.0]),
+        })
+        .push(draw(buffers[0].0));
+    let fence = rhi.submit(frame).unwrap();
+    rhi.wait(fence).unwrap();
+    assert_eq!(
+        rhi.read_texture(target).unwrap(),
+        image_texels,
+        "the sampled image did not land texel for texel"
+    );
+
+    // Farther, tinted black: the depth test must reject every fragment.
+    let mut farther = CommandList::new("farther");
+    farther
+        .push(Command::WriteBuffer {
+            buffer: tint,
+            offset: 0,
+            data: rgba([0.0, 0.0, 0.0, 1.0]),
+        })
+        .push(draw(buffers[1].0));
+    let fence = rhi.submit(farther).unwrap();
+    rhi.wait(fence).unwrap();
+    assert_eq!(
+        rhi.read_texture(target).unwrap(),
+        image_texels,
+        "a farther draw passed the depth test"
+    );
+
+    // Nearer, tinted green: passes, and the tint multiplies the image.
+    let mut nearer = CommandList::new("nearer");
+    nearer
+        .push(Command::WriteBuffer {
+            buffer: tint,
+            offset: 0,
+            data: rgba([0.0, 1.0, 0.0, 1.0]),
+        })
+        .push(draw(buffers[2].0));
+    let fence = rhi.submit(nearer).unwrap();
+    rhi.wait(fence).unwrap();
+    let expected: Vec<u8> = image_texels
+        .chunks_exact(4)
+        .flat_map(|t| [0, t[1], 0, t[3]])
+        .collect();
+    assert_eq!(
+        rhi.read_texture(target).unwrap(),
+        expected,
+        "a nearer, tinted draw did not replace the image"
+    );
+
+    for (buffer, _) in buffers {
+        rhi.destroy_buffer(buffer).unwrap();
+    }
+    rhi.destroy_buffer(tint).unwrap();
+    rhi.destroy_pipeline(pipeline).unwrap();
+    for texture in [image, target, depth] {
+        rhi.destroy_texture(texture).unwrap();
+    }
+    rhi.poll().unwrap();
+    assert_eq!(rhi.live(), (0, 0, 0));
 }

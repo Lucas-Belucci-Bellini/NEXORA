@@ -270,7 +270,7 @@ impl Rhi for NullRhi {
 mod tests {
     use super::*;
     use crate::api::Command;
-    use crate::desc::{ShaderStage, Usage};
+    use crate::desc::{ShaderStage, Usage, VertexAttribute, VertexFormat};
     use nexora_foundation::error::Recovery;
     use nexora_foundation::memory::{MemoryBudget, MemoryClass, MemoryLedger, PoolSpec};
 
@@ -459,6 +459,9 @@ mod tests {
                 vertex: stage.clone(),
                 fragment: stage,
                 vertex_stride: 16,
+                attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+                bindings: Vec::new(),
+                depth: None,
                 targets: vec![TextureFormat::Rgba8Unorm],
             })
             .unwrap();
@@ -473,6 +476,8 @@ mod tests {
                 pipeline,
                 buffer: vertices,
                 target,
+                depth: None,
+                bindings: Vec::new(),
                 vertices: vertices_n,
             });
             list

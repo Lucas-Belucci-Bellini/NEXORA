@@ -114,7 +114,8 @@ validation script records `rhi_native` as `SKIPPED` with that reason.
 - **The vertex format.** The contract has none yet; the renderer will bring
   one. Until then this backend reads a vertex as its position, up to four
   `f32` chosen by the stride, and ignores the rest. DEBT-0046 records this
-  interim rule.
+  interim rule. *Settled by ADR-0028 (2026-09-26): a pipeline declares its
+  vertex attributes, and the stride rule is gone.*
 - **A second native backend.** Not before the first has met a renderer.
 
 ## Verified

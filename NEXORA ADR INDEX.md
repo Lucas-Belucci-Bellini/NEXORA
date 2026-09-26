@@ -83,3 +83,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0025](docs/adr/ADR-0025-the-rhi-is-a-contract-a-null-backend-keeps-before-a-gpu-does.md) | O RHI é um contrato que um backend nulo cumpre antes de uma GPU | ACCEPTED |
 | [0026](docs/adr/ADR-0026-the-first-native-backend-is-wgpu-and-ci-runs-it.md) | O primeiro backend nativo é wgpu, e o CI o executa | ACCEPTED |
 | [0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md) | O host de janela é o winit, e ele é dono do laço de eventos | ACCEPTED |
+| [0028](docs/adr/ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md) | Um draw declara seu layout de vértice, seus bindings e sua profundidade | ACCEPTED |
