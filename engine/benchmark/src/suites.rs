@@ -176,7 +176,7 @@ fn bench_world(shape_size: u32) -> Result<World> {
     Ok(world)
 }
 
-fn populated_world() -> Result<World> {
+pub(crate) fn populated_world() -> Result<World> {
     let mut world = bench_world(32)?;
     for x in -BENCH_RADIUS..=BENCH_RADIUS {
         for z in -BENCH_RADIUS..=BENCH_RADIUS {
@@ -2489,10 +2489,6 @@ pub fn unmeasured_stages(rhi_gap: Option<&'static str>) -> Vec<Unmeasured> {
             reason: "mod runtime not implemented; Phase 7",
         },
         Unmeasured {
-            name: "frame time",
-            reason: "the window host presents a test target; no renderer draws a frame to time",
-        },
-        Unmeasured {
             name: "incremental build",
             reason: "measured by the build system, not by this process",
         },
@@ -2503,6 +2499,11 @@ pub fn unmeasured_stages(rhi_gap: Option<&'static str>) -> Vec<Unmeasured> {
     ];
 
     if let Some(reason) = rhi_gap {
+        // Frame time draws through the same native backend (`gpu::frame_time`).
+        stages.push(Unmeasured {
+            name: "frame time",
+            reason,
+        });
         stages.push(Unmeasured {
             name: "RHI",
             reason,

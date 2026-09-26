@@ -108,7 +108,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Observability | [x] | [x] | `foundation::diagnostics` |
 | Testing strategy | [x] | [x] | 850+ tests; unit, integration, property, determinism, corruption, content-catalog, plus 12 cross-stack conformance digests |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
-| Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); the RHI stage is measured, in CI on lavapipe and on the operator's RX 6650 XT (Appendices J and K), and so is the camera stage (ADR-0029, Appendix L); **the gate is still open** — frame time has no code (nothing draws a frame) and no engine-scale comparison exists (DEBT-0008, ADR-0009) |
+| Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); the RHI stage is measured, in CI on lavapipe and on the operator's RX 6650 XT (Appendices J and K), and so are the camera stage (ADR-0029, Appendix L) and frame time, a frame of the first render pass checked against a CPU ray cast before it is timed (ADR-0030, Appendix M); **the gate is still open** — the benchmark opens no window, and no engine-scale comparison exists (DEBT-0008, ADR-0009) |
 
 ## Phase status (2026-09-26)
 
@@ -121,9 +121,9 @@ anything.
 
 | Roadmap phase | State | Evidence |
 | --- | --- | --- |
-| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met, and **one blocker remains**: the benchmark measures the RHI stage (in CI on software Vulkan, and on the operator's RX 6650 XT) and the camera stage (ADR-0029), but has no frame time and no engine-scale comparison (DEBT-0008). The second blocker **closed on 2026-09-26**: the contract, a null backend and a native `wgpu` backend pass the same suite, and the native one draws and presents on the operator's GPU and desktop (ADR-0025 to ADR-0028, local reports 4 and 5). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
+| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met, and **one blocker remains**: the benchmark measures the RHI stage (in CI on software Vulkan, and on the operator's RX 6650 XT) the camera stage (ADR-0029) and frame time (ADR-0030), but opens no window and has no engine-scale comparison (DEBT-0008). The second blocker **closed on 2026-09-26**: the contract, a null backend and a native `wgpu` backend pass the same suite, and the native one draws and presents on the operator's GPU and desktop (ADR-0025 to ADR-0028, local reports 4 and 5). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
 | 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005), and now has one (ADR-0027), but nothing runs the frame loop, a renderer or input inside it yet |
-| 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming and the camera's core (view, projection, frustum, floating origin; ADR-0029) exist; camera modes, input, render and player do not |
+| 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming, the camera's core (view, projection, frustum, floating origin; ADR-0029) and a first render pass that draws a meshed chunk (ADR-0030) exist; camera modes, input, textured rendering of the world and player do not |
 
 Work continues on what can be verified headless — the roadmap's own rule is
 that a phase advances on its technical criteria, and the criteria that remain
@@ -142,10 +142,12 @@ textures, **`rhi_native`** (adapter `RX 6650 XT (vulkan, discretegpu)`, 11/11
 cases, upload, draw and bound draw read back), **`window`** (Win32, surface
 `Bgra8UnormSrgb` FIFO, 0 redraws waited, 65,536 of 65,536 texels read back,
 61 frames) and the whole benchmark, whose RHI stage now carries GPU numbers
-(baseline Appendix K, Finding 29). `rendering`, `input_devices`,
-`client_mode` and the remaining `benchmark_gpu_stages` stay
-`NOT_IMPLEMENTED`: no code draws the world, reads a device, runs a client or
-times a frame.
+(baseline Appendix K, Finding 29). In that report `rendering`,
+`input_devices`, `client_mode` and the remaining `benchmark_gpu_stages` stay
+`NOT_IMPLEMENTED`: at its commit no code drew the world, read a device, ran a
+client or timed a frame. Since then the camera (ADR-0029) and the first render
+pass with frame time (ADR-0030) exist, so the next report on `main` runs them
+in `benchmark_cpu`, and until then they are `NOT_TESTED_LOCALLY`.
 
 **Before (2026-09-25): three reports.** Report 3 ran on `0b7bcec` and closed
 DEBT-0013 (Appendix I). It predated `engine/rhi`, so it said nothing about the
@@ -185,8 +187,11 @@ contracts.
    Finding 28). Since local reports 4 and 5 it is also measured **on the operator's RX
    6650 XT** (Appendix K, Finding 29: on real hardware the fence is the cost,
    so a renderer submits once per frame). The camera stage is measured too
-   (ADR-0029, Appendix L). Frame time still has no code: nothing draws a frame
-   through that camera yet.
+   (ADR-0029, Appendix L), and so is **frame time**: the first render pass
+   draws the meshed 16³ region through the camera, and the frame must match a
+   CPU ray cast before it is timed (ADR-0030, Appendix M). Of the GPU stages,
+   only a **window** stage is left: the benchmark draws into a texture and
+   opens no window.
    **An engine-scale comparison** is explicitly out
    of scope for a kernel reference (ADR-0009) — nine pieces of arithmetic say
    nothing about allocation, cache behaviour at scale, or threading.

@@ -2153,3 +2153,57 @@ to draw. It is conservative: a column near a frustum corner is kept.
   233.6% relative σ from one outlier) is larger than anything a threshold
   here would protect, and at under 0.05% of a frame there is nothing to
   protect.
+
+# Appendix M — frame time, on a software driver (2026-09-26)
+
+The last GPU stage the gate asked for with no code behind it. ADR-0030 built
+the first render pass, and `gpu::frame_time` times one frame of it. The frame
+shows the meshed 16³ region the `mesh` suite meshes, from the same generated
+world, drawn at 256×256 through a camera looking down at it. One frame is
+clear, camera, one draw, one submission and one fence.
+
+Before timing, the frame is checked against a ray cast on the CPU
+(`nexora_render::reference`). **51,376 of 65,536 pixels are judged, and all
+of them match.** A `Less` depth test in place of `Greater` drops that to
+39,391, and the run stops without timing. After timing, the target is read
+again and must still hold the checked frame.
+
+| | |
+| --- | --- |
+| machine | the shared container (machine B of Appendix I), 4 logical CPUs |
+| adapter | `llvmpipe (LLVM 20.1.2, 256 bits)`: Vulkan, device type `cpu` |
+| budget | `Budget::coarse(1)`, ten frames a sample |
+
+| measurement | run 1 | run 2 |
+| --- | ---: | ---: |
+| `frame.draw_chunk_16` median | 1.80 ms | 1.52 ms |
+| `frame.draw_chunk_16` p95 | 2.90 ms | 1.58 ms |
+| `frame.chunk_16_vertices` | 4,842 | 4,842 |
+| `frame.pixels_judged` | 51,376 | 51,376 |
+| `rhi.fence_roundtrip` median, same run | 50.24 µs | 60.58 µs |
+
+## Finding 31 — on a software driver a frame is rasterisation; on the operator's GPU it will be the wait
+
+**On lavapipe the frame costs 1.5–1.8 ms, about thirty fence round trips.**
+llvmpipe rasterises 65,536 pixels and shades 4,842 vertices on the same four
+cores that run everything else, so the frame is almost all rasterisation.
+That is about a tenth of a 60 Hz frame, for one chunk, on a CPU.
+
+**What carries over is the shape, not the number.** Appendix K measured the
+operator's RX 6650 XT at 112–162 µs a fence and 192–205 µs for a 16×16
+draw. A discrete GPU draws 4,842 vertices into 256×256 pixels in a small
+fraction of that. So there a frame of this pass should cost about one fence,
+and a frame of many chunks should cost about one fence plus their draws.
+That holds only because `ChunkPass::record` puts the whole frame in one
+submission. Measuring it is the next local report's job: `benchmark_cpu`
+runs this stage on the machine's own adapter.
+
+### What these numbers are not
+
+- **Not a GPU's.** As in Appendix J: lavapipe is the CPU.
+- **Not a world.** One chunk, flat-coloured, no textures and no streaming.
+  A frame of the world draws hundreds of chunks, and this pass has not yet
+  been asked to.
+- **Not a window.** Drawn into a texture. Presenting to a window, and
+  waiting for its vertical blank, is the window probe's to measure (ADR-0027).
+- **Not a budget.** A software driver, and 18% between two runs.

@@ -57,8 +57,8 @@ not local evidence, and a committed one would claim hardware that was not there.
 
 ## What it cannot validate yet, and says so
 
-A renderer, real input devices, client mode and the benchmark's GPU stages are
-recorded as `NOT_IMPLEMENTED`, never as passed and never as "not tested". The
+Rendering into a window, real input devices and client mode are recorded as
+`NOT_IMPLEMENTED`, never as passed and never as "not tested". The
 engine has no code for any of them yet, and a real GPU cannot validate code
 that does not exist. When one of them is built, it gets a check here, and only
 then can a report move it. The RHI, the GPU context, shaders and texture upload

@@ -384,6 +384,15 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   ([Apêndice L](docs/benchmarks/PHASE-0-BASELINE.md), achado 30). Continua
   faltando: **frame time** (nada desenha um quadro pela câmera ainda), a etapa
   **window** no benchmark e a comparação em **escala de motor**.
+- **PROGRESS (2026-09-26, ADR-0030):** **frame time** existe e é medido:
+  `engine/render` (a primeira passada, sobre o contrato do RHI) desenha a
+  região 16³ meshada pela câmera, e `gpu::frame_time` cronometra um quadro
+  inteiro (clear, câmera, draw, uma submissão, um fence) a 256×256. Antes de
+  cronometrar, o quadro é conferido com um ray cast na CPU: 51.376 de 65.536
+  pixels julgados, todos corretos. No lavapipe um quadro custa 1,5–1,8 ms
+  ([Apêndice M](docs/benchmarks/PHASE-0-BASELINE.md), achado 31). Das etapas
+  de GPU, falta só **window** (o benchmark não abre janela); fora delas, a
+  comparação em **escala de motor**.
 - **TARGET STAGE:** antes da Phase 2
 - **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
   faltam frame time e câmera (código: não há renderer), números em GPU real

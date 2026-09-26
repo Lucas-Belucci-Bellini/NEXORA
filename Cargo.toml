@@ -17,6 +17,7 @@
 #     streaming   -> foundation
 #     mesh        -> foundation
 #     camera      -> foundation   (view, projection, render origin; ADR-0029)
+#     render      -> foundation, rhi, mesh, camera   (the contract, never a backend)
 #     rhi         -> foundation
 #     rhi-wgpu    -> foundation, rhi, wgpu   (the one external dependency, ADR-0026)
 #     window      -> foundation, rhi, rhi-wgpu, winit   (the window host, ADR-0027)
@@ -46,6 +47,7 @@ members = [
     "engine/streaming",
     "engine/mesh",
     "engine/camera",
+    "engine/render",
     "engine/rhi",
     "engine/rhi-wgpu",
     "engine/window",
@@ -81,6 +83,7 @@ nexora-physics = { path = "engine/physics", version = "0.0.1" }
 nexora-streaming = { path = "engine/streaming", version = "0.0.1" }
 nexora-mesh = { path = "engine/mesh", version = "0.0.1" }
 nexora-camera = { path = "engine/camera", version = "0.0.1" }
+nexora-render = { path = "engine/render", version = "0.0.1" }
 nexora-rhi = { path = "engine/rhi", version = "0.0.1" }
 nexora-rhi-wgpu = { path = "engine/rhi-wgpu", version = "0.0.1" }
 nexora-window = { path = "engine/window", version = "0.0.1" }

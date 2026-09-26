@@ -143,6 +143,10 @@ jobs:
           # that culling keeps some columns and drops others before timing.
           grep '^camera.sample ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^camera.visible_columns_r12 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # Frame time: the first render pass draws the meshed 16³ region
+          # through the camera; the frame matched a CPU ray cast before timing.
+          grep '^frame.draw_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^frame.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and

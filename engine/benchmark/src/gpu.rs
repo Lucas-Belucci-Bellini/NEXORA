@@ -10,9 +10,9 @@
 //! byte and the draw must shade every texel. A backend that is fast because it
 //! does nothing would otherwise produce the best row in the table.
 //!
-//! No window: presentation and frame time need a window host, and the
-//! benchmark stays runnable where there is no display. Those are
-//! [`crate::suites::unmeasured_stages`] rows.
+//! No window: the benchmark stays runnable where there is no display. Frame
+//! time ([`frame_time`]) draws into a texture; presentation is the window
+//! probe's to measure.
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_rhi::{
@@ -21,7 +21,9 @@ use nexora_rhi::{
 };
 use nexora_rhi_wgpu::{conformance_shaders, proof, WgpuRhi};
 
-use crate::{consume, measure, measure_throughput, record_bytes, Budget, Measurement};
+use crate::{
+    consume, measure, measure_throughput, record_bytes, record_quantity, Budget, Measurement,
+};
 
 /// Edge of the first visual generation's textures, and of the draw target.
 const EDGE: u32 = 16;
@@ -345,6 +347,136 @@ pub fn rhi(budget: Budget, mesh_vertices: u64) -> Result<RhiStage> {
     })
 }
 
+/// Frame time (DEBT-0008): one frame of the first render pass, drawing the
+/// meshed 16³ region through a camera, on this machine's adapter.
+///
+/// The same region the `mesh` suite meshes, from the same generated world,
+/// through `nexora_render::ChunkPass` (reverse-Z, one submission, one fence).
+/// Before timing, the frame is checked against a ray cast on the CPU
+/// (`nexora_render::reference`): every pixel judged must show the face the
+/// ray reaches first, and most pixels must be judged. After timing, the
+/// target is read again and must still hold that frame.
+///
+/// Headless: the frame is drawn into a texture, not a window. What a window
+/// adds is presentation, which the window probe measures, not the drawing.
+///
+/// # Errors
+///
+/// No adapter answered (call this only when [`rhi`] measured), the frame did
+/// not match the reference, or the stage left device memory behind.
+pub fn frame_time(budget: Budget) -> Result<Vec<Measurement>> {
+    use nexora_camera::{Camera, Projection, RenderOrigin};
+    use nexora_foundation::spatial::{BlockPos, WorldPosition};
+    use nexora_mesh::{mesh_region, Extent};
+    use nexora_render::reference::check_frame;
+    use nexora_render::ChunkPass;
+    use nexora_simulation::WorldSurfaces;
+
+    const SIZE: u32 = 256;
+
+    let world = crate::suites::populated_world()?;
+    let surface = world.surface_height(8, 8);
+    let view = WorldSurfaces::untextured(&world);
+    let region = Extent::cubic(BlockPos::new(0, surface - 8, 0), 16)?;
+    let mesh = mesh_region(&view, region);
+
+    let position = WorldPosition::new(-10.5, surface as f64 + 14.0, -9.5);
+    let mut camera = Camera::new(
+        position,
+        Projection::perspective(60f64.to_radians(), 0.1, 256.0)?,
+    )?;
+    camera.look_at(WorldPosition::new(8.0, surface as f64 - 2.0, 8.0))?;
+    let state = camera.sample(RenderOrigin::containing(position)?, SIZE, SIZE)?;
+
+    let mut rhi = WgpuRhi::new()?;
+    let color = rhi.create_texture(&TextureDesc {
+        label: "frame time".into(),
+        width: SIZE,
+        height: SIZE,
+        format: TextureFormat::Rgba8Unorm,
+        usage: Usage::RENDER_TARGET | Usage::COPY_SRC,
+    })?;
+    let depth = rhi.create_texture(&TextureDesc {
+        label: "frame time depth".into(),
+        width: SIZE,
+        height: SIZE,
+        format: TextureFormat::Depth32Float,
+        usage: Usage::RENDER_TARGET,
+    })?;
+    let pass = ChunkPass::new(&mut rhi, TextureFormat::Rgba8Unorm)?;
+    let mut upload = CommandList::new("frame time upload");
+    let chunk = pass.upload(&mut rhi, &mut upload, &mesh.opaque, region)?;
+    let fence = rhi.submit(upload)?;
+    rhi.wait(fence)?;
+
+    let draw = |rhi: &mut WgpuRhi| -> Result<nexora_render::FrameStats> {
+        let mut frame = CommandList::new("frame");
+        let stats = pass.record(&mut frame, &state, color, depth, &[chunk])?;
+        let fence = rhi.submit(frame)?;
+        rhi.wait(fence)?;
+        Ok(stats)
+    };
+
+    // Correctness first.
+    let stats = draw(&mut rhi)?;
+    if stats.drawn != 1 {
+        return Err(wrong("the frame did not draw the region it looks at"));
+    }
+    let checked = rhi.read_texture(color)?;
+    let check = check_frame(&view, region, &camera, (SIZE, SIZE), &checked)?;
+    if check.matching != check.judged || check.judged * 2 < check.pixels {
+        return Err(
+            wrong("the frame does not show what a ray cast says it must")
+                .with_context("judged", check.judged.to_string())
+                .with_context("matching", check.matching.to_string())
+                .with_context("pixels", check.pixels.to_string()),
+        );
+    }
+
+    let failure = std::cell::RefCell::new(None);
+    let mut out = vec![measure(
+        "frame.draw_chunk_16",
+        "One frame at 256x256: clear, camera, the meshed 16 cubed region with reverse-Z depth, one submission, one fence",
+        Budget {
+            iterations_per_sample: 10,
+            ..budget
+        },
+        || {
+            if let Err(error) = draw(&mut rhi) {
+                failure.borrow_mut().get_or_insert(error);
+            }
+        },
+    )];
+    if let Some(error) = failure.into_inner() {
+        return Err(error);
+    }
+    if rhi.read_texture(color)? != checked {
+        return Err(wrong("a timed frame did not draw the checked frame"));
+    }
+    out.push(record_quantity(
+        "frame.chunk_16_vertices",
+        "Vertices the frame draws: six per merged rectangle of the region",
+        u64::from(chunk.vertex_count),
+    ));
+    out.push(record_quantity(
+        "frame.pixels_judged",
+        "Of the frame's 65,536 pixels, those checked against the CPU ray cast (all matched)",
+        check.judged as u64,
+    ));
+
+    chunk.destroy(&mut rhi)?;
+    pass.destroy(&mut rhi)?;
+    rhi.destroy_texture(color)?;
+    rhi.destroy_texture(depth)?;
+    rhi.poll()?;
+    if rhi.allocated_bytes() != 0 || rhi.live() != (0, 0, 0) {
+        return Err(wrong(
+            "the frame stage left device memory or resources behind",
+        ));
+    }
+    Ok(out)
+}
+
 fn wrong(message: &'static str) -> Error {
     Error::new(Domain::Render, "benchmark-rhi", message).with_recovery(Recovery::Manual)
 }
@@ -392,5 +524,28 @@ mod tests {
             .find(|m| m.name == "rhi.mesh_16_vertex_bytes")
             .expect("recorded");
         assert_eq!(bytes.median() as u64, 3228 * VERTEX_BYTES);
+    }
+
+    #[test]
+    fn a_frame_is_checked_against_a_ray_cast_before_it_is_timed() {
+        if std::env::var("NEXORA_GPU").as_deref() == Ok("none") {
+            return;
+        }
+        let budget = Budget {
+            warmup_iterations: 0,
+            samples: 1,
+            iterations_per_sample: 1,
+        };
+        let out = frame_time(budget).expect("a frame that matches the reference");
+        let value = |name: &str| {
+            out.iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .median() as u64
+        };
+        assert!(value("frame.draw_chunk_16") > 0);
+        // Six vertices per merged rectangle of the region the mesh suite meshes.
+        assert_eq!(value("frame.chunk_16_vertices") % 6, 0);
+        assert!(value("frame.pixels_judged") * 2 >= 256 * 256);
     }
 }
