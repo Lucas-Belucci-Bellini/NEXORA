@@ -347,6 +347,41 @@ pub fn rhi(budget: Budget, mesh_vertices: u64) -> Result<RhiStage> {
     })
 }
 
+/// The workload the frame-time and window stages draw: the meshed 16³
+/// region the `mesh` suite meshes, from the same generated world, and a
+/// camera above and outside it looking down at it.
+pub(crate) struct ChunkScene {
+    /// The generated world.
+    pub(crate) world: nexora_world::world::World,
+    /// The meshed region.
+    pub(crate) region: nexora_mesh::Extent,
+    /// The camera that looks at it.
+    pub(crate) camera: nexora_camera::Camera,
+}
+
+impl ChunkScene {
+    /// Generate the world and place the camera.
+    pub(crate) fn new() -> Result<Self> {
+        use nexora_camera::{Camera, Projection};
+        use nexora_foundation::spatial::{BlockPos, WorldPosition};
+
+        let world = crate::suites::populated_world()?;
+        let surface = world.surface_height(8, 8);
+        let region = nexora_mesh::Extent::cubic(BlockPos::new(0, surface - 8, 0), 16)?;
+        let position = WorldPosition::new(-10.5, surface as f64 + 14.0, -9.5);
+        let mut camera = Camera::new(
+            position,
+            Projection::perspective(60f64.to_radians(), 0.1, 256.0)?,
+        )?;
+        camera.look_at(WorldPosition::new(8.0, surface as f64 - 2.0, 8.0))?;
+        Ok(Self {
+            world,
+            region,
+            camera,
+        })
+    }
+}
+
 /// Frame time (DEBT-0008): one frame of the first render pass, drawing the
 /// meshed 16³ region through a camera, on this machine's adapter.
 ///
@@ -365,28 +400,20 @@ pub fn rhi(budget: Budget, mesh_vertices: u64) -> Result<RhiStage> {
 /// No adapter answered (call this only when [`rhi`] measured), the frame did
 /// not match the reference, or the stage left device memory behind.
 pub fn frame_time(budget: Budget) -> Result<Vec<Measurement>> {
-    use nexora_camera::{Camera, Projection, RenderOrigin};
-    use nexora_foundation::spatial::{BlockPos, WorldPosition};
-    use nexora_mesh::{mesh_region, Extent};
+    use nexora_camera::RenderOrigin;
+    use nexora_mesh::mesh_region;
     use nexora_render::reference::check_frame;
     use nexora_render::ChunkPass;
     use nexora_simulation::WorldSurfaces;
 
     const SIZE: u32 = 256;
 
-    let world = crate::suites::populated_world()?;
-    let surface = world.surface_height(8, 8);
-    let view = WorldSurfaces::untextured(&world);
-    let region = Extent::cubic(BlockPos::new(0, surface - 8, 0), 16)?;
+    let scene = ChunkScene::new()?;
+    let view = WorldSurfaces::untextured(&scene.world);
+    let region = scene.region;
     let mesh = mesh_region(&view, region);
-
-    let position = WorldPosition::new(-10.5, surface as f64 + 14.0, -9.5);
-    let mut camera = Camera::new(
-        position,
-        Projection::perspective(60f64.to_radians(), 0.1, 256.0)?,
-    )?;
-    camera.look_at(WorldPosition::new(8.0, surface as f64 - 2.0, 8.0))?;
-    let state = camera.sample(RenderOrigin::containing(position)?, SIZE, SIZE)?;
+    let camera = scene.camera;
+    let state = camera.sample(RenderOrigin::containing(camera.position())?, SIZE, SIZE)?;
 
     let mut rhi = WgpuRhi::new()?;
     let color = rhi.create_texture(&TextureDesc {

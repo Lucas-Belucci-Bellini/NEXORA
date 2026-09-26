@@ -41,6 +41,7 @@ use nexora_runtime::frame::FrameBudget;
 pub mod conformance;
 pub mod gpu;
 pub mod suites;
+pub mod window;
 
 /// What a measurement counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

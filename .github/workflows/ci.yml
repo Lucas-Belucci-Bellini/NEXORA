@@ -126,7 +126,8 @@ jobs:
       # disabled. Real numbers come from a deliberate run on known hardware.
       - name: Smoke test the benchmark harness
         run: |
-          ./target/release/nexora-benchmark --smoke \
+          # Under Xvfb: the window stage opens a real window (ADR-0030).
+          xvfb-run -a -s "-screen 0 640x480x24" ./target/release/nexora-benchmark --smoke \
             --scratch "${RUNNER_TEMP}/bench" > "${RUNNER_TEMP}/bench.txt"
           # Physics' published budget is judged in every run (DEBT-0013). Its
           # class is not gated: time, unlike memory, depends on the runner.
@@ -147,6 +148,10 @@ jobs:
           # through the camera; the frame matched a CPU ray cast before timing.
           grep '^frame.draw_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^frame.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # Window: the same frame drawn in a window and presented; the first
+          # frame, read back from the surface, matched the ray cast.
+          grep '^window.present_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^window.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and
@@ -399,3 +404,6 @@ jobs:
           ${{ matrix.python }} scripts/local-validation.py run --quick \
             --out "${RUNNER_TEMP}/local-validation"
           cat "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          # The benchmark's window stage ran on this platform's window system
+          # (Win32, AppKit) and its frame matched the ray cast.
+          grep -q 'window.pixels_judged' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"

@@ -723,6 +723,7 @@ dependencies = [
  "nexora-runtime",
  "nexora-simulation",
  "nexora-streaming",
+ "nexora-window",
  "nexora-world",
 ]
 

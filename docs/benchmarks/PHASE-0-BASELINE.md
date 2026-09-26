@@ -2207,3 +2207,50 @@ runs this stage on the machine's own adapter.
 - **Not a window.** Drawn into a texture. Presenting to a window, and
   waiting for its vertical blank, is the window probe's to measure (ADR-0027).
 - **Not a budget.** A software driver, and 18% between two runs.
+
+# Appendix N — the window stage, on a virtual display (2026-09-26)
+
+The plan's slice starts at *window*, and until this appendix it was the one
+GPU stage with no number: the benchmark drew into a texture and opened no
+window. `nexora_benchmark::window` now opens one (ADR-0030, amendment). It
+draws the frame of Appendix M in it, the same region through the same camera
+at 256×256, and presents it frame after frame. The first frame shown is read
+back **from the surface**, after presentation, and checked against the ray
+cast: **51,376 of 65,536 pixels judged, all matching**, the same count as the
+headless frame. What reaches the window is exactly what the pass drew.
+
+| | |
+| --- | --- |
+| machine | the shared container (machine B of Appendix I), under Xvfb |
+| adapter / surface | `llvmpipe`, Vulkan, device type `cpu` / `Bgra8UnormSrgb`, FIFO |
+| frames | `Budget::coarse(1)`: 72 shown, 71 intervals |
+
+| measurement | run 1 | run 2 |
+| --- | ---: | ---: |
+| `window.first_frame` | 50.09 ms | 52.30 ms |
+| `window.present_chunk_16` median | 2.54 ms | 3.06 ms |
+| `window.present_chunk_16` p95 | 3.82 ms | 4.23 ms |
+| `frame.draw_chunk_16` median, same run (headless) | 2.08 ms | 1.93 ms |
+| `window.pixels_judged` | 51,376 | 51,376 |
+
+## Finding 32 — presenting costs a fraction of a frame on top of drawing it, and startup is a twentieth of a second
+
+**Presenting adds 0.5–1.1 ms to the frame on lavapipe.** A frame drawn into
+a texture costs 1.9–2.1 ms. The same frame presented to a window arrives
+every 2.5–3.1 ms. The difference is the blit onto the surface image, the
+present, and a turn of the event loop. Xvfb has no refresh to wait for, so
+FIFO does not pace anything here. On the operator's desktop it will: the
+interval there is bounded below by the monitor's refresh (16.7 ms at 60 Hz).
+What that number will say is whether a frame of the engine fits under it.
+
+**From nothing to the first frame on screen takes about 50 ms.** That is the
+event loop, a window, a Vulkan device and surface, the chunk's upload, and
+one frame. On the operator's GPU, device creation alone took 249–276 ms
+(Appendix K), so this startup will be slower there, for the driver's reason.
+
+### What these numbers are not
+
+- **Not a monitor's.** A virtual display with no refresh. The operator's
+  report runs this stage on the real desktop.
+- **Not a world.** One chunk, as in Appendix M.
+- **Not a budget.** One machine, one software driver, 20% between runs.

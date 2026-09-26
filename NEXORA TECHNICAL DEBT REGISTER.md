@@ -393,6 +393,17 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   ([Apêndice M](docs/benchmarks/PHASE-0-BASELINE.md), achado 31). Das etapas
   de GPU, falta só **window** (o benchmark não abre janela); fora delas, a
   comparação em **escala de motor**.
+- **PROGRESS (2026-09-26, emenda à ADR-0030):** a etapa **window** existe e é
+  medida: `nexora_benchmark::window` abre uma janela real (um `Client` do host
+  da ADR-0027), desenha a mesma região pela mesma câmera e apresenta. O
+  primeiro quadro é lido **da surface**, depois da apresentação, e conferido
+  com o ray cast antes de qualquer número (51.376 pixels julgados, todos
+  corretos). Sem display, a etapa fica como "não medida" com o motivo, como o
+  RHI sem adaptador. No Xvfb, um quadro apresentado a cada 2,5–3,1 ms
+  ([Apêndice N](docs/benchmarks/PHASE-0-BASELINE.md), achado 32). **Todas as
+  etapas de GPU do plano têm número agora.** Desta dívida resta só a
+  comparação em **escala de motor** do ADR-0009, que é uma questão de escopo
+  do gate, não de GPU.
 - **TARGET STAGE:** antes da Phase 2
 - **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
   faltam frame time e câmera (código: não há renderer), números em GPU real

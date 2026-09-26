@@ -96,14 +96,49 @@ cost.
   `benchmark_cpu` on the machine's own adapter. `rendering` stays listed,
   as *partly built*, because nothing draws the world into a window yet.
 - Of DEBT-0008's GPU stages, only a **window** stage in the benchmark
-  remains. The engine-scale comparison is the other part of the gate, and
-  it is not a GPU question.
+  remained, and the amendment below builds it. The engine-scale comparison
+  is the other part of the gate, and it is not a GPU question.
 
 ## Not built
 
 Textures (the first-generation albedos), cutout and transparent layers,
-sorting, lighting, more than one chunk per test scene, index buffers,
-drawing into a window, and anything that streams chunks into the pass.
+sorting, lighting, more than one chunk per test scene, index buffers, and
+anything that streams chunks into the pass. (Drawing into a window: see the
+amendment.)
+
+## Amendment (2026-09-26): the window stage
+
+The decision above left presentation to the window probe, and kept the
+benchmark display-free. That left the plan's first slice stage, *window*,
+without a number, and the probe checks a test target, not the render pass.
+So the benchmark now has a **window stage** (`nexora_benchmark::window`).
+
+- It is a `nexora_window::Client` (ADR-0027). It opens a 256×256 window, draws
+  the same region through the same camera with `ChunkPass`, and presents
+  every frame.
+- The **first shown frame is read back from the surface**, after
+  presentation, and checked against the ray cast like the headless frame.
+  Only then is anything kept: `window.first_frame` (startup to first shown
+  frame, one sample), `window.present_chunk_16` (the interval between frames
+  reaching the window) and `window.pixels_judged`.
+- **No display is a gap, not a failure**, as no adapter is for the RHI
+  stage: `NEXORA_DISPLAY=none`, or a host that cannot open a window, records
+  the stage as not measured with the reason. Once a window has opened, any
+  failure is a failure. A surface that cannot be read back is a gap too: the
+  frame cannot be checked, so it is not timed.
+- winit allows one event loop per process and needs the main thread on
+  macOS, so the stage runs once, from the benchmark's `main`. Its test is a
+  `harness = false` binary (`tests/window_stage.rs`), like `nexora-window`'s.
+- With FIFO, a real display paces presented frames to its refresh. On the
+  operator's desktop the interval says whether a frame of the engine fits
+  under the monitor's refresh, and on a virtual display what the engine costs
+  without one.
+
+Verified on Xvfb and lavapipe: 51,376 of 65,536 pixels judged, all
+matching, the same count as the headless frame. Mutation-checked: dropping
+the BGRA-to-RGBA conversion of the surface image fails it (39,792 of
+51,376). CI runs the stage on Linux under Xvfb, and through
+`local-validation.py --quick` on the Windows and macOS runners' displays.
 
 ## Migration
 

@@ -2432,9 +2432,10 @@ pub fn ffi(budget: Budget) -> Vec<Measurement> {
 }
 
 /// The plan's slice stages this run actually measured. The RHI stage is one
-/// of them only when an adapter answered ([`crate::gpu::rhi`]).
+/// of them only when an adapter answered ([`crate::gpu::rhi`]), the window
+/// stage only when a window opened too ([`crate::window::window`]).
 #[must_use]
-pub fn measured_stages(rhi_measured: bool) -> Vec<&'static str> {
+pub fn measured_stages(rhi_measured: bool, window_measured: bool) -> Vec<&'static str> {
     let mut stages = vec![
         "camera",
         "16³ voxel chunk",
@@ -2448,6 +2449,9 @@ pub fn measured_stages(rhi_measured: bool) -> Vec<&'static str> {
     ];
     if rhi_measured {
         stages.push("RHI");
+    }
+    if window_measured {
+        stages.push("window");
     }
     stages
 }
@@ -2472,14 +2476,14 @@ pub fn published_budgets() -> Result<Vec<Published>> {
 ///
 /// Listed rather than skipped: a benchmark table with silent gaps reads as a
 /// benchmark that covered everything. `rhi_gap` is why the RHI stage did not
-/// run, or `None` when it did ([`crate::gpu::RhiStage::gap`]).
+/// run, or `None` when it did ([`crate::gpu::RhiStage::gap`]); `window_gap`
+/// the same for the window stage ([`crate::window::WindowStage::gap`]).
 #[must_use]
-pub fn unmeasured_stages(rhi_gap: Option<&'static str>) -> Vec<Unmeasured> {
+pub fn unmeasured_stages(
+    rhi_gap: Option<&'static str>,
+    window_gap: Option<&'static str>,
+) -> Vec<Unmeasured> {
     let mut stages = vec![
-        Unmeasured {
-            name: "window",
-            reason: "a window host exists (ADR-0027); the benchmark does not open one (DEBT-0008)",
-        },
         Unmeasured {
             name: "input",
             reason: "no device signal reaches the engine yet (DEBT-0043)",
@@ -2506,6 +2510,14 @@ pub fn unmeasured_stages(rhi_gap: Option<&'static str>) -> Vec<Unmeasured> {
         });
         stages.push(Unmeasured {
             name: "RHI",
+            reason,
+        });
+    }
+
+    // The window stage (`crate::window`) needs an adapter and a display.
+    if let Some(reason) = window_gap {
+        stages.push(Unmeasured {
+            name: "window",
             reason,
         });
     }
@@ -2599,10 +2611,14 @@ mod tests {
         // the report claimed the stage was missing on the same page it printed
         // numbers for it.
         for (measured, unmeasured) in [
-            (measured_stages(true), unmeasured_stages(None)),
+            (measured_stages(true, true), unmeasured_stages(None, None)),
             (
-                measured_stages(false),
-                unmeasured_stages(Some(crate::gpu::NO_ADAPTER)),
+                measured_stages(true, false),
+                unmeasured_stages(None, Some(crate::window::NO_DISPLAY)),
+            ),
+            (
+                measured_stages(false, false),
+                unmeasured_stages(Some(crate::gpu::NO_ADAPTER), Some(crate::gpu::NO_ADAPTER)),
             ),
         ] {
             stages_partition_the_plan(&measured, &unmeasured);
