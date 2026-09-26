@@ -436,7 +436,8 @@ def run_checks(scratch: Path, quick: bool) -> list:
         results.append(skipped("rhi_native", "NEXORA_GPU=none: this machine declares no GPU"))
     else:
         results.append(needs_build("rhi_native", [probe],
-                                   _lines("adapter", "conformance", "upload", "draw", "result")))
+                                   _lines("adapter", "conformance", "upload", "draw", "bound",
+                                          "result")))
     # The window host: a window, its surface, the conformance suite with
     # presentation on, and frames shown in it, the first read back from the
     # surface where the platform allows (ADR-0027). No display is declared,

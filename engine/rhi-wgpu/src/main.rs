@@ -2,7 +2,8 @@
 //!
 //! Run by `scripts/local-validation.py` as the `rhi_native` check. Prints the
 //! adapter as a device class, runs the conformance suite with this backend's
-//! shaders, then uploads, draws and reads back (`nexora_rhi_wgpu::proof`).
+//! shaders, then uploads, draws and reads back (`nexora_rhi_wgpu::proof`),
+//! and draws with a vertex layout, bindings and a depth test (ADR-0028).
 //! Exits non-zero at the first failure, with the reason.
 
 use std::process::ExitCode;
@@ -47,6 +48,11 @@ fn probe() -> nexora_foundation::error::Result<()> {
     println!(
         "draw               {} of {} texels shaded by the GPU",
         proof.shaded_texels, proof.target_texels
+    );
+    let bound = proof::bound(&mut rhi)?;
+    println!(
+        "bound              {} of {} texels sampled, {} kept by depth, {} tinted by a uniform",
+        bound.sampled, bound.texels, bound.kept_by_depth, bound.tinted
     );
     Ok(())
 }

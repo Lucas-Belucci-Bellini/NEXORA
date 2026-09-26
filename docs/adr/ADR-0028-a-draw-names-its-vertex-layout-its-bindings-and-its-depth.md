@@ -97,8 +97,13 @@ Nothing compared them for equality except by `PartialEq`.
   **texel for texel**. A farther draw is rejected by the depth test, and the
   target is unchanged. A nearer draw tinted green by the uniform replaces the
   image with exactly its green channel. Each step is read back.
+- The same proof is `nexora_rhi_wgpu::proof::bound`, and `nexora-rhi-probe`
+  prints it (`bound 256 of 256 texels sampled, 256 kept by depth, 256 tinted
+  by a uniform`). CI greps that line, and the `rhi_native` check of
+  `local-validation.py` records it, so the next local report runs it on the
+  operator's GPU.
 - Mutation-checked. A depth compare forced to `Always` fails *a farther draw
-  passed the depth test*. Removing the self-sampling rule fails the
+  passed the depth test*, in the test and in the probe (0 of 256). Removing the self-sampling rule fails the
   conformance case `binding-rules` on the null backend.
 
 ## Consequences

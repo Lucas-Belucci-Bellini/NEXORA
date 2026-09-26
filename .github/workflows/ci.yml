@@ -82,6 +82,9 @@ jobs:
           ./target/release/nexora-rhi-probe | tee "${RUNNER_TEMP}/rhi-probe.txt"
           grep '^conformance        11/11 cases on wgpu$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
           grep '^draw               16 of 16 texels shaded by the GPU$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+          # ADR-0028: a sampled image, a depth test and a uniform, each read back.
+          grep '^bound              256 of 256 texels sampled, 256 kept by depth, 256 tinted by a uniform$' \
+            "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
 
       # The window host on Xvfb: a real X11 window, a Vulkan surface on it, the
       # conformance suite with presentation on, and 60 frames shown. The first

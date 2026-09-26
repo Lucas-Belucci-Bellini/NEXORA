@@ -51,7 +51,7 @@ not local evidence, and a committed one would claim hardware that was not there.
 | `headless_slice_content` | the same with the first-generation stones |
 | `forge_first_generation` | the forge builds the 16×16 set from its plan |
 | `headless_slice_textures` | the runtime resolves, verifies and decodes that set |
-| `rhi_native` | the native RHI backend on **this machine's GPU**: adapter, the eleven conformance cases, a 16×16 upload and a draw, both read back (ADR-0026) |
+| `rhi_native` | the native RHI backend on **this machine's GPU**: adapter, the eleven conformance cases, a 16×16 upload and a draw, both read back (ADR-0026), and a draw with a vertex layout, a sampled texture, a uniform and a depth test, read back texel for texel (ADR-0028) |
 | `window` | a **real window** on this machine's display: its surface, the conformance cases with presentation on, 60 frames of a 16×16 target shown in it, the first read back from the surface where the platform allows (ADR-0027) |
 | `benchmark_cpu` | the full CPU benchmark, judged against every published budget. The first report that kept it closed DEBT-0013 (baseline Appendix I) |
 
