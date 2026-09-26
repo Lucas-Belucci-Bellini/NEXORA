@@ -2031,3 +2031,179 @@ where one wake-up per wave beat one per job.
   applies: a threshold waits for a second machine, and this stage has only
   one. The operator's RX 6650 XT runs this stage in `benchmark_cpu` of the
   next local report, with the adapter named in its environment table.
+
+# Appendix K — the RHI stage, on a real GPU (2026-09-26)
+
+Appendix J ended by saying the operator's RX 6650 XT would run this stage in
+the next local report. Two reports did, sixteen minutes apart, on the same
+code: report 4 on `786f77f` (the merge of ADR-0028) and report 5 on
+`8331c15`, which only adds report 4's files. `local-validation.py check`
+classifies the second as `CURRENT_NO_RELEVANT_CHANGE` against `HEAD`. The
+benchmark checked its answers on this device before timing, as it does
+everywhere: the upload read back identical and the draw shaded every texel.
+
+| | |
+| --- | --- |
+| machine | machine A of Appendix I: Windows 10, AMD Ryzen 5 5500, 12 logical CPUs |
+| adapter | `AMD Radeon RX 6650 XT`: Vulkan, **device type `discretegpu`** |
+| budget | `Budget::coarse(1)`, 7 samples |
+
+Throughput rows print a rate and the p95 of the time, as in every report;
+the rate is rounded to a whole MiB/s, so it is coarse at 1 KiB.
+
+| measurement | report 4 median | report 5 median | p95 (4 / 5) | lavapipe (J) |
+| --- | ---: | ---: | ---: | ---: |
+| `rhi.device_open` | 275.64 ms | 248.75 ms | 325.36 / 268.07 ms | 21.25 ms |
+| `rhi.fence_roundtrip` | 111.79 µs | 162.34 µs | 180.35 / 289.84 µs | 67.98 µs |
+| `rhi.texture_create_destroy` | 2.36 µs | 4.28 µs | 2.63 / 4.86 µs | 1.58 µs |
+| `rhi.upload_texture_16` | 6 MiB/s | 4 MiB/s | 212.13 / 322.24 µs | 10 MiB/s |
+| `rhi.upload_first_generation` | 58 MiB/s | 52 MiB/s | 328.50 / 353.93 µs | 61 MiB/s |
+| `rhi.upload_mesh_16` | 342 MiB/s | 281 MiB/s | 281.07 / 301.75 µs | 464 MiB/s |
+| `rhi.draw_16` | 192.04 µs | 205.31 µs | 212.93 / 260.45 µs | 279.47 µs |
+
+## Finding 29 — on a real GPU the wait is larger, not smaller, so a renderer submits once per frame
+
+Finding 28 said the ratios would carry over and the absolute numbers would
+not. Both halves held, in a direction worth writing down.
+
+**The fence costs more on the discrete GPU than on the software one.** An
+empty submission and its wait took 112 and 162 µs here, against 68 µs on
+lavapipe. lavapipe's "device" is a thread in the same process; this one is a
+separate processor across PCIe, behind a kernel driver, and every wait
+crosses both. Opening the device is twelve times slower for the same reason
+(249–276 ms against 21 ms): a real driver initialises hardware.
+
+**The draw is almost all wait.** One triangle into a 16×16 target costs
+192–205 µs, barely more than an empty fence. The GPU's work is nothing; what
+is measured is submit, execute, signal and wake. On lavapipe the draw cost
+four times the fence because the CPU did the rasterising. Here it costs about
+1.3–1.7 times the fence.
+
+**So batching pays more here than in Appendix J.** One 1 KiB upload is
+roughly 160–240 µs (1 KiB at 6 and 4 MiB/s); sixteen of them in one
+submission are roughly 270–300 µs (16 KiB at 58 and 52 MiB/s). Sixteen
+separate submissions would cost about ten to thirteen times the batched one,
+against six on lavapipe. The slice's one-fence upload was the right shape on
+the software driver and is more right on the hardware.
+
+The consequence is for code not yet written: **a renderer submits one list
+per frame and waits on at most one fence per frame.** A renderer that waits
+per draw, or per chunk upload, would spend its frame waiting on PCIe round
+trips of a tenth of a millisecond each, whatever the GPU's speed.
+
+### What these numbers are not
+
+- **Not a budget.** The same machine, the same code, sixteen minutes apart,
+  moved the fence round trip by 45% and the draw by 7%. Appendix I's rule
+  still applies, and a spread like that is a reason by itself: a threshold
+  drawn from either run would misjudge the other.
+- **Not a frame.** Still no camera and no frame time; nothing draws the
+  world.
+- **Not Direct3D 12 or Metal on hardware.** `wgpu` picked Vulkan on this
+  machine. D3D12 runs in CI only on WARP, and Metal only on Apple's
+  paravirtual device.
+
+# Appendix L — the camera stage (2026-09-26)
+
+The slice's `camera` stage had no code until ADR-0029. `suites::camera` now
+resolves a camera standing **2^40 blocks out**, at the far corner of the
+world, and tests the 625 columns a radius-12 observer streams (full height,
+-64 to 320) against its frustum. Before timing, it checks that the point the
+camera looks at lands mid-screen and that culling keeps some columns and
+drops others.
+
+| | |
+| --- | --- |
+| machine | the shared container (machine B of Appendix I), 4 logical CPUs |
+| budget | `Budget::standard(1)` |
+| camera | 70° vertical field of view, 1600×900, near 0.1, far 512, looking down and ahead |
+
+| measurement | run 1 median | run 2 median | p95 (1 / 2) |
+| --- | ---: | ---: | ---: |
+| `camera.sample` | 112.0 ns | 145.0 ns | 152.0 / 147.0 ns |
+| `camera.cull_columns_r12` | 3.42 µs | 4.35 µs | 5.52 / 6.87 µs |
+| `camera.visible_columns_r12` | 261 | 261 | — |
+
+## Finding 30 — the camera costs nothing a frame, and the edge of the world costs the same as its centre
+
+**Resolving the camera costs about a tenth of a microsecond.** That covers
+the view, the reverse-Z projection, their product in `f64`, the rounding to
+`f32` and the six frustum planes. Culling a radius-12 observer's 625 columns
+costs 3–7 µs, about 5–11 ns a column. Together that is **under 0.05% of a
+60 Hz frame**. There is nothing in this stage worth optimising, and no reason
+to cull more coarsely than per column.
+
+**The edge of the world is not special.** The camera stands 2^40 blocks out,
+where an `f32` step is 131,072 blocks, and the numbers show no cost for it.
+The work happens relative to an integer origin, so it is the same arithmetic
+at the centre and at the edge. The camera's tests check this as bits, not as
+time: the same scene at the centre and at the edge produces identical
+matrices.
+
+**A 70° view keeps 261 of 625 columns, 42%.** The frustum is a wedge, so
+more than half the columns a streaming radius loads are behind or beside the
+camera. This is the first number that says what a renderer would *not* have
+to draw. It is conservative: a column near a frustum corner is kept.
+
+### What these numbers are not
+
+- **Not a frame.** Frame time needs a pass that draws the meshed chunk
+  through this camera, and that pass does not exist yet (DEBT-0008).
+- **Not a budget.** The container's run-to-run spread (run 1's `sample` has a
+  233.6% relative σ from one outlier) is larger than anything a threshold
+  here would protect, and at under 0.05% of a frame there is nothing to
+  protect.
+
+# Appendix M — frame time, on a software driver (2026-09-26)
+
+The last GPU stage the gate asked for with no code behind it. ADR-0030 built
+the first render pass, and `gpu::frame_time` times one frame of it. The frame
+shows the meshed 16³ region the `mesh` suite meshes, from the same generated
+world, drawn at 256×256 through a camera looking down at it. One frame is
+clear, camera, one draw, one submission and one fence.
+
+Before timing, the frame is checked against a ray cast on the CPU
+(`nexora_render::reference`). **51,376 of 65,536 pixels are judged, and all
+of them match.** A `Less` depth test in place of `Greater` drops that to
+39,391, and the run stops without timing. After timing, the target is read
+again and must still hold the checked frame.
+
+| | |
+| --- | --- |
+| machine | the shared container (machine B of Appendix I), 4 logical CPUs |
+| adapter | `llvmpipe (LLVM 20.1.2, 256 bits)`: Vulkan, device type `cpu` |
+| budget | `Budget::coarse(1)`, ten frames a sample |
+
+| measurement | run 1 | run 2 |
+| --- | ---: | ---: |
+| `frame.draw_chunk_16` median | 1.80 ms | 1.52 ms |
+| `frame.draw_chunk_16` p95 | 2.90 ms | 1.58 ms |
+| `frame.chunk_16_vertices` | 4,842 | 4,842 |
+| `frame.pixels_judged` | 51,376 | 51,376 |
+| `rhi.fence_roundtrip` median, same run | 50.24 µs | 60.58 µs |
+
+## Finding 31 — on a software driver a frame is rasterisation; on the operator's GPU it will be the wait
+
+**On lavapipe the frame costs 1.5–1.8 ms, about thirty fence round trips.**
+llvmpipe rasterises 65,536 pixels and shades 4,842 vertices on the same four
+cores that run everything else, so the frame is almost all rasterisation.
+That is about a tenth of a 60 Hz frame, for one chunk, on a CPU.
+
+**What carries over is the shape, not the number.** Appendix K measured the
+operator's RX 6650 XT at 112–162 µs a fence and 192–205 µs for a 16×16
+draw. A discrete GPU draws 4,842 vertices into 256×256 pixels in a small
+fraction of that. So there a frame of this pass should cost about one fence,
+and a frame of many chunks should cost about one fence plus their draws.
+That holds only because `ChunkPass::record` puts the whole frame in one
+submission. Measuring it is the next local report's job: `benchmark_cpu`
+runs this stage on the machine's own adapter.
+
+### What these numbers are not
+
+- **Not a GPU's.** As in Appendix J: lavapipe is the CPU.
+- **Not a world.** One chunk, flat-coloured, no textures and no streaming.
+  A frame of the world draws hundreds of chunks, and this pass has not yet
+  been asked to.
+- **Not a window.** Drawn into a texture. Presenting to a window, and
+  waiting for its vertical blank, is the window probe's to measure (ADR-0027).
+- **Not a budget.** A software driver, and 18% between two runs.

@@ -279,12 +279,22 @@ pub const UNIFORM_ALIGNMENT: u64 = 16;
 
 /// Which fragments pass the depth test, against what the depth texture
 /// already holds.
+///
+/// The contract does not say which end of `[0, 1]` is near: that is the
+/// projection's convention. The engine's camera uses **reverse-Z** (ADR-0029),
+/// where near is `1`, far is `0`, a frame's depth is cleared to `0`, and the
+/// nearer fragment passes [`Compare::Greater`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Compare {
-    /// Nearer than what is there.
+    /// A smaller depth than what is there: nearer, with a forward-Z projection.
     Less,
-    /// Nearer than or as near as what is there.
+    /// A smaller or equal depth.
     LessEqual,
+    /// A greater depth than what is there: nearer, with a reverse-Z
+    /// projection (ADR-0029).
+    Greater,
+    /// A greater or equal depth.
+    GreaterEqual,
     /// Every fragment.
     Always,
 }

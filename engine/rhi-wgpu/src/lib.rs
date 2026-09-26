@@ -1191,6 +1191,8 @@ const fn compare(compare: Compare) -> wgpu::CompareFunction {
     match compare {
         Compare::Less => wgpu::CompareFunction::Less,
         Compare::LessEqual => wgpu::CompareFunction::LessEqual,
+        Compare::Greater => wgpu::CompareFunction::Greater,
+        Compare::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
         Compare::Always => wgpu::CompareFunction::Always,
     }
 }

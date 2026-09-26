@@ -710,18 +710,27 @@ dependencies = [
 name = "nexora-benchmark"
 version = "0.0.1"
 dependencies = [
+ "nexora-camera",
  "nexora-entity",
  "nexora-ffi-probe",
  "nexora-foundation",
  "nexora-mesh",
  "nexora-persistence",
  "nexora-physics",
+ "nexora-render",
  "nexora-rhi",
  "nexora-rhi-wgpu",
  "nexora-runtime",
  "nexora-simulation",
  "nexora-streaming",
  "nexora-world",
+]
+
+[[package]]
+name = "nexora-camera"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
 ]
 
 [[package]]
@@ -806,6 +815,17 @@ dependencies = [
  "nexora-command",
  "nexora-foundation",
  "nexora-runtime",
+]
+
+[[package]]
+name = "nexora-render"
+version = "0.0.1"
+dependencies = [
+ "nexora-camera",
+ "nexora-foundation",
+ "nexora-mesh",
+ "nexora-rhi",
+ "nexora-rhi-wgpu",
 ]
 
 [[package]]

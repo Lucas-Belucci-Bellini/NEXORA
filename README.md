@@ -227,6 +227,11 @@ engine/asset         surface materials, texture maps, provenance, validation,
 engine/resource      resource manifest, integrity-checked loading, bounded
                      cache and typed handles (ADR-0021)
 engine/mesh          greedy meshing into a data structure (ADR-0012)
+engine/camera        view, reverse-Z projection, frustum and a floating
+                     integer render origin, exact at 2^40 (ADR-0029)
+engine/render        the first render pass: chunk meshes through the camera,
+                     over the RHI contract, checked against a CPU ray cast
+                     (ADR-0030)
 engine/rhi           the render hardware interface: the contract, a null
                      backend and the conformance suite (ADR-0025)
 engine/rhi-wgpu      the first native backend: wgpu over Vulkan, Direct3D 12

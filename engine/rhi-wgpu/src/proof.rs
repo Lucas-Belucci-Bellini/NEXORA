@@ -159,6 +159,10 @@ pub struct Bound {
 /// uniform, a texture sampled through a nearest sampler, and a depth test.
 /// Each step is read back. Leaves the backend holding nothing.
 ///
+/// The depth test is the engine's own convention, **reverse-Z** (ADR-0029):
+/// depth is cleared to `0`, the far end, and a fragment passes when its depth
+/// is greater, which is nearer.
+///
 /// # Errors
 ///
 /// A count falls short of every texel, or the backend refused a step.
@@ -207,7 +211,7 @@ pub fn bound(rhi: &mut WgpuRhi) -> Result<Bound> {
         attributes: BOUND_ATTRIBUTES.to_vec(),
         bindings: BOUND_SLOTS.to_vec(),
         depth: Some(DepthState {
-            compare: Compare::Less,
+            compare: Compare::Greater,
             write: true,
         }),
         targets: vec![TextureFormat::Rgba8Unorm],
@@ -225,9 +229,10 @@ pub fn bound(rhi: &mut WgpuRhi) -> Result<Bound> {
         .flat_map(|value| value.to_le_bytes())
         .collect()
     };
-    // Middle, farther and nearer, each in a buffer of its own.
+    // Middle, farther and nearer, each in a buffer of its own. Reverse-Z:
+    // a smaller depth is farther.
     let mut triangles = Vec::with_capacity(3);
-    for z in [0.5f32, 0.7, 0.3] {
+    for z in [0.5f32, 0.3, 0.7] {
         let buffer = rhi.create_buffer(&BufferDesc {
             label: "proof triangle".into(),
             size: 72,
@@ -264,7 +269,7 @@ pub fn bound(rhi: &mut WgpuRhi) -> Result<Bound> {
         })
         .push(Command::Clear {
             texture: depth,
-            value: ClearValue::Depth(1.0),
+            value: ClearValue::Depth(0.0),
         })
         .push(Command::WriteTexture {
             texture: image,

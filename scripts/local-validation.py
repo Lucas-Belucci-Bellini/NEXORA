@@ -61,15 +61,15 @@ STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 
 # What a real machine is needed for, and why none of it can pass yet.
 # The window, its surface (swapchain) and presentation left this list with
-# ADR-0027: they are the `window` check now.
+# ADR-0027: they are the `window` check now. The benchmark's GPU stages (RHI,
+# camera, frame time) left it when the first render pass existed: they run
+# inside `benchmark_cpu` on this machine's adapter.
 HARDWARE_GATED = [
-    ("rendering", "no renderer: the native backend draws one triangle (rhi_native) and presents "
-                  "a 16x16 target (window); nothing draws the world; meshes are data (ADR-0012)"),
+    ("rendering", "partly built: the first render pass (nexora-render) draws a meshed chunk "
+                  "through the camera, checked against a CPU ray cast, inside benchmark_cpu's "
+                  "frame-time stage; nothing draws the world into a window yet"),
     ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
-    ("benchmark_gpu_stages", "partly built: the RHI stage (device, fence, upload, draw) runs inside "
-                             "benchmark_cpu on this machine's adapter; window frame time and camera "
-                             "have no implementation (DEBT-0008)"),
 ]
 
 
@@ -452,8 +452,10 @@ def run_checks(scratch: Path, quick: bool) -> list:
                                           "presented", "result")))
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
     # DEBT-0008: the container's numbers are one machine's. It also runs the
-    # RHI stage on this machine's adapter and names the adapter in its
-    # environment table; the check keeps its id so old reports still compare.
+    # RHI, camera and frame-time stages on this machine's adapter (the frame
+    # is checked against a CPU ray cast before it is timed) and names the
+    # adapter in its environment table; the check keeps its id so old
+    # reports still compare.
     results.append(needs_build("benchmark_cpu", [bench, "--markdown"] + (["--smoke"] if quick else [])
                                + ["--scratch", str(scratch / "bench")],
                                lambda out: "see the report's benchmark section", keep_whole=True))

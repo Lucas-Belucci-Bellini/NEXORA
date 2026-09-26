@@ -1,0 +1,28 @@
+[package]
+name = "nexora-render"
+description = "The renderer's first pass: chunk meshes drawn through the camera, over the RHI contract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_render"
+path = "src/lib.rs"
+
+# The renderer talks to the RHI *contract*, never to a backend (ADR-0025): it
+# runs on the null backend with no GPU, and on `wgpu` because `wgpu` keeps the
+# same contract. It reads meshes as data (ADR-0012) and a camera as matrices
+# (ADR-0029). The backend appears only in its tests.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-rhi.workspace = true
+nexora-mesh.workspace = true
+nexora-camera.workspace = true
+
+[dev-dependencies]
+nexora-rhi-wgpu.workspace = true
+
+[lints]
+workspace = true
