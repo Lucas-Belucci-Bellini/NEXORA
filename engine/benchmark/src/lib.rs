@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 use nexora_runtime::frame::FrameBudget;
 
 pub mod conformance;
+pub mod gpu;
 pub mod suites;
 
 /// What a measurement counts.
@@ -90,7 +91,7 @@ impl Measurement {
             return 0.0;
         }
         let mid = values.len() / 2;
-        if values.len() % 2 == 0 {
+        if values.len().is_multiple_of(2) {
             (values[mid - 1] + values[mid]) / 2.0
         } else {
             values[mid]
@@ -363,6 +364,9 @@ pub struct Environment {
     pub peak_resident_bytes: Option<u64>,
     /// Benchmark binary size, in bytes.
     pub executable_bytes: Option<u64>,
+    /// The GPU adapter the RHI stage ran on, as `name (backend, kind)`, or
+    /// `None` when it did not run. A software adapter's numbers are the CPU's.
+    pub gpu: Option<String>,
 }
 
 impl Environment {
@@ -381,6 +385,7 @@ impl Environment {
             target: std::env::consts::ARCH,
             peak_resident_bytes: peak_resident_bytes(),
             executable_bytes: executable_size_bytes(),
+            gpu: None,
         }
     }
 }
@@ -486,6 +491,11 @@ pub fn format_text(report: &Report) -> String {
         out,
         "{} logical CPUs · {} profile · {}",
         report.environment.cpus, report.environment.profile, report.environment.target
+    );
+    let _ = writeln!(
+        out,
+        "gpu adapter: {}",
+        report.environment.gpu.as_deref().unwrap_or("none")
     );
     let _ = writeln!(out);
 

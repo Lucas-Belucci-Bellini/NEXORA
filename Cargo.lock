@@ -716,6 +716,8 @@ dependencies = [
  "nexora-mesh",
  "nexora-persistence",
  "nexora-physics",
+ "nexora-rhi",
+ "nexora-rhi-wgpu",
  "nexora-runtime",
  "nexora-simulation",
  "nexora-streaming",

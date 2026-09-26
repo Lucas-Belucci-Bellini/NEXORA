@@ -121,7 +121,7 @@ anything.
 
 | Roadmap phase | State | Evidence |
 | --- | --- | --- |
-| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met: the benchmark has no GPU stages and no engine-scale comparison (DEBT-0008), and the RHI has not run on the operator's hardware. Its contract, a null backend and a native `wgpu` backend are built and pass the same suite, the native one on a real (software) Vulkan driver in CI, and it presents to a real window (ADR-0025, ADR-0026, ADR-0027). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
+| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met: the benchmark measures the RHI stage (on software Vulkan so far) but has no frame time, no camera and no engine-scale comparison (DEBT-0008), and the RHI has not run on the operator's hardware. Its contract, a null backend and a native `wgpu` backend are built and pass the same suite, the native one on a real (software) Vulkan driver in CI, and it presents to a real window (ADR-0025, ADR-0026, ADR-0027). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
 | 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005), and now has one (ADR-0027), but nothing runs the frame loop, a renderer or input inside it yet |
 | 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming exist; camera, input, render and player do not |
 
@@ -169,9 +169,14 @@ contracts.
    anything until they do — see
    [`docs/benchmarks/PHASE-0-BASELINE.md`](docs/benchmarks/PHASE-0-BASELINE.md),
    Appendix D. Rule 5's "do not decide from one stack" is satisfied for the
-   kernels; two things it asked for are still missing, and neither is fixable by
-   writing more code here. **The GPU stages** (RHI, window, camera, mesh) cannot
-   run in a headless container. **An engine-scale comparison** is explicitly out
+   kernels; two things it asked for are still missing. **The GPU stages** were
+   listed here as impossible
+   in a headless container. That stopped being true with ADR-0026 and
+   ADR-0027: the **RHI stage is measured** now, on lavapipe in CI and on any
+   machine's own adapter, with its answers checked before timing (Appendix J,
+   Finding 28). Frame time and camera still have no code (there is no
+   renderer), and no GPU number exists until the operator's report runs it.
+   **An engine-scale comparison** is explicitly out
    of scope for a kernel reference (ADR-0009) — nine pieces of arithmetic say
    nothing about allocation, cache behaviour at scale, or threading.
 

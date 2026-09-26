@@ -1972,3 +1972,62 @@ and Appendix H already says what a single run of it is worth.
   thread wake-ups at up to four times what a desktop does. `DEBT-0009`'s
   numbers are B's and should be read as a ceiling, not an estimate.
 - **Nothing here is a GPU number.** DEBT-0008 is untouched.
+
+# Appendix J — the RHI stage, on a software driver (2026-09-26)
+
+The plan's slice lists `RHI` between `input` and `camera`. Until ADR-0026 there
+was no backend to measure, and until this appendix the benchmark did not
+drive the one that exists. `nexora_benchmark::gpu::rhi` now runs it, headless,
+on whatever adapter the machine has, and prints that adapter at the top of the
+report. It checks its answers before it times anything: the upload is read
+back byte for byte, the draw must shade every texel, and the target is read
+again after the timed draws. A backend that is fast because it skipped the
+work fails there, and replacing the timed draw with a marker was tried to
+show it: the run stops with `a timed draw did not shade its target`.
+
+| | |
+| --- | --- |
+| machine | the shared container (machine B of Appendix I), 4 logical CPUs |
+| adapter | `llvmpipe (LLVM 20.1.2, 256 bits)`: Vulkan, **device type `cpu`** |
+| budget | `Budget::coarse(1)`, 7 samples |
+
+| measurement | median | p95 | what it is |
+| --- | ---: | ---: | --- |
+| `rhi.device_open` | 21.25 ms | 24.81 ms | adapter and device, no surface |
+| `rhi.fence_roundtrip` | 67.98 µs | 72.60 µs | an empty list and its fence |
+| `rhi.texture_create_destroy` | 1.58 µs | 2.96 µs | a 16×16 RGBA8 texture, nothing in flight |
+| `rhi.upload_texture_16` | ~98 µs (10 MiB/s) | 99.19 µs | 1 KiB, one write, one fence |
+| `rhi.upload_first_generation` | ~256 µs (61 MiB/s) | 271.29 µs | 16 KiB, sixteen writes, one fence |
+| `rhi.upload_mesh_16` | ~108 µs (464 MiB/s) | 112.58 µs | 50.4 KiB: the 16³ region's 3,228 vertices |
+| `rhi.draw_16` | 279.47 µs | 305.98 µs | one triangle into a 16×16 target |
+
+## Finding 28 — on a software driver, waiting costs more than the work, so the slice's one-fence upload is the right shape
+
+**The fence dominates everything small.** An empty submission and its wait
+cost 68 µs, and one 1 KiB texture costs 98 µs. Two thirds of that upload is
+the round trip, not the copy. The vertex buffer for the meshed 16³ region is
+fifty times larger and costs only 10 µs more.
+
+**So batching pays, and the slice already batches.** Sixteen textures in one
+submission cost 256 µs. Sixteen separate submissions would cost about
+16 × 98 ≈ 1.6 ms, six times as much. ADR-0025's slice uploads the first
+generation that way (sixteen writes, one fence), and the measurement agrees
+with the choice. It is the same shape Finding 21 found for the job system,
+where one wake-up per wave beat one per job.
+
+### What these numbers are not
+
+- **Not a GPU's.** lavapipe rasterizes on the CPU, and its "device" shares
+  the four cores that run everything else. The draw's 279 µs is LLVM-compiled
+  shader code running on those cores. A discrete GPU draws a 16×16 triangle
+  in far less, and waits on its fence across PCIe, which lavapipe does not.
+  The ratios above (fence against copy, batched against unbatched) are what
+  carry over, and even they must be measured again on hardware before a
+  budget is written from them.
+- **Not a frame.** No window, no presentation, no camera: the benchmark
+  stays runnable without a display. Frame time needs a renderer, which does
+  not exist.
+- **Not a budget.** One machine, one software driver. Appendix I's rule
+  applies: a threshold waits for a second machine, and this stage has only
+  one. The operator's RX 6650 XT runs this stage in `benchmark_cpu` of the
+  next local report, with the adapter named in its environment table.

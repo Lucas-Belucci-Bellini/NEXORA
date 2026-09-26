@@ -2340,10 +2340,11 @@ pub fn ffi(budget: Budget) -> Vec<Measurement> {
     measurements
 }
 
-/// The plan's slice stages this build actually measures.
+/// The plan's slice stages this run actually measured. The RHI stage is one
+/// of them only when an adapter answered ([`crate::gpu::rhi`]).
 #[must_use]
-pub fn measured_stages() -> Vec<&'static str> {
-    vec![
+pub fn measured_stages(rhi_measured: bool) -> Vec<&'static str> {
+    let mut stages = vec![
         "16³ voxel chunk",
         "mesh generation",
         "1,000 entities",
@@ -2352,7 +2353,11 @@ pub fn measured_stages() -> Vec<&'static str> {
         "streaming",
         "save/load",
         "headless server",
-    ]
+    ];
+    if rhi_measured {
+        stages.push("RHI");
+    }
+    stages
 }
 
 /// Budgets the engine's systems have published, each against the measurement
@@ -2371,12 +2376,13 @@ pub fn published_budgets() -> Result<Vec<Published>> {
     }])
 }
 
-/// The stages of the plan's vertical slice that Phase 0 cannot measure.
+/// The stages of the plan's vertical slice that this run did not measure.
 ///
 /// Listed rather than skipped: a benchmark table with silent gaps reads as a
-/// benchmark that covered everything.
+/// benchmark that covered everything. `rhi_gap` is why the RHI stage did not
+/// run, or `None` when it did ([`crate::gpu::RhiStage::gap`]).
 #[must_use]
-pub fn unmeasured_stages() -> Vec<Unmeasured> {
+pub fn unmeasured_stages(rhi_gap: Option<&'static str>) -> Vec<Unmeasured> {
     let mut stages = vec![
         Unmeasured {
             name: "window",
@@ -2387,12 +2393,8 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
             reason: "no device signal reaches the engine yet (DEBT-0043)",
         },
         Unmeasured {
-            name: "RHI",
-            reason: "a native backend exists (ADR-0026); the benchmark does not drive it yet (DEBT-0008)",
-        },
-        Unmeasured {
             name: "camera",
-            reason: "depends on the RHI",
+            reason: "no view or projection exists: the renderer owns the camera, and there is no renderer",
         },
         Unmeasured {
             name: "mod boundary",
@@ -2411,6 +2413,13 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
             reason: "qualitative; the plan scores it separately from timing",
         },
     ];
+
+    if let Some(reason) = rhi_gap {
+        stages.push(Unmeasured {
+            name: "RHI",
+            reason,
+        });
+    }
 
     // Measured only when the C++ translation unit is linked in. Built without
     // the `cpp` feature there is no second language, so the honest report is
@@ -2499,9 +2508,18 @@ mod tests {
         // in the unmeasured list after the entity suite started measuring it:
         // the report claimed the stage was missing on the same page it printed
         // numbers for it.
-        let measured = measured_stages();
-        let unmeasured = unmeasured_stages();
+        for (measured, unmeasured) in [
+            (measured_stages(true), unmeasured_stages(None)),
+            (
+                measured_stages(false),
+                unmeasured_stages(Some(crate::gpu::NO_ADAPTER)),
+            ),
+        ] {
+            stages_partition_the_plan(&measured, &unmeasured);
+        }
+    }
 
+    fn stages_partition_the_plan(measured: &[&'static str], unmeasured: &[Unmeasured]) {
         for stage in PLAN_SLICE_STAGES {
             let is_measured = measured.contains(&stage);
             let is_declared = unmeasured.iter().any(|entry| entry.name == stage);
@@ -2515,7 +2533,7 @@ mod tests {
             );
         }
 
-        for stage in &measured {
+        for stage in measured {
             assert!(
                 PLAN_SLICE_STAGES.contains(stage),
                 "`{stage}` is claimed as measured but is not a stage of the plan"

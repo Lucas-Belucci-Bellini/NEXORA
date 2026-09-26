@@ -135,14 +135,23 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::input(standard)?);
     measurements.extend(suites::persistence(coarse, &options.scratch)?);
     measurements.extend(suites::meshing(coarse)?);
+    // The RHI stage uploads what the mesh stage produced: one workload.
+    let mesh_vertices = measurements
+        .iter()
+        .find(|measurement| measurement.name == "mesh.vertices_16")
+        .map_or(0, |measurement| measurement.median() as u64);
+    let rhi = nexora_benchmark::gpu::rhi(coarse, mesh_vertices)?;
+    measurements.extend(rhi.measurements);
     measurements.extend(suites::ffi(standard));
 
+    // Captured last, so peak memory reflects the whole run.
+    let mut environment = Environment::capture();
+    environment.gpu = rhi.adapter;
     Ok(Report {
         measurements,
         budgets: suites::published_budgets()?,
-        unmeasured: suites::unmeasured_stages(),
-        // Captured last, so peak memory reflects the whole run.
-        environment: Environment::capture(),
+        unmeasured: suites::unmeasured_stages(rhi.gap),
+        environment,
     })
 }
 
@@ -165,10 +174,15 @@ fn markdown_document(report: &Report) -> String {
          | architecture | `{target}` |\n\
          | peak resident memory | {memory} |\n\
          | benchmark binary size | {binary} |\n\
+         | GPU adapter (RHI stage) | {gpu} |\n\
          \n## Measurements\n\n{table}",
         cpus = environment.cpus,
         profile = environment.profile,
         target = environment.target,
+        gpu = environment
+            .gpu
+            .as_deref()
+            .unwrap_or("none: the RHI stage did not run"),
         table = format_markdown(report),
     )
 }

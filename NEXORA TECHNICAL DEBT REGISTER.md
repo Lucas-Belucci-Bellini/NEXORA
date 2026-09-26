@@ -349,9 +349,26 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   reference de kernels. Enquanto (a) não for medível aqui, o gate não fecha, e
   `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserva o lock do mapa de linguagens
   para o benchmark completo.
+- **PROGRESS (2026-09-26):** a etapa **RHI** deixou de ser "presa no
+  hardware". A ADR-0026 construiu o backend nativo e a ADR-0027 a janela, e o
+  lavapipe (Vulkan por software) roda os dois sem GPU. O benchmark agora mede
+  a etapa RHI (`nexora_benchmark::gpu`): abrir o device, round-trip de fence,
+  criar e destruir textura, upload de uma textura 16×16, upload das dezesseis
+  da primeira geração num fence só, upload do vertex buffer da região 16³
+  meshada, e um draw 16×16. Antes de cronometrar, ele confere as respostas
+  (leitura de volta do upload e do draw). O relatório imprime o adaptador, e
+  no CI ele é `llvmpipe … (vulkan, cpu)`: número de CPU, não de GPU. Resultado
+  em [Apêndice J](docs/benchmarks/PHASE-0-BASELINE.md), achado 28: o fence
+  domina o que é pequeno, e o upload da fatia em um fence só custa um sexto de
+  dezesseis uploads separados. O que ainda falta desta dívida: **frame time**
+  e **câmera** (não existe renderer), a etapa **window** dentro do benchmark,
+  números **em GPU real** (a próxima execução de `local-validation.py` na
+  RX 6650 XT mede a etapa RHI no `benchmark_cpu`) e a comparação em **escala
+  de motor** do ADR-0009.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS — desbloqueado do lado da segunda linguagem; preso
-  no hardware
+- **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
+  faltam frame time e câmera (código: não há renderer), números em GPU real
+  (relatório local) e a comparação em escala de motor
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 

@@ -67,7 +67,9 @@ HARDWARE_GATED = [
                   "a 16x16 target (window); nothing draws the world; meshes are data (ADR-0012)"),
     ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
-    ("benchmark_gpu_stages", "DEBT-0008: the plan's GPU stages have no implementation"),
+    ("benchmark_gpu_stages", "partly built: the RHI stage (device, fence, upload, draw) runs inside "
+                             "benchmark_cpu on this machine's adapter; window frame time and camera "
+                             "have no implementation (DEBT-0008)"),
 ]
 
 
@@ -448,7 +450,9 @@ def run_checks(scratch: Path, quick: bool) -> list:
                                    _lines("adapter", "window", "surface", "conformance", "frame",
                                           "presented", "result")))
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
-    # DEBT-0008: the container's numbers are one machine's.
+    # DEBT-0008: the container's numbers are one machine's. It also runs the
+    # RHI stage on this machine's adapter and names the adapter in its
+    # environment table; the check keeps its id so old reports still compare.
     results.append(needs_build("benchmark_cpu", [bench, "--markdown"] + (["--smoke"] if quick else [])
                                + ["--scratch", str(scratch / "bench")],
                                lambda out: "see the report's benchmark section", keep_whole=True))
@@ -536,7 +540,7 @@ def render_markdown(report: dict) -> str:
     if report.get("benchmark_output"):
         # Markdown already: the benchmark is run with --markdown.
         # Its headings are demoted one level so they nest under this section.
-        lines += ["", "## CPU benchmark", ""]
+        lines += ["", "## Benchmark (CPU stages, and the RHI stage on this machine's adapter)", ""]
         lines += ["#" + line if line.startswith("#") else line for line in report["benchmark_output"]]
     elif report.get("benchmark_tail"):
         lines += ["", "## CPU benchmark (tail)", "", "```text", *report["benchmark_tail"], "```"]
