@@ -365,6 +365,17 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   números **em GPU real** (a próxima execução de `local-validation.py` na
   RX 6650 XT mede a etapa RHI no `benchmark_cpu`) e a comparação em **escala
   de motor** do ADR-0009.
+- **PROGRESS (2026-09-26, relatórios locais 4 e 5):** a etapa RHI tem
+  números **de GPU real**: a RX 6650 XT do operador, Vulkan, `discretegpu`,
+  duas execuções do mesmo código
+  ([Apêndice K](docs/benchmarks/PHASE-0-BASELINE.md), achado 29). O achado 28
+  se confirma e fica mais forte: num dispositivo do outro lado do PCIe, o
+  round-trip de fence (112–162 µs) é **maior** que no lavapipe (68 µs), e um
+  draw 16×16 (192–205 µs) custa pouco mais que um fence. Em GPU real o custo
+  pequeno é espera, não trabalho: o renderer precisa de **uma submissão por
+  quadro**, não de uma por draw. Nenhum orçamento: entre as duas execuções o
+  fence variou 45%. Continua faltando: **frame time**, **câmera**, a etapa
+  **window** no benchmark e a comparação em **escala de motor**.
 - **TARGET STAGE:** antes da Phase 2
 - **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
   faltam frame time e câmera (código: não há renderer), números em GPU real
@@ -758,16 +769,33 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
     nela, e `present` desenha o alvo na imagem da swapchain e a apresenta. No
     CI, sob Xvfb e lavapipe, o primeiro quadro é lido de volta da surface e
     bate nos 65.536 texels; a conformidade roda com `presents: true`;
-  - **uma GPU real**: as checagens `rhi_native` e `window` de
-    `local-validation.py` rodam os probes na máquina do operador, e até haver
-    um relatório, o backend e a janela foram verificados num driver conforme e
-    num servidor X virtual, não em hardware nem num desktop;
+  - ~~**uma GPU real**~~ — **verificada** (2026-09-26, relatórios locais 4 e
+    5): as checagens `rhi_native` e `window` de `local-validation.py`
+    passaram duas vezes no Windows 10 do operador, numa **AMD Radeon RX 6650
+    XT** (Vulkan, `discretegpu`), nos commits `786f77f` e `8331c15`, cujo
+    código é o mesmo do `HEAD` (`check`: `CURRENT_NO_RELEVANT_CHANGE`).
+    Onze de onze casos de conformidade, sem e com apresentação; upload e
+    desenho lidos de volta; a prova da ADR-0028 (256 de 256 texels
+    amostrados, mantidos pela profundidade e tingidos pelo uniform); uma
+    janela Win32 com surface `Bgra8UnormSrgb` FIFO, 0 redraws de espera, e o
+    primeiro quadro lido da surface batendo nos 65.536 texels;
   - ~~**regra provisória de vértice**~~ — **resolvida** (2026-09-26,
     [ADR-0028](docs/adr/ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md)):
     o pipeline declara seus atributos de vértice, os slots de binding
     (uniform, textura, sampler) e o teste de profundidade; a regra do stride
     saiu do backend.
-- **STATUS:** IN PROGRESS
+- **RESOLUTION (2026-09-26):** as três pendências fecharam. O que o título
+  dizia que nunca tinha acontecido aconteceu, e está lido de volta: buffers e
+  texturas alocados num dispositivo real, fences sinalizados por um driver
+  real, WGSL traduzido pelo naga para SPIR-V e compilado pelo driver da AMD,
+  um quadro apresentado num desktop. Os testes que provam isso são os mesmos do CI (`cargo test -p
+  nexora-rhi-wgpu`, `-p nexora-window`) e os probes que a validação local roda
+  (`nexora-rhi-probe`, `nexora-window-probe`). O que **não** está provado, para
+  não ser lido como provado: perda de dispositivo vinda de um driver (só de
+  `lose_device`), Direct3D 12 e Metal em hardware (só WARP e o dispositivo
+  paravirtual do macOS), e qualquer outra GPU. Nada disso é débito deste
+  item: são verificações de um renderer que ainda não existe.
+- **STATUS:** CLOSED (2026-09-26)
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

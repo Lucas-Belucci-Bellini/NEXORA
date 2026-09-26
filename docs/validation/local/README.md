@@ -53,7 +53,7 @@ not local evidence, and a committed one would claim hardware that was not there.
 | `headless_slice_textures` | the runtime resolves, verifies and decodes that set |
 | `rhi_native` | the native RHI backend on **this machine's GPU**: adapter, the eleven conformance cases, a 16×16 upload and a draw, both read back (ADR-0026), and a draw with a vertex layout, a sampled texture, a uniform and a depth test, read back texel for texel (ADR-0028) |
 | `window` | a **real window** on this machine's display: its surface, the conformance cases with presentation on, 60 frames of a 16×16 target shown in it, the first read back from the surface where the platform allows (ADR-0027) |
-| `benchmark_cpu` | the full CPU benchmark, judged against every published budget. The first report that kept it closed DEBT-0013 (baseline Appendix I) |
+| `benchmark_cpu` | the full CPU benchmark, judged against every published budget, plus the RHI stage on this machine's adapter. The first report that kept it closed DEBT-0013 (baseline Appendix I); reports 4 and 5 gave the RHI stage its first GPU numbers (Appendix K) |
 
 ## What it cannot validate yet, and says so
 
@@ -64,7 +64,9 @@ that does not exist. When one of them is built, it gets a check here, and only
 then can a report move it. The RHI, the GPU context, shaders and texture upload
 were on this list until ADR-0026 built them; they are now the `rhi_native`
 check. The window, the swapchain and presentation were on it until ADR-0027;
-they are now the `window` check.
+they are now the `window` check. Reports 4 and 5 (2026-09-26, an RX 6650 XT
+over Vulkan on Windows 10) passed both, which closed DEBT-0046 and the freeze
+gate's second blocker.
 
 A machine with no GPU at all says so with `NEXORA_GPU=none`: `rhi_native` and
 `window` are then recorded as `SKIPPED` with that reason, never as passed. A

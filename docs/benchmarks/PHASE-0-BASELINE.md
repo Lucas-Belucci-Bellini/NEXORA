@@ -2031,3 +2031,74 @@ where one wake-up per wave beat one per job.
   applies: a threshold waits for a second machine, and this stage has only
   one. The operator's RX 6650 XT runs this stage in `benchmark_cpu` of the
   next local report, with the adapter named in its environment table.
+
+# Appendix K — the RHI stage, on a real GPU (2026-09-26)
+
+Appendix J ended by saying the operator's RX 6650 XT would run this stage in
+the next local report. Two reports did, sixteen minutes apart, on the same
+code: report 4 on `786f77f` (the merge of ADR-0028) and report 5 on
+`8331c15`, which only adds report 4's files. `local-validation.py check`
+classifies the second as `CURRENT_NO_RELEVANT_CHANGE` against `HEAD`. The
+benchmark checked its answers on this device before timing, as it does
+everywhere: the upload read back identical and the draw shaded every texel.
+
+| | |
+| --- | --- |
+| machine | machine A of Appendix I: Windows 10, AMD Ryzen 5 5500, 12 logical CPUs |
+| adapter | `AMD Radeon RX 6650 XT`: Vulkan, **device type `discretegpu`** |
+| budget | `Budget::coarse(1)`, 7 samples |
+
+Throughput rows print a rate and the p95 of the time, as in every report;
+the rate is rounded to a whole MiB/s, so it is coarse at 1 KiB.
+
+| measurement | report 4 median | report 5 median | p95 (4 / 5) | lavapipe (J) |
+| --- | ---: | ---: | ---: | ---: |
+| `rhi.device_open` | 275.64 ms | 248.75 ms | 325.36 / 268.07 ms | 21.25 ms |
+| `rhi.fence_roundtrip` | 111.79 µs | 162.34 µs | 180.35 / 289.84 µs | 67.98 µs |
+| `rhi.texture_create_destroy` | 2.36 µs | 4.28 µs | 2.63 / 4.86 µs | 1.58 µs |
+| `rhi.upload_texture_16` | 6 MiB/s | 4 MiB/s | 212.13 / 322.24 µs | 10 MiB/s |
+| `rhi.upload_first_generation` | 58 MiB/s | 52 MiB/s | 328.50 / 353.93 µs | 61 MiB/s |
+| `rhi.upload_mesh_16` | 342 MiB/s | 281 MiB/s | 281.07 / 301.75 µs | 464 MiB/s |
+| `rhi.draw_16` | 192.04 µs | 205.31 µs | 212.93 / 260.45 µs | 279.47 µs |
+
+## Finding 29 — on a real GPU the wait is larger, not smaller, so a renderer submits once per frame
+
+Finding 28 said the ratios would carry over and the absolute numbers would
+not. Both halves held, in a direction worth writing down.
+
+**The fence costs more on the discrete GPU than on the software one.** An
+empty submission and its wait took 112 and 162 µs here, against 68 µs on
+lavapipe. lavapipe's "device" is a thread in the same process; this one is a
+separate processor across PCIe, behind a kernel driver, and every wait
+crosses both. Opening the device is twelve times slower for the same reason
+(249–276 ms against 21 ms): a real driver initialises hardware.
+
+**The draw is almost all wait.** One triangle into a 16×16 target costs
+192–205 µs, barely more than an empty fence. The GPU's work is nothing; what
+is measured is submit, execute, signal and wake. On lavapipe the draw cost
+four times the fence because the CPU did the rasterising. Here it costs about
+1.3–1.7 times the fence.
+
+**So batching pays more here than in Appendix J.** One 1 KiB upload is
+roughly 160–240 µs (1 KiB at 6 and 4 MiB/s); sixteen of them in one
+submission are roughly 270–300 µs (16 KiB at 58 and 52 MiB/s). Sixteen
+separate submissions would cost about ten to thirteen times the batched one,
+against six on lavapipe. The slice's one-fence upload was the right shape on
+the software driver and is more right on the hardware.
+
+The consequence is for code not yet written: **a renderer submits one list
+per frame and waits on at most one fence per frame.** A renderer that waits
+per draw, or per chunk upload, would spend its frame waiting on PCIe round
+trips of a tenth of a millisecond each, whatever the GPU's speed.
+
+### What these numbers are not
+
+- **Not a budget.** The same machine, the same code, sixteen minutes apart,
+  moved the fence round trip by 45% and the draw by 7%. Appendix I's rule
+  still applies, and a spread like that is a reason by itself: a threshold
+  drawn from either run would misjudge the other.
+- **Not a frame.** Still no camera and no frame time; nothing draws the
+  world.
+- **Not Direct3D 12 or Metal on hardware.** `wgpu` picked Vulkan on this
+  machine. D3D12 runs in CI only on WARP, and Metal only on Apple's
+  paravirtual device.
