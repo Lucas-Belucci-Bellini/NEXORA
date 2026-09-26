@@ -26,6 +26,12 @@ pub enum TextureFormat {
 }
 
 impl TextureFormat {
+    /// Whether this format holds colour, as opposed to depth.
+    #[must_use]
+    pub const fn is_color(self) -> bool {
+        !matches!(self, Self::Depth32Float)
+    }
+
     /// Every format, in declaration order.
     pub const ALL: [Self; 5] = [
         Self::R8Unorm,
@@ -95,6 +101,15 @@ impl Usage {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// Every use a buffer can have.
+    pub const BUFFER: Self = Self(
+        Self::VERTEX.0 | Self::INDEX.0 | Self::UNIFORM.0 | Self::COPY_SRC.0 | Self::COPY_DST.0,
+    );
+
+    /// Every use a texture can have.
+    pub const TEXTURE: Self =
+        Self(Self::SAMPLED.0 | Self::COPY_SRC.0 | Self::COPY_DST.0 | Self::RENDER_TARGET.0);
 }
 
 impl BitOr for Usage {
@@ -152,6 +167,138 @@ pub struct ShaderStage {
     pub code: Vec<u8>,
 }
 
+/// The type of one vertex attribute, as the vertex shader receives it.
+///
+/// Every one of these is a vertex format Vulkan, Direct3D 12 and Metal all
+/// accept, and every one is a multiple of four bytes, so attribute offsets
+/// can keep the same alignment as everything else in the contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VertexFormat {
+    /// One `f32`.
+    Float32,
+    /// Two `f32`.
+    Float32x2,
+    /// Three `f32`.
+    Float32x3,
+    /// Four `f32`.
+    Float32x4,
+    /// Four `u8`, read as floats in `[0, 1]`: a packed colour.
+    Unorm8x4,
+    /// One `u32`: an index, a packed id.
+    Uint32,
+}
+
+impl VertexFormat {
+    /// Bytes one attribute of this format takes.
+    #[must_use]
+    pub const fn bytes(self) -> u32 {
+        match self {
+            Self::Float32 | Self::Unorm8x4 | Self::Uint32 => 4,
+            Self::Float32x2 => 8,
+            Self::Float32x3 => 12,
+            Self::Float32x4 => 16,
+        }
+    }
+
+    /// Stable lowercase name, safe for logs and reports.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Float32 => "float32",
+            Self::Float32x2 => "float32x2",
+            Self::Float32x3 => "float32x3",
+            Self::Float32x4 => "float32x4",
+            Self::Unorm8x4 => "unorm8x4",
+            Self::Uint32 => "uint32",
+        }
+    }
+}
+
+/// One attribute of a vertex: where it sits in the vertex, and which shader
+/// input receives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VertexAttribute {
+    /// The shader input location, `@location(n)` in WGSL. Unique in a
+    /// pipeline, and below [`MAX_VERTEX_ATTRIBUTES`].
+    pub location: u32,
+    /// Its type.
+    pub format: VertexFormat,
+    /// Its byte offset inside one vertex. A multiple of four.
+    pub offset: u32,
+}
+
+impl VertexAttribute {
+    /// The one attribute a position-only vertex has: `format` at location 0,
+    /// offset 0.
+    #[must_use]
+    pub const fn position(format: VertexFormat) -> Self {
+        Self {
+            location: 0,
+            format,
+            offset: 0,
+        }
+    }
+}
+
+/// The most attributes a vertex may have. Below every backend's limit.
+pub const MAX_VERTEX_ATTRIBUTES: usize = 8;
+
+/// How a sampler reads between texels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Filter {
+    /// The nearest texel: 16x16 art stays exact at any size.
+    Nearest,
+    /// A blend of the four nearest texels.
+    Linear,
+}
+
+/// What a pipeline expects in one binding slot.
+///
+/// Slot `n` of a pipeline is `@group(0) @binding(n)` in WGSL. A draw supplies
+/// one [`crate::api::Binding`] per slot, in order and of the same kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BindingKind {
+    /// A uniform buffer: constants every invocation reads, such as a camera's
+    /// view-projection. Its buffer needs [`Usage::UNIFORM`] and a size that
+    /// is a multiple of [`UNIFORM_ALIGNMENT`].
+    Uniform,
+    /// A colour texture a shader samples. It needs [`Usage::SAMPLED`].
+    Texture,
+    /// A sampler. It owns no memory: the pipeline declares its filter, and a
+    /// draw names the slot with [`crate::api::Binding::Sampler`].
+    Sampler(Filter),
+}
+
+/// The most binding slots a pipeline may declare.
+pub const MAX_BINDINGS: usize = 8;
+
+/// Uniform buffers are sized in multiples of this, the alignment of a
+/// `vec4<f32>`: the layout rules of WGSL, HLSL constant buffers and Metal
+/// argument buffers all agree on it.
+pub const UNIFORM_ALIGNMENT: u64 = 16;
+
+/// Which fragments pass the depth test, against what the depth texture
+/// already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Compare {
+    /// Nearer than what is there.
+    Less,
+    /// Nearer than or as near as what is there.
+    LessEqual,
+    /// Every fragment.
+    Always,
+}
+
+/// A pipeline's depth test. The depth texture is always
+/// [`TextureFormat::Depth32Float`], the only depth format in the contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DepthState {
+    /// The test.
+    pub compare: Compare,
+    /// Whether passing fragments write their depth.
+    pub write: bool,
+}
+
 /// A graphics pipeline to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineDesc {
@@ -163,6 +310,13 @@ pub struct PipelineDesc {
     pub fragment: ShaderStage,
     /// Bytes per vertex in the vertex buffer. Non-zero, a multiple of four.
     pub vertex_stride: u32,
+    /// What each vertex holds (ADR-0028). At least one attribute, each inside
+    /// the stride.
+    pub attributes: Vec<VertexAttribute>,
+    /// What the shaders read besides vertices, one kind per slot.
+    pub bindings: Vec<BindingKind>,
+    /// The depth test, or `None` to draw without a depth texture.
+    pub depth: Option<DepthState>,
     /// The formats a draw with this pipeline may write to. At least one.
     pub targets: Vec<TextureFormat>,
 }
@@ -204,14 +358,22 @@ impl Capabilities {
 }
 
 /// A descriptor or command the caller got wrong. Never retried unchanged.
-pub(crate) fn refused(message: &'static str) -> Error {
+pub fn refused(message: &'static str) -> Error {
     Error::new(Domain::Render, "rhi", message).with_recovery(Recovery::Reject)
 }
 
 /// Check a buffer descriptor against the rules every backend shares.
-pub(crate) fn check_buffer(desc: &BufferDesc, caps: &Capabilities) -> Result<()> {
+///
+/// # Errors
+///
+/// Names the rule the descriptor breaks.
+pub fn check_buffer(desc: &BufferDesc, caps: &Capabilities) -> Result<()> {
     if desc.usage.is_empty() {
         return Err(refused("a buffer needs at least one usage").with_context("label", &desc.label));
+    }
+    if !Usage::BUFFER.contains(desc.usage) {
+        return Err(refused("a buffer was given a usage only textures have")
+            .with_context("label", &desc.label));
     }
     if desc.size == 0 || desc.size % COPY_ALIGNMENT != 0 {
         return Err(
@@ -230,11 +392,19 @@ pub(crate) fn check_buffer(desc: &BufferDesc, caps: &Capabilities) -> Result<()>
 }
 
 /// Check a texture descriptor against the rules every backend shares.
-pub(crate) fn check_texture(desc: &TextureDesc, caps: &Capabilities) -> Result<()> {
+///
+/// # Errors
+///
+/// Names the rule the descriptor breaks.
+pub fn check_texture(desc: &TextureDesc, caps: &Capabilities) -> Result<()> {
     if desc.usage.is_empty() {
         return Err(
             refused("a texture needs at least one usage").with_context("label", &desc.label)
         );
+    }
+    if !Usage::TEXTURE.contains(desc.usage) {
+        return Err(refused("a texture was given a usage only buffers have")
+            .with_context("label", &desc.label));
     }
     if !caps.supports(desc.format) {
         return Err(
@@ -262,7 +432,11 @@ pub(crate) fn check_texture(desc: &TextureDesc, caps: &Capabilities) -> Result<(
 }
 
 /// Check a pipeline descriptor's shape against the rules every backend shares.
-pub(crate) fn check_pipeline(desc: &PipelineDesc, caps: &Capabilities) -> Result<()> {
+///
+/// # Errors
+///
+/// Names the rule the descriptor breaks.
+pub fn check_pipeline(desc: &PipelineDesc, caps: &Capabilities) -> Result<()> {
     for (stage, shader) in [("vertex", &desc.vertex), ("fragment", &desc.fragment)] {
         if shader.entry.is_empty() || shader.code.is_empty() {
             return Err(refused("a shader stage needs an entry point and code")
@@ -277,14 +451,73 @@ pub(crate) fn check_pipeline(desc: &PipelineDesc, caps: &Capabilities) -> Result
                 .with_context("stride", desc.vertex_stride.to_string()),
         );
     }
+    check_attributes(desc)?;
+    if desc.bindings.len() > MAX_BINDINGS {
+        return Err(
+            refused("a pipeline declares more binding slots than any backend allows")
+                .with_context("label", &desc.label)
+                .with_context("slots", desc.bindings.len().to_string()),
+        );
+    }
+    if desc.depth.is_some() && !caps.supports(TextureFormat::Depth32Float) {
+        return Err(
+            refused("this backend has no depth format for the depth test")
+                .with_context("label", &desc.label),
+        );
+    }
     if desc.targets.is_empty() {
         return Err(refused("a pipeline needs at least one target format")
             .with_context("label", &desc.label));
+    }
+    if let Some(format) = desc.targets.iter().find(|format| !format.is_color()) {
+        return Err(
+            refused("a pipeline's targets are colour formats; depth is not one")
+                .with_context("label", &desc.label)
+                .with_context("format", format.as_str()),
+        );
     }
     if let Some(format) = desc.targets.iter().find(|format| !caps.supports(**format)) {
         return Err(refused("this backend cannot render to that format")
             .with_context("label", &desc.label)
             .with_context("format", format.as_str()));
+    }
+    Ok(())
+}
+
+/// The vertex layout rules: some attributes, not too many, unique locations
+/// below the limit, and each four-byte aligned inside the stride.
+fn check_attributes(desc: &PipelineDesc) -> Result<()> {
+    if desc.attributes.is_empty() || desc.attributes.len() > MAX_VERTEX_ATTRIBUTES {
+        return Err(
+            refused("a pipeline needs between one and eight vertex attributes")
+                .with_context("label", &desc.label)
+                .with_context("attributes", desc.attributes.len().to_string()),
+        );
+    }
+    for (index, attribute) in desc.attributes.iter().enumerate() {
+        let location_ok = (attribute.location as usize) < MAX_VERTEX_ATTRIBUTES;
+        let unique = desc.attributes[..index]
+            .iter()
+            .all(|earlier| earlier.location != attribute.location);
+        if !location_ok || !unique {
+            return Err(
+                refused("vertex attribute locations are unique and below eight")
+                    .with_context("label", &desc.label)
+                    .with_context("location", attribute.location.to_string()),
+            );
+        }
+        let end = u64::from(attribute.offset) + u64::from(attribute.format.bytes());
+        if u64::from(attribute.offset) % COPY_ALIGNMENT != 0 || end > u64::from(desc.vertex_stride)
+        {
+            return Err(refused(
+                "a vertex attribute must be four-byte aligned and inside the stride",
+            )
+            .with_context("label", &desc.label)
+            .with_context("location", attribute.location.to_string())
+            .with_context("offset", attribute.offset.to_string())
+            .with_context("format", attribute.format.as_str())
+            .with_context("stride", desc.vertex_stride.to_string()));
+        }
     }
     Ok(())
 }
@@ -339,6 +572,10 @@ mod tests {
         assert!(check_buffer(&ok, &caps).is_ok());
         for bad in [
             BufferDesc {
+                usage: Usage::VERTEX | Usage::RENDER_TARGET,
+                ..ok.clone()
+            },
+            BufferDesc {
                 size: 0,
                 ..ok.clone()
             },
@@ -372,6 +609,10 @@ mod tests {
         };
         assert!(check_texture(&ok, &caps).is_ok());
         for bad in [
+            TextureDesc {
+                usage: Usage::SAMPLED | Usage::VERTEX,
+                ..ok.clone()
+            },
             TextureDesc {
                 width: 0,
                 ..ok.clone()
@@ -412,6 +653,9 @@ mod tests {
             vertex: stage.clone(),
             fragment: stage.clone(),
             vertex_stride: 12,
+            attributes: vec![VertexAttribute::position(VertexFormat::Float32x3)],
+            bindings: Vec::new(),
+            depth: None,
             targets: vec![TextureFormat::Rgba8Unorm],
         };
         assert!(check_pipeline(&ok, &caps).is_ok());
@@ -423,6 +667,16 @@ mod tests {
             code: Vec::new(),
             ..stage
         };
+        let mut with_depth = caps.clone();
+        with_depth.formats.push(TextureFormat::Depth32Float);
+        let depth_target = PipelineDesc {
+            targets: vec![TextureFormat::Depth32Float],
+            ..ok.clone()
+        };
+        assert!(
+            check_pipeline(&depth_target, &with_depth).is_err(),
+            "depth is not a colour target, even where it is supported"
+        );
         for bad in [
             PipelineDesc {
                 vertex: no_entry,
@@ -446,6 +700,55 @@ mod tests {
             },
             PipelineDesc {
                 targets: vec![TextureFormat::R8Unorm],
+                ..ok.clone()
+            },
+            PipelineDesc {
+                attributes: Vec::new(),
+                ..ok.clone()
+            },
+            PipelineDesc {
+                // Twelve bytes of position in a twelve-byte stride leave no
+                // room at offset 4.
+                attributes: vec![VertexAttribute {
+                    offset: 4,
+                    ..VertexAttribute::position(VertexFormat::Float32x3)
+                }],
+                ..ok.clone()
+            },
+            PipelineDesc {
+                attributes: vec![VertexAttribute {
+                    offset: 2,
+                    ..VertexAttribute::position(VertexFormat::Float32)
+                }],
+                ..ok.clone()
+            },
+            PipelineDesc {
+                attributes: vec![
+                    VertexAttribute::position(VertexFormat::Float32),
+                    VertexAttribute {
+                        offset: 4,
+                        ..VertexAttribute::position(VertexFormat::Float32)
+                    },
+                ],
+                ..ok.clone()
+            },
+            PipelineDesc {
+                attributes: vec![VertexAttribute {
+                    location: MAX_VERTEX_ATTRIBUTES as u32,
+                    ..VertexAttribute::position(VertexFormat::Float32)
+                }],
+                ..ok.clone()
+            },
+            PipelineDesc {
+                bindings: vec![BindingKind::Uniform; MAX_BINDINGS + 1],
+                ..ok.clone()
+            },
+            PipelineDesc {
+                // No depth format on this backend, so no depth test.
+                depth: Some(DepthState {
+                    compare: Compare::Less,
+                    write: true,
+                }),
                 ..ok.clone()
             },
         ] {

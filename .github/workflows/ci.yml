@@ -50,11 +50,22 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The native RHI backend's tests need a GPU and the runner has none, so
+      # it gets Mesa's lavapipe: a conformant Vulkan driver, in software. The
+      # tests fail rather than skip when no adapter answers (ADR-0026).
+      # The window host's need a display, so the runner gets Xvfb, a real X
+      # server with no screen, and the keyboard library winit loads at run
+      # time (ADR-0027). No display is a failure too, not a skip.
+      - name: Install a software Vulkan driver and a virtual display
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mesa-vulkan-drivers xvfb libxkbcommon-x11-0
+
       # STAGE: UNIT + INTEGRATION + DETERMINISM + SAVE TESTS
       # The determinism and save/load suites live alongside the units they
       # cover; the whole workspace runs as one gate.
       - name: Test
-        run: cargo test --workspace --all-targets
+        run: xvfb-run -a -s "-screen 0 640x480x24" cargo test --workspace --all-targets
 
       - name: Documentation tests
         run: cargo test --workspace --doc
@@ -64,6 +75,30 @@ jobs:
         run: cargo build --workspace --release
 
       # STAGE: SMOKE TEST
+      # The native backend on the runner's software Vulkan: conformance, then
+      # an upload and a draw, both read back from the device.
+      - name: Smoke test the native RHI backend
+        run: |
+          ./target/release/nexora-rhi-probe | tee "${RUNNER_TEMP}/rhi-probe.txt"
+          grep '^conformance        11/11 cases on wgpu$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+          grep '^draw               16 of 16 texels shaded by the GPU$' "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+          # ADR-0028: a sampled image, a depth test and a uniform, each read back.
+          grep '^bound              256 of 256 texels sampled, 256 kept by depth, 256 tinted by a uniform$' \
+            "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+
+      # The window host on Xvfb: a real X11 window, a Vulkan surface on it, the
+      # conformance suite with presentation on, and 60 frames shown. The first
+      # is read back from the surface image and must show the 16x16 target's
+      # four quadrants in place: upside down or red-for-blue fails.
+      - name: Smoke test the window host and presentation
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" ./target/release/nexora-window-probe \
+            | tee "${RUNNER_TEMP}/window-probe.txt"
+          grep '^conformance        11/11 cases on wgpu, presenting$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+          grep '^frame              65536 of 65536 window texels show the 16x16 target, read back from the surface$' \
+            "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+          grep '^presented          61 frames, 60 of them by the probe$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.
       - name: Smoke test the headless vertical slice
@@ -76,7 +111,7 @@ jobs:
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # The RHI's null backend, held to the suite every backend must pass,
           # with no GPU initialized (ADR-0025). Its pool is the third above.
-          grep '^rhi                null backend, conformance 9/9 cases, no GPU initialized$' \
+          grep '^rhi                null backend, conformance 11/11 cases, no GPU initialized$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones must register, show its own surface in a mesh, and survive
@@ -92,7 +127,18 @@ jobs:
       - name: Smoke test the benchmark harness
         run: |
           ./target/release/nexora-benchmark --smoke \
-            --scratch "${RUNNER_TEMP}/bench" > /dev/null
+            --scratch "${RUNNER_TEMP}/bench" > "${RUNNER_TEMP}/bench.txt"
+          # Physics' published budget is judged in every run (DEBT-0013). Its
+          # class is not gated: time, unlike memory, depends on the runner.
+          grep '^published budgets (1):$' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^  physics.thousand_bodies_step  *median .* · [a-z]*, p95 .* · [a-z]*$' \
+            "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # The RHI stage runs on the runner's software Vulkan (DEBT-0008). It
+          # checks its own answers before timing, so a run that reaches the
+          # table drew what it claims; the adapter is printed, never assumed.
+          grep '^gpu adapter: .* (vulkan, cpu)$' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^rhi.draw_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^rhi.upload_first_generation ' "${RUNNER_TEMP}/bench.txt" > /dev/null
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and

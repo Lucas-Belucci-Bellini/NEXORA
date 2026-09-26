@@ -332,9 +332,10 @@ impl FrameBudget {
     /// which is arithmetic — one frame at 20 Hz is 50 ms — and the other three
     /// are 2×, 4× and 8× it, which is a convention this constructor's name
     /// carries so that nobody reads them as measured. The only honest thresholds
-    /// are the ones a system publishes from its own numbers, and no system in
-    /// this repository has yet: see `DEBT-0013`, which is blocked on measuring
-    /// physics somewhere other than one shared container.
+    /// are the ones a system publishes from its own numbers. The first is
+    /// physics' substep budget (`nexora_physics::budget`, DEBT-0013), measured
+    /// on two machines; the frame as a whole has none yet, because no process
+    /// runs frames against a real clock (DEBT-0041).
     #[must_use]
     pub fn doubling_from(period: Duration) -> Self {
         let scale = |factor: u32| period.checked_mul(factor).unwrap_or(Duration::MAX);

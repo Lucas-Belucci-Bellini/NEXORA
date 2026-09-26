@@ -16,11 +16,15 @@ the commit it ran on and nothing newer.
 
 Two rules this script keeps, and why:
 
-* Nothing is marked as passed that did not run. Window, RHI, GPU context,
-  swapchain, presentation, shaders, texture upload, rendering, real input
-  devices and client mode are recorded as NOT_IMPLEMENTED, because the engine
-  has no code for them yet -- a real GPU cannot validate code that does not
-  exist, and a report that said "not tested" would invite someone to test it.
+* Nothing is marked as passed that did not run. The native RHI backend is a
+  check (`rhi_native`): it opens this machine's GPU, runs the conformance
+  suite, uploads a texture and draws, reading both back (ADR-0026). The window
+  host is another (`window`): it opens a window, presents to it, and reads the
+  first frame back from the surface where the platform allows (ADR-0027). A
+  renderer, real input devices and client mode are recorded as
+  NOT_IMPLEMENTED, because the engine has no code for them yet --
+  a real GPU cannot validate code that does not exist, and a report that said
+  "not tested" would invite someone to test it.
 * Nothing personal is recorded: no hostname, user name, serial number, MAC
   address or absolute path. Command output is kept only as short tails, with
   the repository root and the home directory replaced by placeholders.
@@ -56,20 +60,16 @@ RELEVANT = ["engine/", "tools/", "content/", "benchmarks/", "Cargo.toml", "Cargo
 STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 
 # What a real machine is needed for, and why none of it can pass yet.
+# The window, its surface (swapchain) and presentation left this list with
+# ADR-0027: they are the `window` check now.
 HARDWARE_GATED = [
-    ("window", "no window host exists in the engine"),
-    ("rhi", "contract and null backend built, conformance runs in every slice (ADR-0025); "
-            "no native backend exists, so no GPU has run it"),
-    ("gpu_context", "needs a native RHI backend"),
-    ("swapchain", "needs a native RHI backend and a window"),
-    ("presentation", "needs a swapchain"),
-    ("shaders", "no shader pipeline exists"),
-    ("texture_upload", "uploads pass the null backend's rules as RGBA8 (ADR-0025); "
-                       "no native backend moves a byte to a GPU"),
-    ("rendering", "no renderer; meshes are built and checked as data (ADR-0012)"),
+    ("rendering", "no renderer: the native backend draws one triangle (rhi_native) and presents "
+                  "a 16x16 target (window); nothing draws the world; meshes are data (ADR-0012)"),
     ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
-    ("benchmark_gpu_stages", "DEBT-0008: the plan's GPU stages have no implementation"),
+    ("benchmark_gpu_stages", "partly built: the RHI stage (device, fence, upload, draw) runs inside "
+                             "benchmark_cpu on this machine's adapter; window frame time and camera "
+                             "have no implementation (DEBT-0008)"),
 ]
 
 
@@ -402,6 +402,8 @@ def run_checks(scratch: Path, quick: bool) -> list:
     headless = str(release / _exe("nexora-headless"))
     forge = str(release / _exe("nexora-texture-forge"))
     bench = str(release / _exe("nexora-benchmark"))
+    probe = str(release / _exe("nexora-rhi-probe"))
+    window_probe = str(release / _exe("nexora-window-probe"))
     slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
@@ -427,8 +429,31 @@ def run_checks(scratch: Path, quick: bool) -> list:
         headless, "--quiet", "--radius", "1", "--save", str(scratch / "t.nxsv"),
         "--content", "content/first-generation/blocks.json",
         "--resources", str(scratch / "fg")], slice_lines))
+    # The native RHI backend on this machine's GPU: device, conformance,
+    # WGSL shaders, upload and draw, both read back (ADR-0026). A machine with
+    # no GPU says so; it is never recorded as a pass.
+    if os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("rhi_native", "NEXORA_GPU=none: this machine declares no GPU"))
+    else:
+        results.append(needs_build("rhi_native", [probe],
+                                   _lines("adapter", "conformance", "upload", "draw", "bound",
+                                          "result")))
+    # The window host: a window, its surface, the conformance suite with
+    # presentation on, and frames shown in it, the first read back from the
+    # surface where the platform allows (ADR-0027). No display is declared,
+    # like no GPU; otherwise its absence is a failure.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("window", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("window", "NEXORA_GPU=none: nothing can present without a GPU"))
+    else:
+        results.append(needs_build("window", [window_probe],
+                                   _lines("adapter", "window", "surface", "conformance", "frame",
+                                          "presented", "result")))
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
-    # DEBT-0008: the container's numbers are one machine's.
+    # DEBT-0008: the container's numbers are one machine's. It also runs the
+    # RHI stage on this machine's adapter and names the adapter in its
+    # environment table; the check keeps its id so old reports still compare.
     results.append(needs_build("benchmark_cpu", [bench, "--markdown"] + (["--smoke"] if quick else [])
                                + ["--scratch", str(scratch / "bench")],
                                lambda out: "see the report's benchmark section", keep_whole=True))
@@ -516,7 +541,7 @@ def render_markdown(report: dict) -> str:
     if report.get("benchmark_output"):
         # Markdown already: the benchmark is run with --markdown.
         # Its headings are demoted one level so they nest under this section.
-        lines += ["", "## CPU benchmark", ""]
+        lines += ["", "## Benchmark (CPU stages, and the RHI stage on this machine's adapter)", ""]
         lines += ["#" + line if line.startswith("#") else line for line in report["benchmark_output"]]
     elif report.get("benchmark_tail"):
         lines += ["", "## CPU benchmark (tail)", "", "```text", *report["benchmark_tail"], "```"]

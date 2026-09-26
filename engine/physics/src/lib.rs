@@ -64,6 +64,7 @@
 //!   `PHYSICS.md`, all later items in its own build order.
 
 pub mod body;
+pub mod budget;
 pub mod character;
 pub mod collision;
 pub mod gravity;
@@ -75,6 +76,7 @@ pub mod voxel;
 pub mod world;
 
 pub use body::{BodyDescriptor, BodyId, BodyType, RigidBody, SleepState};
+pub use budget::{SubstepBudget, CROWD_SUBSTEP};
 pub use character::{CharacterController, GroundState, MoveIntent};
 pub use collision::{
     cell_span, resolve, resolve_from, sweep_axis, AxisSweep, Contact, Resolution, StartState,

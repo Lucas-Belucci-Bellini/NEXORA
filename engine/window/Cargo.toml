@@ -1,0 +1,37 @@
+[package]
+name = "nexora-window"
+description = "The window host: one window, the event loop that owns it, and the native RHI presenting to it."
+version.workspace = true
+edition.workspace = true
+# Inherited from nexora-rhi-wgpu (wgpu 30).
+rust-version = "1.87"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_window"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexora-window-probe"
+path = "src/main.rs"
+
+# The event loop must run on the main thread (macOS requires it), and the test
+# harness runs tests on worker threads: this test is its own `main`.
+[[test]]
+name = "window"
+path = "tests/window.rs"
+harness = false
+
+# winit, pinned, and only what the host uses (ADR-0027): raw-window-handle 0.6
+# to give wgpu the window, and X11 on Linux. Wayland is left out because its
+# client libraries must be present when the crate is *built*, not only run.
+# Windows and macOS need no feature: their back ends are always compiled in.
+[dependencies]
+nexora-foundation.workspace = true
+nexora-rhi.workspace = true
+nexora-rhi-wgpu.workspace = true
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11"] }
+
+[lints]
+workspace = true

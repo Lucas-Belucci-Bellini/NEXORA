@@ -57,7 +57,7 @@ use nexora_world::world::{World, WorldDescriptor};
 use crate::conformance::SweepFixture;
 use crate::{
     consume, measure, measure_throughput, record_bytes, record_quantity, Budget, Measurement,
-    Unmeasured,
+    Published, Unmeasured,
 };
 
 /// Counts the questions a source is asked, so the lookup can be priced by
@@ -2340,10 +2340,11 @@ pub fn ffi(budget: Budget) -> Vec<Measurement> {
     measurements
 }
 
-/// The plan's slice stages this build actually measures.
+/// The plan's slice stages this run actually measured. The RHI stage is one
+/// of them only when an adapter answered ([`crate::gpu::rhi`]).
 #[must_use]
-pub fn measured_stages() -> Vec<&'static str> {
-    vec![
+pub fn measured_stages(rhi_measured: bool) -> Vec<&'static str> {
+    let mut stages = vec![
         "16³ voxel chunk",
         "mesh generation",
         "1,000 entities",
@@ -2352,31 +2353,48 @@ pub fn measured_stages() -> Vec<&'static str> {
         "streaming",
         "save/load",
         "headless server",
-    ]
+    ];
+    if rhi_measured {
+        stages.push("RHI");
+    }
+    stages
 }
 
-/// The stages of the plan's vertical slice that Phase 0 cannot measure.
+/// Budgets the engine's systems have published, each against the measurement
+/// it was derived from.
+///
+/// # Errors
+///
+/// Returns an error when a published budget's thresholds do not rise, which
+/// is a mistake in the constants rather than in this run.
+pub fn published_budgets() -> Result<Vec<Published>> {
+    let [target, warning, critical, emergency] = nexora_physics::CROWD_SUBSTEP.thresholds();
+    Ok(vec![Published {
+        measurement: "physics.thousand_bodies_step",
+        owner: "physics (`physics::budget`, DEBT-0013)",
+        budget: FrameBudget::new(target, warning, critical, emergency)?,
+    }])
+}
+
+/// The stages of the plan's vertical slice that this run did not measure.
 ///
 /// Listed rather than skipped: a benchmark table with silent gaps reads as a
-/// benchmark that covered everything.
+/// benchmark that covered everything. `rhi_gap` is why the RHI stage did not
+/// run, or `None` when it did ([`crate::gpu::RhiStage::gap`]).
 #[must_use]
-pub fn unmeasured_stages() -> Vec<Unmeasured> {
+pub fn unmeasured_stages(rhi_gap: Option<&'static str>) -> Vec<Unmeasured> {
     let mut stages = vec![
         Unmeasured {
             name: "window",
-            reason: "no windowing layer; ADR-0005",
+            reason: "a window host exists (ADR-0027); the benchmark does not open one (DEBT-0008)",
         },
         Unmeasured {
             name: "input",
-            reason: "meaningless without a window",
-        },
-        Unmeasured {
-            name: "RHI",
-            reason: "boundary specified, no backend implemented",
+            reason: "no device signal reaches the engine yet (DEBT-0043)",
         },
         Unmeasured {
             name: "camera",
-            reason: "depends on the RHI",
+            reason: "no view or projection exists: the renderer owns the camera, and there is no renderer",
         },
         Unmeasured {
             name: "mod boundary",
@@ -2384,7 +2402,7 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
         },
         Unmeasured {
             name: "frame time",
-            reason: "no render loop exists to time",
+            reason: "the window host presents a test target; no renderer draws a frame to time",
         },
         Unmeasured {
             name: "incremental build",
@@ -2395,6 +2413,13 @@ pub fn unmeasured_stages() -> Vec<Unmeasured> {
             reason: "qualitative; the plan scores it separately from timing",
         },
     ];
+
+    if let Some(reason) = rhi_gap {
+        stages.push(Unmeasured {
+            name: "RHI",
+            reason,
+        });
+    }
 
     // Measured only when the C++ translation unit is linked in. Built without
     // the `cpp` feature there is no second language, so the honest report is
@@ -2483,9 +2508,18 @@ mod tests {
         // in the unmeasured list after the entity suite started measuring it:
         // the report claimed the stage was missing on the same page it printed
         // numbers for it.
-        let measured = measured_stages();
-        let unmeasured = unmeasured_stages();
+        for (measured, unmeasured) in [
+            (measured_stages(true), unmeasured_stages(None)),
+            (
+                measured_stages(false),
+                unmeasured_stages(Some(crate::gpu::NO_ADAPTER)),
+            ),
+        ] {
+            stages_partition_the_plan(&measured, &unmeasured);
+        }
+    }
 
+    fn stages_partition_the_plan(measured: &[&'static str], unmeasured: &[Unmeasured]) {
         for stage in PLAN_SLICE_STAGES {
             let is_measured = measured.contains(&stage);
             let is_declared = unmeasured.iter().any(|entry| entry.name == stage);
@@ -2499,7 +2533,7 @@ mod tests {
             );
         }
 
-        for stage in &measured {
+        for stage in measured {
             assert!(
                 PLAN_SLICE_STAGES.contains(stage),
                 "`{stage}` is claimed as measured but is not a stage of the plan"

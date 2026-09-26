@@ -349,9 +349,26 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   reference de kernels. Enquanto (a) não for medível aqui, o gate não fecha, e
   `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserva o lock do mapa de linguagens
   para o benchmark completo.
+- **PROGRESS (2026-09-26):** a etapa **RHI** deixou de ser "presa no
+  hardware". A ADR-0026 construiu o backend nativo e a ADR-0027 a janela, e o
+  lavapipe (Vulkan por software) roda os dois sem GPU. O benchmark agora mede
+  a etapa RHI (`nexora_benchmark::gpu`): abrir o device, round-trip de fence,
+  criar e destruir textura, upload de uma textura 16×16, upload das dezesseis
+  da primeira geração num fence só, upload do vertex buffer da região 16³
+  meshada, e um draw 16×16. Antes de cronometrar, ele confere as respostas
+  (leitura de volta do upload e do draw). O relatório imprime o adaptador, e
+  no CI ele é `llvmpipe … (vulkan, cpu)`: número de CPU, não de GPU. Resultado
+  em [Apêndice J](docs/benchmarks/PHASE-0-BASELINE.md), achado 28: o fence
+  domina o que é pequeno, e o upload da fatia em um fence só custa um sexto de
+  dezesseis uploads separados. O que ainda falta desta dívida: **frame time**
+  e **câmera** (não existe renderer), a etapa **window** dentro do benchmark,
+  números **em GPU real** (a próxima execução de `local-validation.py` na
+  RX 6650 XT mede a etapa RHI no `benchmark_cpu`) e a comparação em **escala
+  de motor** do ADR-0009.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS — desbloqueado do lado da segunda linguagem; preso
-  no hardware
+- **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
+  faltam frame time e câmera (código: não há renderer), números em GPU real
+  (relatório local) e a comparação em escala de motor
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 
@@ -601,6 +618,11 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   real. A ordem, porém, é depois do `DEBT-0018` e do `DEBT-0027`: um host que
   rode quadros enquanto a geração e o meshing ainda moram na thread do tick
   mede o atraso deles, não o loop.
+- **NOTE (2026-09-25):** o host de janela existe
+  ([ADR-0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md)):
+  `nexora_window::Client::frame` é chamado uma vez por redesenho, e é o lugar
+  natural do relógio num cliente. Nada o liga ao `runtime::frame` ainda; o
+  caminho headless descrito acima continua válido.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
@@ -681,11 +703,15 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** existir qualquer processo com janela ou com laço de eventos do
   sistema operacional. Depende do `DEBT-0041` pela mesma razão que ele depende
   do `DEBT-0018` e do `DEBT-0027`: medir ou exercitar a borda antes de haver
-  host é medir o roteiro.
+  host é medir o roteiro. **Disparado em 2026-09-25**
+  ([ADR-0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md)):
+  o `nexora-window` roda o laço de eventos do sistema operacional, e o `winit`
+  já entrega a ele eventos de teclado e mouse, que o host hoje descarta. A
+  tradução para `Signal` é o próximo passo desta dívida, não deste host.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
-### DEBT-0046 — O RHI só tem o backend nulo: nenhum byte jamais chegou a uma GPU
+### DEBT-0046 — O RHI ainda não apresenta nada, e nenhuma GPU real o executou
 
 - **SYSTEM:** `engine/rhi`
 - **CLASS:** ARCHITECTURAL
@@ -718,7 +744,30 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   Windows 10 com uma AMD Radeon RX 6650 XT, que tem drivers Vulkan e
   Direct3D 12.
 - **TARGET STAGE:** Phase 0 (bloqueia o congelamento)
-- **STATUS:** OPEN
+- **PROGRESS (2026-09-25, ADR-0026):** o backend nativo existe:
+  `engine/rhi-wgpu`, `wgpu` 30 sobre Vulkan / Direct3D 12 / Metal, com código
+  seguro, WGSL validado pelo naga e as regras compartilhadas com o backend nulo
+  (`rhi::kit`). Ele passa nos nove casos de conformidade e envia uma textura
+  16×16 e desenha um triângulo, lendo os dois de volta byte a byte, no
+  **lavapipe** (Vulkan por software da Mesa) do container e do CI. Duas
+  regras que só um driver teria pego foram para as regras compartilhadas.
+  Continua aberto, e só isto:
+  - ~~**apresentação**~~ — **construída** (2026-09-25,
+    [ADR-0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md)):
+    `engine/window` abre uma janela com o `winit`, o `WgpuRhi` abre a surface
+    nela, e `present` desenha o alvo na imagem da swapchain e a apresenta. No
+    CI, sob Xvfb e lavapipe, o primeiro quadro é lido de volta da surface e
+    bate nos 65.536 texels; a conformidade roda com `presents: true`;
+  - **uma GPU real**: as checagens `rhi_native` e `window` de
+    `local-validation.py` rodam os probes na máquina do operador, e até haver
+    um relatório, o backend e a janela foram verificados num driver conforme e
+    num servidor X virtual, não em hardware nem num desktop;
+  - ~~**regra provisória de vértice**~~ — **resolvida** (2026-09-26,
+    [ADR-0028](docs/adr/ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md)):
+    o pipeline declara seus atributos de vértice, os slots de binding
+    (uniform, textura, sampler) e o teste de profundidade; a regra do stride
+    saiu do backend.
+- **STATUS:** IN PROGRESS
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
@@ -1096,8 +1145,29 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   a partir de uma execução de um container compartilhado seria precisão não
   merecida.
 - **TRIGGER:** segunda máquina medida, ou entrada na Phase 4.
+- **RESOLUTION (2026-09-25):** a segunda máquina chegou pela ponte de validação
+  local: um Ryzen 5 5500 com Windows 10, no relatório 3. Todas as linhas de
+  física ficaram 1,27–1,58× mais lentas no container, na mesma ordem: a
+  diferença entre as máquinas é um fator, não uma forma
+  (`docs/benchmarks/PHASE-0-BASELINE.md`, Apêndice I, achado 27). O orçamento
+  publicado é `nexora_physics::budget::CROWD_SUBSTEP`, para um substep de 1.000
+  corpos acordados:
+  - **TARGET 250 µs** — o pior p95 medido (168 µs) mais metade;
+  - **WARNING 500 µs**;
+  - **CRITICAL 1 ms**;
+  - **EMERGENCY 2 ms** — oito substeps de recuperação de 2 ms enchem um quadro
+    de 60 Hz, e a partir daí a física sozinha não deixa o quadro se recuperar.
+
+  Os testes do módulo prendem essa derivação às constantes de onde ela vem. O
+  benchmark classifica a medição contra o orçamento em toda execução
+  (**Published budgets**), e o CI confere que a linha existe. A classe não é
+  cobrada no CI, porque tempo, ao contrário de memória, depende do runner. Nas
+  duas máquinas, mediana e p95 caem em `target`. O mesmo achado mostra por que
+  **I/O e o job system não podem publicar** a partir destas duas máquinas: o
+  disco é ~3× mais lento no Windows, e acordar thread é 2–4× mais lento no
+  container.
 - **TARGET STAGE:** Phase 4
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-09-25)
 
 ### DEBT-0014 — Corpos não colidem com corpos
 

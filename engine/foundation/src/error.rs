@@ -59,6 +59,9 @@ pub enum Domain {
     /// The render hardware interface: devices, GPU resources, submission and
     /// presentation.
     Render,
+    /// The operating system's side of the client: windows and the event loop
+    /// that delivers their events.
+    Platform,
 }
 
 impl Domain {
@@ -85,6 +88,7 @@ impl Domain {
             Self::Input => "input",
             Self::Query => "query",
             Self::Render => "render",
+            Self::Platform => "platform",
         }
     }
 }
