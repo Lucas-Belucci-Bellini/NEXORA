@@ -710,6 +710,7 @@ dependencies = [
 name = "nexora-benchmark"
 version = "0.0.1"
 dependencies = [
+ "nexora-camera",
  "nexora-entity",
  "nexora-ffi-probe",
  "nexora-foundation",
@@ -722,6 +723,13 @@ dependencies = [
  "nexora-simulation",
  "nexora-streaming",
  "nexora-world",
+]
+
+[[package]]
+name = "nexora-camera"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
 ]
 
 [[package]]

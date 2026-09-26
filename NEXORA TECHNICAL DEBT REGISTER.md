@@ -376,6 +376,14 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   quadro**, não de uma por draw. Nenhum orçamento: entre as duas execuções o
   fence variou 45%. Continua faltando: **frame time**, **câmera**, a etapa
   **window** no benchmark e a comparação em **escala de motor**.
+- **PROGRESS (2026-09-26, ADR-0029):** a etapa **câmera** existe e é medida:
+  `engine/camera` (visão, projeção reverse-Z, frustum e origem de render
+  inteira flutuante) e `suites::camera`, com a câmera a 2^40 blocos. Resolver
+  a câmera custa ~0,1 µs e testar as 625 colunas de um observador de raio 12
+  custa 3–7 µs: menos de 0,05% de um quadro de 60 Hz
+  ([Apêndice L](docs/benchmarks/PHASE-0-BASELINE.md), achado 30). Continua
+  faltando: **frame time** (nada desenha um quadro pela câmera ainda), a etapa
+  **window** no benchmark e a comparação em **escala de motor**.
 - **TARGET STAGE:** antes da Phase 2
 - **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
   faltam frame time e câmera (código: não há renderer), números em GPU real

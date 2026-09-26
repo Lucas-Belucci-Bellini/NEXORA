@@ -135,6 +135,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::input(standard)?);
     measurements.extend(suites::persistence(coarse, &options.scratch)?);
     measurements.extend(suites::meshing(coarse)?);
+    measurements.extend(suites::camera(standard)?);
     // The RHI stage uploads what the mesh stage produced: one workload.
     let mesh_vertices = measurements
         .iter()

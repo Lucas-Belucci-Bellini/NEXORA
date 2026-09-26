@@ -139,6 +139,10 @@ jobs:
           grep '^gpu adapter: .* (vulkan, cpu)$' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^rhi.draw_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^rhi.upload_first_generation ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # The camera stage (ADR-0029) checks its target lands mid-screen and
+          # that culling keeps some columns and drops others before timing.
+          grep '^camera.sample ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^camera.visible_columns_r12 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and

@@ -2102,3 +2102,54 @@ trips of a tenth of a millisecond each, whatever the GPU's speed.
 - **Not Direct3D 12 or Metal on hardware.** `wgpu` picked Vulkan on this
   machine. D3D12 runs in CI only on WARP, and Metal only on Apple's
   paravirtual device.
+
+# Appendix L — the camera stage (2026-09-26)
+
+The slice's `camera` stage had no code until ADR-0029. `suites::camera` now
+resolves a camera standing **2^40 blocks out**, at the far corner of the
+world, and tests the 625 columns a radius-12 observer streams (full height,
+-64 to 320) against its frustum. Before timing, it checks that the point the
+camera looks at lands mid-screen and that culling keeps some columns and
+drops others.
+
+| | |
+| --- | --- |
+| machine | the shared container (machine B of Appendix I), 4 logical CPUs |
+| budget | `Budget::standard(1)` |
+| camera | 70° vertical field of view, 1600×900, near 0.1, far 512, looking down and ahead |
+
+| measurement | run 1 median | run 2 median | p95 (1 / 2) |
+| --- | ---: | ---: | ---: |
+| `camera.sample` | 112.0 ns | 145.0 ns | 152.0 / 147.0 ns |
+| `camera.cull_columns_r12` | 3.42 µs | 4.35 µs | 5.52 / 6.87 µs |
+| `camera.visible_columns_r12` | 261 | 261 | — |
+
+## Finding 30 — the camera costs nothing a frame, and the edge of the world costs the same as its centre
+
+**Resolving the camera costs about a tenth of a microsecond.** That covers
+the view, the reverse-Z projection, their product in `f64`, the rounding to
+`f32` and the six frustum planes. Culling a radius-12 observer's 625 columns
+costs 3–7 µs, about 5–11 ns a column. Together that is **under 0.05% of a
+60 Hz frame**. There is nothing in this stage worth optimising, and no reason
+to cull more coarsely than per column.
+
+**The edge of the world is not special.** The camera stands 2^40 blocks out,
+where an `f32` step is 131,072 blocks, and the numbers show no cost for it.
+The work happens relative to an integer origin, so it is the same arithmetic
+at the centre and at the edge. The camera's tests check this as bits, not as
+time: the same scene at the centre and at the edge produces identical
+matrices.
+
+**A 70° view keeps 261 of 625 columns, 42%.** The frustum is a wedge, so
+more than half the columns a streaming radius loads are behind or beside the
+camera. This is the first number that says what a renderer would *not* have
+to draw. It is conservative: a column near a frustum corner is kept.
+
+### What these numbers are not
+
+- **Not a frame.** Frame time needs a pass that draws the meshed chunk
+  through this camera, and that pass does not exist yet (DEBT-0008).
+- **Not a budget.** The container's run-to-run spread (run 1's `sample` has a
+  233.6% relative σ from one outlier) is larger than anything a threshold
+  here would protect, and at under 0.05% of a frame there is nothing to
+  protect.

@@ -2046,6 +2046,97 @@ pub fn streaming(budget: Budget, scratch: &Path) -> Result<Vec<Measurement>> {
     Ok(out)
 }
 
+/// The camera (RENDER-5, RENDER-6; ADR-0029): what a frame pays to know what
+/// it looks at, before it draws anything.
+///
+/// The camera stands **2^40 blocks out**, at the edge of the world, on
+/// purpose: a floating origin is only worth anything if the far edge costs
+/// the same as the centre, and a benchmark at the centre could not show it.
+///
+/// The answers are checked before anything is timed. The point the camera
+/// looks at must land on the centre of the screen, and the culled count must
+/// keep some of the 625 columns and drop others; a projection or a culler that
+/// is fast because it is wrong stops the run.
+///
+/// # Errors
+///
+/// Returns an error when the camera cannot be built, or its answers are wrong.
+pub fn camera(budget: Budget) -> Result<Vec<Measurement>> {
+    use nexora_camera::{Camera, Projection, RenderOrigin};
+    use nexora_foundation::error::{Domain, Error, Recovery};
+    use nexora_foundation::spatial::MAX_BLOCK_COORD;
+
+    let wrong = |message: &'static str| {
+        Error::new(Domain::Render, "benchmark-camera", message)
+            .with_recovery(Recovery::DisableSubsystem)
+    };
+    // A column-aligned spot near the far corner of the world.
+    let edge = (MAX_BLOCK_COORD - (1 << 20)) & !15;
+    let position = WorldPosition::new(edge as f64 + 8.5, 90.0, edge as f64 + 8.5);
+    let target = WorldPosition::new(edge as f64 + 60.0, 64.0, edge as f64 - 40.0);
+    let mut camera = Camera::new(
+        position,
+        Projection::perspective(70f64.to_radians(), 0.1, 512.0)?,
+    )?;
+    camera.look_at(target)?;
+    let origin = RenderOrigin::containing(position)?;
+    let (width, height) = (1600, 900);
+
+    // The same 25x25 columns a radius-12 observer streams, full height.
+    let centre = edge / 16;
+    let columns: Vec<(BlockPos, BlockPos)> = (-12..=12)
+        .flat_map(|dx| (-12..=12).map(move |dz| (dx, dz)))
+        .map(|(dx, dz)| {
+            let (x, z) = ((centre + dx) * 16, (centre + dz) * 16);
+            (BlockPos::new(x, -64, z), BlockPos::new(x + 16, 320, z + 16))
+        })
+        .collect();
+    let visible = |state: &nexora_camera::CameraState| {
+        columns
+            .iter()
+            .filter(|(min, max)| state.sees_blocks(*min, *max))
+            .count()
+    };
+
+    let state = camera.sample(origin, width, height)?;
+    let p = state.origin.to_render(target)?;
+    let clip = state.view_projection.transform([p[0], p[1], p[2], 1.0]);
+    if (clip[0] / clip[3]).abs() > 1e-4 || (clip[1] / clip[3]).abs() > 1e-4 {
+        return Err(wrong(
+            "the camera's target is not at the centre of the screen",
+        ));
+    }
+    let seen = visible(&state);
+    if seen == 0 || seen == columns.len() {
+        return Err(wrong("the culler kept all of the columns or none of them")
+            .with_context("visible", seen.to_string()));
+    }
+
+    let mut out = Vec::new();
+    out.push(measure(
+        "camera.sample",
+        "Resolve a camera 2^40 blocks out: view, reverse-Z projection, product, frustum",
+        budget,
+        || {
+            consume(camera.sample(origin, width, height).ok());
+        },
+    ));
+    out.push(measure(
+        "camera.cull_columns_r12",
+        "Test the 625 columns a radius-12 observer streams against the frustum",
+        budget,
+        || {
+            consume(visible(&state));
+        },
+    ));
+    out.push(record_quantity(
+        "camera.visible_columns_r12",
+        "Of those 625 columns, the ones a 70-degree view looking down and ahead keeps",
+        seen as u64,
+    ));
+    Ok(out)
+}
+
 /// The vertical slice of `NEXORA TECHNOLOGY BENCHMARK PLAN.md`, verbatim.
 ///
 /// Every stage must appear in exactly one of [`measured_stages`] and
@@ -2345,6 +2436,7 @@ pub fn ffi(budget: Budget) -> Vec<Measurement> {
 #[must_use]
 pub fn measured_stages(rhi_measured: bool) -> Vec<&'static str> {
     let mut stages = vec![
+        "camera",
         "16³ voxel chunk",
         "mesh generation",
         "1,000 entities",
@@ -2391,10 +2483,6 @@ pub fn unmeasured_stages(rhi_gap: Option<&'static str>) -> Vec<Unmeasured> {
         Unmeasured {
             name: "input",
             reason: "no device signal reaches the engine yet (DEBT-0043)",
-        },
-        Unmeasured {
-            name: "camera",
-            reason: "no view or projection exists: the renderer owns the camera, and there is no renderer",
         },
         Unmeasured {
             name: "mod boundary",
@@ -2498,6 +2586,7 @@ mod tests {
         assert!(!entities(budget).expect("entities").is_empty());
         assert!(!physics(budget).expect("physics").is_empty());
         assert!(!streaming(budget, &scratch).expect("streaming").is_empty());
+        assert!(!camera(budget).expect("camera").is_empty());
 
         let _ = std::fs::remove_dir_all(&scratch);
     }

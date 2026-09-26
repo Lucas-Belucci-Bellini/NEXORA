@@ -67,9 +67,9 @@ HARDWARE_GATED = [
                   "a 16x16 target (window); nothing draws the world; meshes are data (ADR-0012)"),
     ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
-    ("benchmark_gpu_stages", "partly built: the RHI stage (device, fence, upload, draw) runs inside "
-                             "benchmark_cpu on this machine's adapter; window frame time and camera "
-                             "have no implementation (DEBT-0008)"),
+    ("benchmark_gpu_stages", "partly built: the RHI stage (device, fence, upload, draw) and the "
+                             "camera stage (ADR-0029) run inside benchmark_cpu; frame time has no "
+                             "implementation, because nothing draws a frame (DEBT-0008)"),
 ]
 
 
