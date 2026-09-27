@@ -2486,7 +2486,7 @@ pub fn unmeasured_stages(
     let mut stages = vec![
         Unmeasured {
             name: "input",
-            reason: "no device signal reaches the engine yet (DEBT-0043)",
+            reason: "keys reach the engine (ADR-0031), but key-to-frame latency needs a device timestamp winit does not give",
         },
         Unmeasured {
             name: "mod boundary",

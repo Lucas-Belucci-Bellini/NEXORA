@@ -5,8 +5,10 @@
 //! thread it runs on: on macOS that must be the main thread. So the host does
 //! not hand out a window to draw into. It runs the loop and calls a
 //! [`Client`] back: once when the window and its device are ready, then once
-//! per frame. The frame clock (DEBT-0041) and real input devices (DEBT-0043)
-//! belong here as well, and neither exists yet.
+//! per frame. Device events arrive here too: the host translates the
+//! keyboard's and the mouse's into input signals and hands the client one
+//! [`InputFrame`] per frame ([`input`], ADR-0031). The frame clock (DEBT-0041)
+//! belongs here as well, and does not exist yet.
 //!
 //! `winit` is the only crate here that knows about windows; the RHI receives
 //! the window as a surface target and never names `winit` (ADR-0027).
@@ -17,6 +19,8 @@
 //! [`Recovery::DisableSubsystem`], and callers that are allowed to run without
 //! a display say so with `NEXORA_DISPLAY=none`.
 
+pub mod input;
+pub mod input_probe;
 pub mod probe;
 
 use std::sync::Arc;
@@ -24,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_rhi_wgpu::WgpuRhi;
+use nexora_runtime::input::InputFrame;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -77,6 +82,14 @@ pub trait Client {
     ///
     /// Any error ends the run, and [`run`] returns it.
     fn frame(&mut self, rhi: &mut WgpuRhi) -> Result<Flow>;
+
+    /// The keyboard's and the mouse's signals since the last frame, called
+    /// just before [`Client::frame`], once per frame, possibly empty
+    /// (ADR-0031). The first one attaches both devices. Clients that take no
+    /// input ignore it.
+    fn input(&mut self, frame: &InputFrame) {
+        let _ = frame;
+    }
 }
 
 /// The window as opened.
@@ -102,6 +115,8 @@ pub struct Session {
     /// Whether the window was closed from outside (the user, the window
     /// system) rather than by the client.
     pub closed: bool,
+    /// What happened to device events.
+    pub input: input::InputCounts,
 }
 
 /// The window system this build talks to.
@@ -148,6 +163,7 @@ pub fn run(spec: &WindowSpec, client: &mut dyn Client) -> Result<Session> {
         closed: false,
         exiting: false,
         failure: None,
+        input: input::InputCollector::default(),
     };
     event_loop.run_app(&mut host).map_err(|error| {
         Error::new(Domain::Platform, "window", "the event loop failed")
@@ -170,6 +186,7 @@ pub fn run(spec: &WindowSpec, client: &mut dyn Client) -> Result<Session> {
         frames: host.frames,
         waited: host.waited,
         closed: host.closed,
+        input: host.input.counts(),
     })
 }
 
@@ -192,9 +209,33 @@ struct Host<'a> {
     /// none of them may reach the client, which has finished.
     exiting: bool,
     failure: Option<Error>,
+    /// Device signals waiting for the next frame.
+    input: input::InputCollector,
 }
 
 impl Host<'_> {
+    /// What the client's frame asked for, done.
+    fn after_frame(&mut self, event_loop: &ActiveEventLoop, flow: Result<Flow>) {
+        match flow {
+            Ok(Flow::Continue) => {
+                self.frames += 1;
+                event_loop.set_control_flow(ControlFlow::Poll);
+            }
+            Ok(Flow::Wait) => {
+                // Nothing to draw into: ask again shortly, not in a spin.
+                self.waited += 1;
+                let resume = Instant::now() + WAIT_STEP;
+                self.resume_at = Some(resume);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(resume));
+            }
+            Ok(Flow::Exit) => {
+                self.frames += 1;
+                self.exit(event_loop);
+            }
+            Err(error) => self.fail(event_loop, error),
+        }
+    }
+
     fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         let attributes = Window::default_attributes()
             .with_title(self.spec.title.clone())
@@ -216,6 +257,7 @@ impl Host<'_> {
         };
         let mut rhi = WgpuRhi::with_surface(Arc::clone(&window), size.width, size.height)?;
         self.client.opened(&mut rhi, &facts)?;
+        self.input.attach();
         window.request_redraw();
         self.opened_at = Some(Instant::now());
         self.facts = Some(facts);
@@ -265,24 +307,20 @@ impl ApplicationHandler for Host<'_> {
                     self.fail(event_loop, error);
                 }
             }
-            WindowEvent::RedrawRequested => match self.client.frame(rhi) {
-                Ok(Flow::Continue) => {
-                    self.frames += 1;
-                    event_loop.set_control_flow(ControlFlow::Poll);
-                }
-                Ok(Flow::Wait) => {
-                    // Nothing to draw into: ask again shortly, not in a spin.
-                    self.waited += 1;
-                    let resume = Instant::now() + WAIT_STEP;
-                    self.resume_at = Some(resume);
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(resume));
-                }
-                Ok(Flow::Exit) => {
-                    self.frames += 1;
-                    self.exit(event_loop);
-                }
-                Err(error) => self.fail(event_loop, error),
-            },
+            WindowEvent::KeyboardInput { event, .. } => {
+                self.input
+                    .key(event.physical_key, event.state, event.repeat);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.input.mouse(button, state);
+            }
+            WindowEvent::Focused(false) => self.input.focus_lost(),
+            WindowEvent::RedrawRequested => {
+                // The frame's input first, then the frame (ADR-0031).
+                self.client.input(&self.input.take());
+                let flow = self.client.frame(rhi);
+                self.after_frame(event_loop, flow);
+            }
             _ => {}
         }
     }

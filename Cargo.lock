@@ -899,6 +899,7 @@ dependencies = [
  "nexora-foundation",
  "nexora-rhi",
  "nexora-rhi-wgpu",
+ "nexora-runtime",
  "winit",
 ]
 

@@ -59,8 +59,11 @@ dead zones and curves, a remap that survives being written out, and a validator
 for intent that arrived from outside the trust boundary. It produces intent and
 nothing else — the command system already owns what intent is allowed to do. The
 slice's walk is driven through it: the route used to be a list of stops and is
-now what the input system says the player asked for. As with the frame, nothing
-here has met a real device — `DEBT-0043`.
+now what the input system says the player asked for. The window host translates
+real keyboard and mouse events into it, as USB HID usages, once per frame
+([ADR-0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md));
+CI presses a real key through an X server, and `local-validation.py` asks a
+person to press one (`DEBT-0043`).
 
 The implementation language is **not locked**. Rust is the reference
 implementation for the benchmark gate defined in
@@ -238,8 +241,10 @@ engine/rhi-wgpu      the first native backend: wgpu over Vulkan, Direct3D 12
                      and Metal -- the engine's first external dependency
                      (ADR-0026); `nexora-rhi-probe` proves it on a machine
 engine/window        the window host: winit, the event loop, and the native
-                     backend presenting to the window (ADR-0027);
-                     `nexora-window-probe` proves a frame reaches it
+                     backend presenting to the window (ADR-0027); keyboard and
+                     mouse buttons handed in as HID usages (ADR-0031);
+                     `nexora-window-probe` proves a frame reaches it, and
+                     `--input` that a key does
 engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,

@@ -747,8 +747,27 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   o `nexora-window` roda o laço de eventos do sistema operacional, e o `winit`
   já entrega a ele eventos de teclado e mouse, que o host hoje descarta. A
   tradução para `Signal` é o próximo passo desta dívida, não deste host.
+- **PROGRESS (2026-09-27,
+  [ADR-0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md)):**
+  a borda de teclado e de botões do mouse está **construída e verificada em CI**.
+  O `nexora-window` traduz as teclas físicas do `winit` para usages USB HID
+  (página 0x07) e os botões do mouse para a página de botões, junta os sinais do
+  quadro e os entrega ao cliente antes do quadro; repetição de tecla é
+  descartada (contada), perda de foco solta tudo, e o teclado e o mouse ficam
+  anexados quando a janela abre. Um `W` de verdade, apertado pela extensão de
+  teste do servidor X (XTEST) sob Xvfb, chega ao motor como usage 26 e sai do
+  `runtime::input` como o press e o release da ação ligada a ele
+  (`nexora-window-probe --input`). Juntar os eventos por quadro expôs uma
+  lacuna na lógica, provada por teste de unidade: um toque que desce e sobe
+  dentro de um quadro (um quadro longo, um engasgo) sumia; agora é mantido um
+  quadro e solto no seguinte. **Falta**, e a dívida fica aberta por
+  isso: a verificação no hardware do operador (a checagem interativa
+  `input_devices` do `local-validation.py` existe e ainda não rodou), gamepad,
+  toque, movimento do ponteiro, roda do mouse, entrada de texto, gravar o
+  arquivo de remap em disco, e um snapshot que atravesse uma rede.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos e
+  verificados em CI; hardware local não testado)
 
 ### DEBT-0046 — O RHI ainda não apresenta nada, e nenhuma GPU real o executou
 

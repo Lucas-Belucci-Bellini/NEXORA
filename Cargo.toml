@@ -20,7 +20,7 @@
 #     render      -> foundation, rhi, mesh, camera   (the contract, never a backend)
 #     rhi         -> foundation
 #     rhi-wgpu    -> foundation, rhi, wgpu   (the one external dependency, ADR-0026)
-#     window      -> foundation, rhi, rhi-wgpu, winit   (the window host, ADR-0027)
+#     window      -> foundation, runtime, rhi, rhi-wgpu, winit   (the window host, ADR-0027; input, ADR-0031)
 #     simulation  -> foundation, runtime, asset, world, physics, streaming, command, query
 #     headless    -> all of the above
 #

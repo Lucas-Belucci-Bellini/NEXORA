@@ -59,7 +59,7 @@ jobs:
       - name: Install a software Vulkan driver and a virtual display
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q mesa-vulkan-drivers xvfb libxkbcommon-x11-0
+          sudo apt-get install -y -q mesa-vulkan-drivers xvfb libxkbcommon-x11-0 xdotool
 
       # STAGE: UNIT + INTEGRATION + DETERMINISM + SAVE TESTS
       # The determinism and save/load suites live alongside the units they
@@ -98,6 +98,18 @@ jobs:
           grep '^frame              65536 of 65536 window texels show the 16x16 target, read back from the surface$' \
             "${RUNNER_TEMP}/window-probe.txt" > /dev/null
           grep '^presented          61 frames, 60 of them by the probe$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+
+      # A real key through the window (ADR-0031): W, pressed through the X
+      # server's test extension, must reach the engine as a HID usage (0x1A =
+      # 26) and come out of the input system as the bound action's press and
+      # release. Nothing on the way is simulated by the engine.
+      - name: Smoke test a key reaching the engine through the window
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/input-probe-xtest.sh \
+            ./target/release/nexora-window-probe 60 | tee "${RUNNER_TEMP}/input-probe.txt"
+          grep '^input              keyboard/0 button 26 (W) reached nexora:action/probe: pressed after [0-9]* frames, held [1-9][0-9]*$' \
+            "${RUNNER_TEMP}/input-probe.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/input-probe.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.

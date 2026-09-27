@@ -63,14 +63,14 @@ STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 # The window, its surface (swapchain) and presentation left this list with
 # ADR-0027: they are the `window` check now. The benchmark's GPU stages (RHI,
 # camera, frame time) left it when the first render pass existed: they run
-# inside `benchmark_cpu` on this machine's adapter.
+# inside `benchmark_cpu` on this machine's adapter. Input devices left it with
+# ADR-0031: they are the `input_devices` check, which needs a person.
 HARDWARE_GATED = [
     ("rendering", "partly built: the first render pass (nexora-render) draws one meshed chunk "
                   "through the camera, into a texture (frame-time stage) and into a real window "
                   "read back from its surface (window stage), both checked against a CPU ray "
                   "cast inside benchmark_cpu; textures, many chunks and streaming into the pass "
                   "are not built"),
-    ("input_devices", "no real device has produced a signal (DEBT-0043)"),
     ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
 ]
 
@@ -452,6 +452,24 @@ def run_checks(scratch: Path, quick: bool) -> list:
         results.append(needs_build("window", [window_probe],
                                    _lines("adapter", "window", "surface", "conformance", "frame",
                                           "presented", "result")))
+    # A real key through a real window (ADR-0031): the probe opens a window
+    # and waits for W. A person has to press it, so the check runs only when
+    # someone is at the terminal; --quick and a non-interactive run skip it,
+    # and NEXORA_INPUT=none declares that no one will.
+    if os.environ.get("NEXORA_INPUT") == "none":
+        results.append(skipped("input_devices", "NEXORA_INPUT=none: no one will press a key"))
+    elif quick:
+        results.append(skipped("input_devices", "--quick"))
+    elif not sys.stdin.isatty():
+        results.append(skipped("input_devices", "not run from a terminal: no one to press a key"))
+    elif os.environ.get("NEXORA_DISPLAY") == "none" or os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("input_devices", "no display or no GPU declared: no window to press a key in"))
+    else:
+        if built:
+            print("\n>>> A window titled 'NEXORA input probe: press W' is opening.\n"
+                  ">>> Click it, then press and release W (within 60 seconds).\n", flush=True)
+        results.append(needs_build("input_devices", [window_probe, "--input", "--timeout", "60"],
+                                   _lines("input", "signals", "result")))
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
     # DEBT-0008: the container's numbers are one machine's. It also runs the
     # RHI, camera, frame-time and window stages on this machine's adapter and

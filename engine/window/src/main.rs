@@ -6,18 +6,32 @@
 //! suite with presentation on, and shows a 16x16 target for `--frames` frames
 //! (default 60), reading the first one back from the surface where the
 //! platform allows. Exits non-zero at the first failure, with the reason.
+//!
+//! With `--input` it instead opens a window titled "NEXORA input probe: press
+//! W" and waits up to `--timeout` seconds (default 30) for `W` to be pressed
+//! and released, then prints what reached the engine (ADR-0031).
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use nexora_rhi::conformance::CASES;
+use nexora_window::input_probe::run_input_probe;
 use nexora_window::probe::{run_probe, EDGE};
 
+const USAGE: &str = "usage: nexora-window-probe [--frames N] | --input [--timeout S]";
+
+enum Mode {
+    Frames(u64),
+    Input(Duration),
+}
+
 fn main() -> ExitCode {
-    let frames = match frames_argument() {
-        Ok(frames) => frames,
+    let frames = match mode_argument() {
+        Ok(Mode::Frames(frames)) => frames,
+        Ok(Mode::Input(timeout)) => return input(timeout),
         Err(message) => {
             eprintln!("{message}");
-            eprintln!("usage: nexora-window-probe [--frames N]");
+            eprintln!("{USAGE}");
             return ExitCode::from(2);
         }
     };
@@ -66,20 +80,51 @@ fn main() -> ExitCode {
     }
 }
 
-fn frames_argument() -> Result<u64, String> {
+fn input(timeout: Duration) -> ExitCode {
+    match run_input_probe(timeout) {
+        Ok(report) => {
+            println!(
+                "input              keyboard/0 button {} (W) reached {}: pressed after {} frames, held {}",
+                report.usage, report.action, report.pressed_after, report.held_for
+            );
+            println!(
+                "signals            {} delivered, {} keys without a HID usage, {} repeats dropped",
+                report.counts.delivered, report.counts.unnumbered, report.counts.repeats
+            );
+            println!("result             OK");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("result             FAILED");
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn mode_argument() -> Result<Mode, String> {
     let mut args = std::env::args().skip(1);
     let mut frames = 60;
+    let mut input = false;
+    let mut timeout = 30;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--frames" => {
-                frames = args
-                    .next()
-                    .and_then(|value| value.parse().ok())
-                    .filter(|value| *value > 0)
-                    .ok_or("--frames needs a positive number")?;
-            }
+            "--frames" => frames = positive(args.next(), "--frames")?,
+            "--input" => input = true,
+            "--timeout" => timeout = positive(args.next(), "--timeout")?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    Ok(frames)
+    Ok(if input {
+        Mode::Input(Duration::from_secs(timeout))
+    } else {
+        Mode::Frames(frames)
+    })
+}
+
+fn positive(value: Option<String>, flag: &str) -> Result<u64, String> {
+    value
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{flag} needs a positive number"))
 }
