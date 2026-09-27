@@ -23,6 +23,8 @@
 #     window      -> foundation, runtime, rhi, rhi-wgpu, winit   (the window host, ADR-0027; input, ADR-0031)
 #     simulation  -> foundation, runtime, asset, world, physics, streaming, command, query
 #     headless    -> all of the above
+#     client      -> foundation, runtime, persistence, world, mesh, camera, render,
+#                    rhi, rhi-wgpu, window, simulation   (client mode, ADR-0032)
 #
 # Outside engine/, over the public contracts only:
 #     texture-forge -> foundation, asset, resource, image
@@ -52,6 +54,7 @@ members = [
     "engine/rhi-wgpu",
     "engine/window",
     "engine/simulation",
+    "engine/client",
     "engine/headless",
     "engine/benchmark",
     # Not an engine crate: a content tool, over the public asset contracts.
@@ -88,6 +91,7 @@ nexora-rhi = { path = "engine/rhi", version = "0.0.1" }
 nexora-rhi-wgpu = { path = "engine/rhi-wgpu", version = "0.0.1" }
 nexora-window = { path = "engine/window", version = "0.0.1" }
 nexora-simulation = { path = "engine/simulation", version = "0.0.1" }
+nexora-client = { path = "engine/client", version = "0.0.1" }
 nexora-ffi-probe = { path = "benchmarks/ffi-probe", version = "0.0.1" }
 nexora-texture-forge = { path = "tools/texture-forge", version = "0.0.1" }
 

@@ -662,8 +662,24 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `nexora_window::Client::frame` é chamado uma vez por redesenho, e é o lugar
   natural do relógio num cliente. Nada o liga ao `runtime::frame` ainda; o
   caminho headless descrito acima continua válido.
+- **PROGRESS (2026-09-27,
+  [ADR-0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md)):**
+  o `nexora-client` é **o primeiro processo que roda quadros contra um relógio
+  real**: a cada redesenho mede o tempo desde o anterior e o entrega ao
+  `FrameLoop` (passo de 50 ms, no máximo 4), e cobra input, simulação,
+  preparo do render e render aos seus estágios. O que o módulo existe para
+  medir agora aparece: no lavapipe/Xvfb, 120 quadros deram mediana de 41 ms de
+  parede, p95 de 50 ms, **0,19 ms não atribuídos no total**, 114 quadros
+  `target` e 6 `warning` contra o orçamento aritmético de 50 ms. A ordem que o
+  gatilho pedia está respeitada: geração e meshing acontecem antes do primeiro
+  quadro, então o laço mede a si mesmo, não o `DEBT-0018`/`DEBT-0027`.
+  **Falta**, e a dívida fica aberta por isso: um orçamento de quadro publicado
+  a partir de medição (o `doubling_from` segue sendo convenção), números numa
+  máquina real (a checagem `client_mode` do `local-validation.py` ainda não
+  rodou lá), e um quadro com mundo, física e streaming dentro do laço.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio; o
+  orçamento publicado e a evidência local faltam)
 
 ### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
 
@@ -843,6 +859,48 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   paravirtual do macOS), e qualquer outra GPU. Nada disso é débito deste
   item: são verificações de um renderer que ainda não existe.
 - **STATUS:** CLOSED (2026-09-26)
+
+### DEBT-0047 — O pass mostra faces de costas por frestas sub-pixel: T-junctions do greedy e nenhum back-face culling
+
+- **SYSTEM:** `engine/render` (`ChunkPass`), `engine/mesh` (greedy), `engine/rhi` (`PipelineDesc`)
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o primeiro quadro do modo client
+  ([ADR-0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md)),
+  nove colunas de terreno vistas de 40 a 100 blocos, lido de volta da
+  superfície e conferido pelo ray cast, deu **0 a 5 pixels errados em cerca de
+  79.500 julgados**, em vinte sementes, no lavapipe. Os três primeiros foram
+  dissecados cruzando o raio central com todo quad da malha: num, o raio passa
+  a **0,0034 px** da aresta comum entre dois quads −X coplanares, um 4×1 e um
+  1×1 — uma T-junction, o vértice de um no meio da aresta do outro —, e pela
+  fresta aparece a face +Z de trás, vista de dentro do sólido; nos outros dois,
+  o raio passa a ~0,003 px de uma aresta de silhueta, e o rasterizador a
+  encaixou do outro lado. O `ChunkPass` não descarta faces de costas (o
+  `PipelineDesc` do RHI nem tem esse campo), então o que vaza é sempre uma
+  face de costas ou a face vizinha do outro lado de uma aresta — nunca o
+  quadro errado em si.
+- **IMPACT:** "brilhos" de um pixel que aparecem e somem com a câmera, onde o
+  greedy juntou retângulos de tamanhos diferentes. No quadro do cliente, até
+  uma parte em 16.000. O critério do primeiro quadro do cliente tolera
+  exatamente isso e nada mais: cada pixel errado precisa ser uma face de costas
+  (`FrameCheck::backfacing`) ou uma cor que o próprio ray cast acha a menos de
+  1/64 px do centro (`FrameCheck::snapped`), e juntos no máximo 1 em 5.000
+  julgados. As etapas do benchmark (uma região 16³ de perto) continuam exigindo
+  todos os pixels julgados certos, e seguem certas.
+- **RISK:** baixo hoje, visível depois: com texturas e iluminação, uma face de
+  costas escura atrás de uma fresta vira um pixel preto piscando, que é o
+  defeito clássico de malha greedy.
+- **PROPOSED REMEDIATION:** duas partes, em ordem. (1) **Back-face culling no
+  contrato do RHI** (`PipelineDesc` ganha o modo de descarte, os dois backends
+  o respeitam, a conformidade ganha um caso): faz a fresta mostrar a próxima
+  face da frente em vez da de costas, e corta pela metade os fragmentos do
+  pass. (2) **Tirar as T-junctions** do que vai à GPU — dividir as arestas dos
+  quads nos vértices dos vizinhos coplanares, ou não fundir através de uma
+  aresta que o vizinho corta — medido contra o custo em vértices, que é o que
+  o greedy existe para economizar. Nenhuma das duas é "expandir os quads por
+  um epsilon", que troca a fresta por sobreposição.
+- **TRIGGER:** já disparado: o quadro existe e o defeito foi medido.
+- **TARGET STAGE:** Phase 2 (renderer do voxel)
+- **STATUS:** OPEN
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

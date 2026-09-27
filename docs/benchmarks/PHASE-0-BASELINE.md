@@ -1746,7 +1746,9 @@ what it measures, so the first thing measured about it is itself.
 | `frame.stages_with_a_system` | **3** | of those, the ones anything in this repository can run in |
 
 (`frame.stages_with_a_system` reads **4** since ENGINE-8 staffed the `Input`
-stage — finding 26. The **3** above is what it read when this finding was taken.)
+stage — finding 26 — and **6** since ADR-0032, when `nexora-client` ran render
+prep and render in the frame. The **3** above is what it read when this
+finding was taken.)
 
 Two readings are given for the two timed frame rows because they were measured
 twice, back to back, on the same binary: 78.0 and 65.0 ns, 77.0 and 74.0 ns. The

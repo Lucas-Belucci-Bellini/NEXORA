@@ -1,0 +1,44 @@
+[package]
+name = "nexora-client"
+description = "The runtime in client mode: the lifecycle, a world, and the first render pass in a window, driven by real input and a real clock."
+version.workspace = true
+edition.workspace = true
+# Inherited from nexora-rhi-wgpu (wgpu 30).
+rust-version = "1.87"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexora-client"
+path = "src/main.rs"
+
+# The event loop must run on the main thread (macOS requires it), and the test
+# harness runs tests on worker threads: this test is its own `main`.
+[[test]]
+name = "client"
+path = "tests/client.rs"
+harness = false
+
+[dependencies]
+nexora-foundation.workspace = true
+nexora-runtime.workspace = true
+nexora-persistence.workspace = true
+nexora-world.workspace = true
+nexora-mesh.workspace = true
+nexora-camera.workspace = true
+nexora-render.workspace = true
+nexora-rhi.workspace = true
+nexora-rhi-wgpu.workspace = true
+nexora-window.workspace = true
+nexora-simulation.workspace = true
+
+# The default keys are checked against the host's key translation.
+[dev-dependencies]
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11"] }
+
+[lints]
+workspace = true

@@ -245,6 +245,9 @@ engine/window        the window host: winit, the event loop, and the native
                      mouse buttons handed in as HID usages (ADR-0031);
                      `nexora-window-probe` proves a frame reaches it, and
                      `--input` that a key does
+engine/client        the runtime in client mode: the lifecycle, a generated
+                     world drawn in a window, WASD and a real clock through
+                     the frame loop (ADR-0032); `nexora-client`
 engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,

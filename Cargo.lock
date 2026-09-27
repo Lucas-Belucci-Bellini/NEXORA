@@ -735,6 +735,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-client"
+version = "0.0.1"
+dependencies = [
+ "nexora-camera",
+ "nexora-foundation",
+ "nexora-mesh",
+ "nexora-persistence",
+ "nexora-render",
+ "nexora-rhi",
+ "nexora-rhi-wgpu",
+ "nexora-runtime",
+ "nexora-simulation",
+ "nexora-window",
+ "nexora-world",
+ "winit",
+]
+
+[[package]]
 name = "nexora-command"
 version = "0.0.1"
 dependencies = [

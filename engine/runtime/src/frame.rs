@@ -37,8 +37,9 @@
 //!
 //! ## What is deliberately absent
 //!
-//! No interpolation factor between steps, because nothing draws yet and an
-//! alpha nobody reads is a number nobody checks. No thread of its own: the loop
+//! No interpolation factor between steps: the one thing drawn so far, the
+//! client's camera (ADR-0032), moves in whole steps, and an alpha nobody
+//! reads is a number nobody checks. No thread of its own: the loop
 //! is a value the host drives, not a `while` loop that owns the process — a
 //! loop that owned the process could not be tested without a clock.
 //!
@@ -71,15 +72,16 @@ use nexora_foundation::error::{Domain, Error, Recovery, Result};
 
 /// The stages one frame runs, in the order `CORE.md` §16 declares them.
 ///
-/// Four of the seven have no system behind them today: there is no input
-/// device, no renderer and no audio mixer in this repository, and
-/// `NEXORA DEFINITION OF DONE.md` forbids claiming otherwise. They are named
-/// here anyway because the *order* is the decision — a stage that arrives later
-/// slots into a sequence that already exists, instead of being appended wherever
-/// it happened to be written.
+/// One of the seven has no system behind it today: there is no audio mixer
+/// in this repository, and `NEXORA DEFINITION OF DONE.md` forbids claiming
+/// otherwise. It is named anyway because the *order* is the decision — a
+/// stage that arrives later slots into a sequence that already exists,
+/// instead of being appended wherever it happened to be written. Input
+/// reached a real device with ADR-0031, and render prep and render a real
+/// pass with ADR-0030; `nexora-client` runs all six (ADR-0032).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FrameStage {
-    /// Reading the outside world. No system yet.
+    /// Reading the outside world: the window host's devices (ADR-0031).
     Input,
     /// Game rules, commands, the world clock.
     Simulation,
@@ -87,9 +89,10 @@ pub enum FrameStage {
     World,
     /// Bodies, collision, the character controller.
     Physics,
-    /// Turning world state into something drawable. No system yet.
+    /// Turning world state into something drawable: the camera and the
+    /// pass's recording (ADR-0029, ADR-0030).
     RenderPrep,
-    /// Submitting it. No system yet.
+    /// Submitting it, and presenting it (ADR-0027).
     Render,
     /// Mixing. No system yet.
     Audio,
@@ -145,10 +148,7 @@ impl FrameStage {
     /// are silent because nothing *exists*.
     #[must_use]
     pub const fn has_system(self) -> bool {
-        matches!(
-            self,
-            Self::Input | Self::Simulation | Self::World | Self::Physics
-        )
+        !matches!(self, Self::Audio)
     }
 }
 
@@ -649,7 +649,17 @@ mod tests {
             .filter(|stage| stage.has_system())
             .map(|stage| stage.as_str())
             .collect();
-        assert_eq!(staffed, ["input", "simulation", "world", "physics"]);
+        assert_eq!(
+            staffed,
+            [
+                "input",
+                "simulation",
+                "world",
+                "physics",
+                "render-prep",
+                "render"
+            ]
+        );
     }
 
     #[test]

@@ -43,6 +43,7 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0021); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0022); it inflates with the foundation's `inflate_bounded`, all three deflate block types, one inflater in the workspace; resource packs do not layer |
 | Streaming lifecycle | [x] | [~] | `request · cancel · set_interest · tick` of `STREAMING SYSTEM.md` are built (ADR-0008), and of its test list fast travel, save-before-evict and low-memory pressure are covered (`engine/streaming::system` tests); the slice's **initial** load is still explicit, through the job system rather than through streaming (DEBT-0018, DEBT-0024), and dimension transfer and reconnect have no subsystem to test against. *Corrected 2026-09-25: the row said `[ ]` and predated ADR-0008.* |
 | Headless mode | [x] | [x] | `nexora-headless` |
+| Client mode | [x] | [~] | `nexora-client` (ADR-0032): the lifecycle in `RuntimeMode::Client` through `PresentationRunning`, the renderer module, a generated world drawn in a window, `runtime::frame` against a real clock, WASD through the input system; verified in CI (Xvfb, and Win32/AppKit through the quick local report), not on the operator's machine; no streaming, textures, player or physics in the frame |
 
 ## Simulation
 
@@ -122,8 +123,8 @@ anything.
 | Roadmap phase | State | Evidence |
 | --- | --- | --- |
 | 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met, and **one blocker remains**: the benchmark measures the RHI stage (in CI on software Vulkan, and on the operator's RX 6650 XT) the camera stage (ADR-0029), frame time and a window (ADR-0030), and every GPU stage of the plan now has a number; what is left is the engine-scale comparison (DEBT-0008). The second blocker **closed on 2026-09-26**: the contract, a null backend and a native `wgpu` backend pass the same suite, and the native one draws and presents on the operator's GPU and desktop (ADR-0025 to ADR-0028, local reports 4 and 5). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
-| 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005), and now has one (ADR-0027), but nothing runs the frame loop, a renderer or input inside it yet |
-| 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming, the camera's core (view, projection, frustum, floating origin; ADR-0029) and a first render pass that draws a meshed chunk (ADR-0030) exist; camera modes, input, textured rendering of the world and player do not |
+| 1 — Engine Bootstrap | **exit criterion met in CI, not on local hardware; not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and resources are built and run in CI. The exit asks the runtime to start *"em modo client/headless"*: headless does, and since ADR-0032 **client mode does**: `nexora-client` walks all 17 lifecycle phases in `RuntimeMode::Client` (the renderer module initializes, presentation is entered), draws a generated world in a window through the first render pass, runs `runtime::frame` against a real clock and moves the camera by real keys. CI runs it on Xvfb (a real W through XTEST moves it 8 blocks) and, through `local-validation.py --quick`, on Win32 and AppKit. It is not verified on the operator's machine until a report runs `client_mode`, and the roadmap's phases are ordered: Phase 0 is still open |
+| 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming, the camera's core (view, projection, frustum, floating origin; ADR-0029), a render pass that draws meshed chunks (ADR-0030), keyboard and mouse input (ADR-0031) and a free camera over nine chunk columns in the client (ADR-0032) exist; camera modes, textured rendering, streaming into the pass, a player and crack-free meshing (DEBT-0047) do not |
 
 Work continues on what can be verified headless — the roadmap's own rule is
 that a phase advances on its technical criteria, and the criteria that remain
@@ -149,7 +150,9 @@ client or timed a frame. Since then the camera (ADR-0029) and the first render
 pass with frame time (ADR-0030) exist, so the next report on `main` runs them
 in `benchmark_cpu`, and until then they are `NOT_TESTED_LOCALLY`. The input
 boundary (ADR-0031) left `input_devices` for an interactive check that asks the
-operator to press W; it is `NOT_TESTED_LOCALLY` until a report runs it.
+operator to press W; it is `NOT_TESTED_LOCALLY` until a report runs it. Client
+mode (ADR-0032) left `client_mode` for a check that opens the client for 120
+frames; it is `NOT_TESTED_LOCALLY` for the same reason.
 
 **Before (2026-09-25): three reports.** Report 3 ran on `0b7bcec` and closed
 DEBT-0013 (Appendix I). It predated `engine/rhi`, so it said nothing about the

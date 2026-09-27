@@ -64,14 +64,15 @@ STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 # ADR-0027: they are the `window` check now. The benchmark's GPU stages (RHI,
 # camera, frame time) left it when the first render pass existed: they run
 # inside `benchmark_cpu` on this machine's adapter. Input devices left it with
-# ADR-0031: they are the `input_devices` check, which needs a person.
+# ADR-0031: they are the `input_devices` check, which needs a person. Client
+# mode left it with ADR-0032: it is the `client_mode` check.
 HARDWARE_GATED = [
-    ("rendering", "partly built: the first render pass (nexora-render) draws one meshed chunk "
-                  "through the camera, into a texture (frame-time stage) and into a real window "
-                  "read back from its surface (window stage), both checked against a CPU ray "
-                  "cast inside benchmark_cpu; textures, many chunks and streaming into the pass "
-                  "are not built"),
-    ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
+    ("rendering", "partly built: the first render pass (nexora-render) draws meshed chunk "
+                  "regions through the camera -- one 16^3 region into a texture and into a window "
+                  "(benchmark_cpu's frame-time and window stages) and nine chunk columns of a "
+                  "generated world in client mode (client_mode) -- every frame checked against a "
+                  "CPU ray cast; textures, streaming into the pass, back-face culling and "
+                  "crack-free meshing (DEBT-0047) are not built"),
 ]
 
 
@@ -406,6 +407,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     bench = str(release / _exe("nexora-benchmark"))
     probe = str(release / _exe("nexora-rhi-probe"))
     window_probe = str(release / _exe("nexora-window-probe"))
+    client = str(release / _exe("nexora-client"))
     slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
@@ -452,6 +454,18 @@ def run_checks(scratch: Path, quick: bool) -> list:
         results.append(needs_build("window", [window_probe],
                                    _lines("adapter", "window", "surface", "conformance", "frame",
                                           "presented", "result")))
+    # The runtime in client mode (ADR-0032): the lifecycle in Client mode,
+    # the world drawn in a window for 120 frames against a real clock, the
+    # first frame read back from the surface and checked against the ray
+    # cast. A window opens for a few seconds; no key is needed.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("client_mode", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("client_mode", "NEXORA_GPU=none: nothing can present without a GPU"))
+    else:
+        results.append(needs_build("client_mode", [client, "--frames", "120", "--timeout", "120"],
+                                   _lines("adapter", "window", "first frame", "frames", "frame loop",
+                                          "frame wall", "result")))
     # A real key through a real window (ADR-0031): the probe opens a window
     # and waits for W. A person has to press it, so the check runs only when
     # someone is at the terminal; --quick and a non-interactive run skip it,

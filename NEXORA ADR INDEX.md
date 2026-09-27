@@ -87,3 +87,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0029](docs/adr/ADR-0029-the-camera-is-reverse-z-over-a-floating-integer-origin.md) | A câmera é reverse-Z, sobre uma origem inteira flutuante | ACCEPTED |
 | [0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md) | A primeira passada de render desenha sobre o contrato do RHI, e um ray cast confere cada quadro cronometrado | ACCEPTED |
 | [0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md) | A janela entrega o input como usages HID, uma vez por quadro | ACCEPTED |
+| [0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md) | O cliente é o runtime numa janela, não um segundo motor | ACCEPTED |

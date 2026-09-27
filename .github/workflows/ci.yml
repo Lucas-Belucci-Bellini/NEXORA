@@ -111,6 +111,23 @@ jobs:
             "${RUNNER_TEMP}/input-probe.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/input-probe.txt" > /dev/null
 
+      # The runtime in client mode (ADR-0032): the lifecycle walks every phase
+      # including presentation, the generated world is drawn in a window, and
+      # its first frame, read back from the surface, holds against the ray
+      # cast. W is held for a second through XTEST and must move the camera
+      # forward; Escape must end the loop.
+      - name: Smoke test the runtime in client mode
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
+            ./target/release/nexora-client 90 | tee "${RUNNER_TEMP}/client.txt"
+          grep '^lifecycle          17 phases: .* -> simulation-running -> presentation-running -> .* -> process-exit$' \
+            "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^modules            .*nexora:module/renderer$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^frames             [0-9]* shown, ended by exit key$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^camera             moved [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
+
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.
       - name: Smoke test the headless vertical slice
@@ -419,3 +436,5 @@ jobs:
           # The benchmark's window stage ran on this platform's window system
           # (Win32, AppKit) and its frame matched the ray cast.
           grep -q 'window.pixels_judged' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          # And the runtime ran in client mode on it (ADR-0032).
+          grep -q '^| `client_mode` | \*\*PASS\*\*' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
