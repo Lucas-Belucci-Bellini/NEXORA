@@ -899,8 +899,26 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   o greedy existe para economizar. Nenhuma das duas é "expandir os quads por
   um epsilon", que troca a fresta por sobreposição.
 - **TRIGGER:** já disparado: o quadro existe e o defeito foi medido.
+- **RESOLUTION (2026-09-28,
+  [ADR-0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md)):**
+  as duas partes, nesta ordem de necessidade. **Back-face culling no
+  contrato do RHI**: `PipelineDesc` ganhou `Cull { None, Back }` (frente =
+  anti-horário em NDC), o `wgpu` o respeita e o prova por leitura de pixel
+  (`nexora-rhi-probe`: 16 de 16 texels pela frente, 0 pelas costas), e o
+  `ChunkPass` descarta costas com todo triângulo enrolado de fora. **Quads
+  divididos em todo canto que cai nas suas arestas** (`Corners`), incluindo os
+  cantos das regiões vizinhas, então as costuras entre colunas também fecham.
+  Medido no cliente, vinte sementes: antes, 42 pixels errados; só dividindo,
+  28; **só com culling, 8 sementes falham** (pela fresta aparece uma face da
+  frente mais distante); **com os dois, 10 pixels, todos arestas encaixadas a
+  menos de 1/64 px, e 0 faces de costas**. O critério do cliente agora não
+  tolera face de costas nenhuma. Custo: +52% de vértices (4.842 → 7.377 na
+  região 16³), e mesmo assim o `frame.draw_chunk_16` caiu de 2,01 para
+  1,71 ms no lavapipe, porque o culling corta metade dos fragmentos. Numa GPU
+  dedicada o lado dos vértices pode pesar mais; é o relatório local que mede, e
+  index buffers são a alavanca.
 - **TARGET STAGE:** Phase 2 (renderer do voxel)
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-09-28)
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

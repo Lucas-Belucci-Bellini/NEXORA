@@ -287,6 +287,8 @@ pub fn rhi(budget: Budget, mesh_vertices: u64) -> Result<RhiStage> {
         attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
         bindings: Vec::new(),
         depth: None,
+
+        cull: nexora_rhi::Cull::None,
         targets: vec![TextureFormat::Rgba8Unorm],
     })?;
     let mut upload = CommandList::new("triangle");
@@ -432,7 +434,13 @@ pub fn frame_time(budget: Budget) -> Result<Vec<Measurement>> {
     })?;
     let pass = ChunkPass::new(&mut rhi, TextureFormat::Rgba8Unorm)?;
     let mut upload = CommandList::new("frame time upload");
-    let chunk = pass.upload(&mut rhi, &mut upload, &mesh.opaque, region)?;
+    let chunk = pass.upload(
+        &mut rhi,
+        &mut upload,
+        &mesh.opaque,
+        region,
+        &nexora_render::Corners::of(&[&mesh.opaque]),
+    )?;
     let fence = rhi.submit(upload)?;
     rhi.wait(fence)?;
 
@@ -571,8 +579,9 @@ mod tests {
                 .median() as u64
         };
         assert!(value("frame.draw_chunk_16") > 0);
-        // Six vertices per merged rectangle of the region the mesh suite meshes.
-        assert_eq!(value("frame.chunk_16_vertices") % 6, 0);
+        // Whole triangles: two per merged rectangle, more where a
+        // neighbour's corner splits an edge (ADR-0033).
+        assert_eq!(value("frame.chunk_16_vertices") % 3, 0);
         assert!(value("frame.pixels_judged") * 2 >= 256 * 256);
     }
 }

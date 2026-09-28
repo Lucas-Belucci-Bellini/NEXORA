@@ -203,7 +203,13 @@ impl<V: nexora_mesh::VoxelView + ?Sized> Client for ChunkWindow<'_, V> {
         ))?;
         let pass = ChunkPass::new(rhi, TextureFormat::Rgba8Unorm)?;
         let mut upload = CommandList::new("window stage upload");
-        let chunk = pass.upload(rhi, &mut upload, self.mesh, self.region)?;
+        let chunk = pass.upload(
+            rhi,
+            &mut upload,
+            self.mesh,
+            self.region,
+            &nexora_render::Corners::of(&[self.mesh]),
+        )?;
         let fence = rhi.submit(upload)?;
         rhi.wait(fence)?;
         self.live = Some(Live {

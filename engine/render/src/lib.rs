@@ -29,8 +29,10 @@
 //! No textures: faces are coloured by the direction they face, which makes a
 //! frame checkable texel by texel against a ray cast on the CPU. The
 //! first-generation albedos, cutout and transparent layers, lighting and
-//! sorting come after this pass exists. So do index buffers (ADR-0028: six
-//! vertices a quad until a renderer measures that it matters).
+//! sorting come after this pass exists. So do index buffers: ADR-0028 left
+//! them until a renderer measured that vertices matter, and ADR-0033 measured
+//! splitting quads at every corner at +52% vertices, a frame still faster
+//! on lavapipe because back faces are culled.
 
 pub mod reference;
 
@@ -40,7 +42,7 @@ use nexora_foundation::spatial::{Axis, BlockPos};
 use nexora_mesh::{ChunkMesh, Extent, Facing};
 use nexora_rhi::{
     Binding, BindingKind, BufferDesc, BufferHandle, ClearValue, Command, CommandList, Compare,
-    DepthState, PipelineDesc, PipelineHandle, Rhi, ShaderStage, TextureFormat, TextureHandle,
+    Cull, DepthState, PipelineDesc, PipelineHandle, Rhi, ShaderStage, TextureFormat, TextureHandle,
     Usage, VertexAttribute, VertexFormat,
 };
 
@@ -83,7 +85,8 @@ fn fs_chunk(in: Shaded) -> @location(0) vec4<f32> {
 /// Bytes per vertex: a position of three `f32`, then a colour of four `u8`.
 pub const VERTEX_STRIDE: u32 = 16;
 
-/// Vertices per quad: two triangles, no index buffer (ADR-0028).
+/// Vertices of a quad no corner splits: two triangles, no index buffer
+/// (ADR-0028). A split quad has more (ADR-0033).
 pub const VERTICES_PER_QUAD: u32 = 6;
 
 /// The colour a frame starts with, where nothing is drawn.
@@ -105,6 +108,110 @@ pub const fn face_color(axis: Axis, facing: Facing) -> [u8; 4] {
     }
 }
 
+/// Every quad corner of a set of meshes, indexed by the axis-aligned lines it
+/// lies on: what [`chunk_vertices`] needs to leave no T-junction (DEBT-0047).
+///
+/// Greedy meshing (ADR-0012) merges faces into rectangles of different
+/// sizes, so a corner of one rectangle can lie in the middle of a
+/// neighbour's edge. Rasterisation is watertight only along edges whose
+/// endpoints are the same vertices: at such a T-junction the neighbour's long
+/// edge and the two short ones are rounded to the pixel grid separately, and
+/// a gap a fraction of a pixel wide shows what is behind. Splitting every
+/// edge at every corner that lies on it makes each shared edge the same
+/// vertices on both sides. The corners of neighbouring regions' meshes must
+/// be in the set too, or the seams between chunks keep their T-junctions.
+#[derive(Debug, Clone, Default)]
+pub struct Corners {
+    /// `(axis, the two other coordinates)` → sorted positions along `axis`.
+    lines: std::collections::HashMap<(usize, i64, i64), Vec<i64>>,
+}
+
+impl Corners {
+    /// No corners: every quad stays two triangles.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// The corners of every quad of `meshes`, in world blocks.
+    #[must_use]
+    pub fn of(meshes: &[&ChunkMesh]) -> Self {
+        let mut corners = Self::default();
+        for quad in meshes.iter().flat_map(|mesh| &mesh.quads) {
+            for point in quad_corners(quad) {
+                for axis in 0..3 {
+                    let key = line_key(axis, point);
+                    corners.lines.entry(key).or_default().push(point[axis]);
+                }
+            }
+        }
+        for line in corners.lines.values_mut() {
+            line.sort_unstable();
+            line.dedup();
+        }
+        corners
+    }
+
+    /// Corners strictly between `from` and `to`, which differ only along
+    /// `axis`, in order from `from`.
+    fn between(&self, axis: usize, from: [i64; 3], to: [i64; 3]) -> Vec<[i64; 3]> {
+        let Some(line) = self.lines.get(&line_key(axis, from)) else {
+            return Vec::new();
+        };
+        let (low, high) = (from[axis].min(to[axis]), from[axis].max(to[axis]));
+        let start = line.partition_point(|value| *value <= low);
+        let end = line.partition_point(|value| *value < high);
+        let mut points: Vec<[i64; 3]> = line[start..end]
+            .iter()
+            .map(|value| {
+                let mut point = from;
+                point[axis] = *value;
+                point
+            })
+            .collect();
+        if from[axis] > to[axis] {
+            points.reverse();
+        }
+        points
+    }
+}
+
+/// The key of the line along `axis` through `point`.
+fn line_key(axis: usize, point: [i64; 3]) -> (usize, i64, i64) {
+    let [a, b] = Axis::ALL[axis].others().map(Axis::index);
+    (axis, point[a], point[b])
+}
+
+/// A quad's four corners in world blocks, in the order its triangles walk
+/// them: `(0, 0)`, `(w, 0)`, `(w, h)`, `(0, h)`.
+fn quad_corners(quad: &nexora_mesh::Quad) -> [[i64; 3]; 4] {
+    let along = quad.axis.index();
+    let [first, second] = quad.axis.others().map(Axis::index);
+    let mut base = quad.origin;
+    if quad.facing == Facing::Positive {
+        base[along] += 1;
+    }
+    let at = |u: u32, v: u32| {
+        let mut p = base;
+        p[first] += i64::from(u);
+        p[second] += i64::from(v);
+        p
+    };
+    let (w, h) = (quad.width, quad.height);
+    [at(0, 0), at(w, 0), at(w, h), at(0, h)]
+}
+
+/// Whether a quad's corners in the order `(0, 0)`, `(w, 0)`, `(w, h)`,
+/// `(0, h)` run counter-clockwise seen from the side the face points to.
+///
+/// That order turns from the first of the axis's other two axes to the
+/// second (`Axis::others`), which is counter-clockwise about their cross
+/// product: `Y × Z = +X`, `X × Z = −Y`, `X × Y = +Z`.
+const fn winds_outward(axis: Axis, facing: Facing) -> bool {
+    let cross_is_positive = !matches!(axis, Axis::Y);
+    matches!(facing, Facing::Positive) == cross_is_positive
+}
+
 /// A mesh's vertex bytes, relative to `region_min`.
 ///
 /// A quad of cell `origin` facing `Positive` along an axis lies on the plane
@@ -112,51 +219,102 @@ pub const fn face_color(axis: Axis, facing: Facing) -> [u8; 4] {
 /// `width` blocks along the first of the axis's other two axes and `height`
 /// along the second (`Axis::others`), as the mesher emits them.
 ///
+/// A quad with no other corner on its edges is two triangles. One with
+/// corners of `corners` on its edges is a fan through every one of them, so
+/// that no edge it shares ends in the middle of another (see [`Corners`]):
+/// from a corner whose two sides have none, in `n - 2` triangles for `n`
+/// boundary vertices, or from the centre, in `n`. Every triangle runs
+/// counter-clockwise seen from the side the face points to, the front the
+/// pass keeps when it culls back faces.
+///
 /// # Errors
 ///
 /// A quad is so far from `region_min` that its corners are not exact in
 /// `f32`: the mesh does not belong to this region.
-pub fn chunk_vertices(mesh: &ChunkMesh, region_min: BlockPos) -> Result<Vec<u8>> {
+pub fn chunk_vertices(
+    mesh: &ChunkMesh,
+    region_min: BlockPos,
+    corners: &Corners,
+) -> Result<Vec<u8>> {
     let base = [region_min.x, region_min.y, region_min.z];
     let mut out = Vec::with_capacity(mesh.len() * (VERTICES_PER_QUAD * VERTEX_STRIDE) as usize);
     for quad in &mesh.quads {
-        let along = quad.axis.index();
-        let [first, second] = quad.axis.others().map(Axis::index);
-        let mut corner = [0i64; 3];
-        for axis in 0..3 {
-            corner[axis] = quad.origin[axis] - base[axis];
-        }
-        if quad.facing == Facing::Positive {
-            corner[along] += 1;
-        }
-        let far = corner[first].max(corner[second]).max(corner[along])
-            + i64::from(quad.width.max(quad.height));
-        let near = corner[first].min(corner[second]).min(corner[along]);
+        let world = quad_corners(quad);
+        let local = world.map(|p| [0, 1, 2].map(|axis| p[axis] - base[axis]));
+        let far = local.iter().flatten().copied().max().unwrap_or(0);
+        let near = local.iter().flatten().copied().min().unwrap_or(0);
         if far >= EXACT_OFFSET || near <= -EXACT_OFFSET {
             return Err(wrong("a quad is too far from its region to place exactly")
                 .with_context("origin", format!("{:?}", quad.origin))
                 .with_context("region_min", format!("{region_min:?}")));
         }
         let color = face_color(quad.axis, quad.facing);
-        let point = |u: u32, v: u32| {
-            let mut p = corner;
-            p[first] += i64::from(u);
-            p[second] += i64::from(v);
-            p.map(|value| value as f32)
-        };
-        let (w, h) = (quad.width, quad.height);
-        for p in [
-            point(0, 0),
-            point(w, 0),
-            point(w, h),
-            point(0, 0),
-            point(w, h),
-            point(0, h),
-        ] {
-            for value in p {
-                out.extend_from_slice(&value.to_le_bytes());
+        let flip = !winds_outward(quad.axis, quad.facing);
+        let mut pushed = 0usize;
+        let mut triangle = [[0.0f64; 3]; 3];
+        let mut push = |p: [f64; 3]| {
+            triangle[pushed % 3] = p;
+            pushed += 1;
+            if pushed % 3 != 0 {
+                return;
             }
-            out.extend_from_slice(&color);
+            // Counter-clockwise seen from outside the face: the front the
+            // pass keeps when it culls (`Cull::Back`, DEBT-0047).
+            let order = if flip { [0, 2, 1] } else { [0, 1, 2] };
+            for index in order {
+                for value in triangle[index] {
+                    out.extend_from_slice(&(value as f32).to_le_bytes());
+                }
+                out.extend_from_slice(&color);
+            }
+        };
+        let local_f = |p: [i64; 3]| [0, 1, 2].map(|axis| (p[axis] - base[axis]) as f64);
+
+        // The boundary, corner to corner, with every corner on each edge,
+        // and where each of the four corners sits in it.
+        let mut boundary = Vec::with_capacity(4);
+        let mut at_corner = [0usize; 4];
+        for side in 0..4 {
+            let (from, to) = (world[side], world[(side + 1) % 4]);
+            let axis = (0..3).find(|axis| from[*axis] != to[*axis]).unwrap_or(0);
+            at_corner[side] = boundary.len();
+            boundary.push(from);
+            boundary.extend(corners.between(axis, from, to));
+        }
+        let n = boundary.len();
+        if n == 4 {
+            for index in [0, 1, 2, 0, 2, 3] {
+                push(local_f(world[index]));
+            }
+            continue;
+        }
+        // A fan from a corner whose two sides have no corner on them covers
+        // the quad in n - 2 triangles, and keeps every edge's vertices.
+        let plain_sides = |corner: usize| {
+            let next = at_corner[(corner + 1) % 4];
+            let own = at_corner[corner];
+            let before = at_corner[(corner + 3) % 4];
+            let side_after = (next + n - own) % n == 1;
+            let side_before = (own + n - before) % n == 1;
+            side_after && side_before
+        };
+        if let Some(corner) = (0..4).find(|corner| plain_sides(*corner)) {
+            let apex = at_corner[corner];
+            for step in 1..n - 1 {
+                push(local_f(boundary[apex]));
+                push(local_f(boundary[(apex + step) % n]));
+                push(local_f(boundary[(apex + step + 1) % n]));
+            }
+            continue;
+        }
+        // Otherwise a fan from the centre: n triangles. Half-integer, so
+        // exact in `f32` within `EXACT_OFFSET`.
+        let centre =
+            [0, 1, 2].map(|axis| (local_f(world[0])[axis] + local_f(world[2])[axis]) / 2.0);
+        for index in 0..n {
+            push(centre);
+            push(local_f(boundary[index]));
+            push(local_f(boundary[(index + 1) % n]));
         }
     }
     Ok(out)
@@ -244,6 +402,8 @@ impl ChunkPass {
                 compare: Compare::Greater,
                 write: true,
             }),
+
+            cull: Cull::Back,
             targets: vec![target],
         })?;
         let camera = match rhi.create_buffer(&BufferDesc {
@@ -262,7 +422,9 @@ impl ChunkPass {
 
     /// Create a chunk's buffers, and append the write of its vertices to
     /// `list`: an upload rides in the same submission as the frame that
-    /// first needs it.
+    /// first needs it. `corners` holds the corners of every mesh drawn with
+    /// this one, its own included, so shared edges leave no gap
+    /// ([`Corners`]).
     ///
     /// # Errors
     ///
@@ -274,8 +436,9 @@ impl ChunkPass {
         list: &mut CommandList,
         mesh: &ChunkMesh,
         region: Extent,
+        corners: &Corners,
     ) -> Result<GpuChunk> {
-        let bytes = chunk_vertices(mesh, region.origin)?;
+        let bytes = chunk_vertices(mesh, region.origin, corners)?;
         let vertex_count = u32::try_from(bytes.len() / VERTEX_STRIDE as usize)
             .map_err(|_| wrong("a chunk has more vertices than one draw holds"))?;
         let offset = rhi.create_buffer(&BufferDesc {
@@ -424,7 +587,7 @@ mod tests {
                 surface: SurfaceId(1),
             }],
         };
-        let bytes = chunk_vertices(&mesh, BlockPos::new(8, 0, 16)).unwrap();
+        let bytes = chunk_vertices(&mesh, BlockPos::new(8, 0, 16), &Corners::none()).unwrap();
         let vertices = floats(&bytes);
         assert_eq!(vertices.len(), VERTICES_PER_QUAD as usize);
         for (p, color) in &vertices {
@@ -455,10 +618,139 @@ mod tests {
                 surface: SurfaceId(0),
             }],
         };
-        let vertices = floats(&chunk_vertices(&mesh, BlockPos::ORIGIN).unwrap());
+        let vertices = floats(&chunk_vertices(&mesh, BlockPos::ORIGIN, &Corners::none()).unwrap());
         assert!(vertices.iter().all(|(p, _)| p[0] == 3.0));
         // X's other axes are Y then Z: width runs along Y, height along Z.
         assert!(vertices.iter().any(|(p, _)| *p == [3.0, 5.0, 6.0]));
+    }
+
+    fn quad(origin: [i64; 3], axis: Axis, facing: Facing, width: u32, height: u32) -> Quad {
+        Quad {
+            origin,
+            axis,
+            facing,
+            width,
+            height,
+            surface: SurfaceId(0),
+        }
+    }
+
+    fn triangles(bytes: &[u8]) -> Vec<[[f32; 3]; 3]> {
+        floats(bytes)
+            .chunks_exact(3)
+            .map(|t| [t[0].0, t[1].0, t[2].0])
+            .collect()
+    }
+
+    /// Twice the signed area of a triangle projected on the plane normal to
+    /// `axis`, positive when counter-clockwise seen from `+axis`.
+    fn signed_area(t: [[f32; 3]; 3], axis: Axis) -> f32 {
+        let [a, b] = axis.others().map(Axis::index);
+        let (p, q, r) = (t[0], t[1], t[2]);
+        let cross = (q[a] - p[a]) * (r[b] - p[b]) - (q[b] - p[b]) * (r[a] - p[a]);
+        // (a, b) is (Y, Z) for X, (X, Z) for Y and (X, Y) for Z: only Y's
+        // pair turns the other way about its axis.
+        if axis == Axis::Y {
+            -cross
+        } else {
+            cross
+        }
+    }
+
+    /// Every face, of every facing, is counter-clockwise seen from the side
+    /// it points to: the front a pass that culls back faces keeps.
+    #[test]
+    fn every_triangle_is_wound_counter_clockwise_from_outside() {
+        for axis in Axis::ALL {
+            for facing in [Facing::Positive, Facing::Negative] {
+                let mesh = ChunkMesh {
+                    quads: vec![quad([0, 0, 0], axis, facing, 2, 3)],
+                };
+                let bytes = chunk_vertices(&mesh, BlockPos::ORIGIN, &Corners::none()).unwrap();
+                for t in triangles(&bytes) {
+                    let area = signed_area(t, axis);
+                    let outward = if facing == Facing::Positive {
+                        area
+                    } else {
+                        -area
+                    };
+                    assert!(outward > 0.0, "{axis:?} {facing:?}: {t:?}");
+                }
+            }
+        }
+    }
+
+    /// A 1x1 face beside a 2x1 one on the same plane puts a corner in the
+    /// middle of the long one's edge: a T-junction. With the corners given,
+    /// the long face's triangles end at that corner, cover the same area,
+    /// and keep their winding.
+    #[test]
+    fn a_corner_in_the_middle_of_an_edge_splits_it() {
+        let long = quad([0, 5, 0], Axis::Y, Facing::Positive, 2, 1);
+        let short = quad([1, 5, 1], Axis::Y, Facing::Positive, 1, 1);
+        let mesh = ChunkMesh {
+            quads: vec![long, short],
+        };
+        let corners = Corners::of(&[&mesh]);
+        let only_long = ChunkMesh { quads: vec![long] };
+        let split = triangles(&chunk_vertices(&only_long, BlockPos::ORIGIN, &corners).unwrap());
+        let plain =
+            triangles(&chunk_vertices(&only_long, BlockPos::ORIGIN, &Corners::none()).unwrap());
+        assert_eq!(plain.len(), 2);
+        assert_eq!(
+            split.len(),
+            3,
+            "a fan from a plain corner: five vertices, three triangles"
+        );
+        assert!(
+            split.iter().flatten().any(|p| *p == [1.0, 6.0, 1.0]),
+            "the neighbour's corner is a vertex of the long face"
+        );
+        let area = |ts: &[[[f32; 3]; 3]]| ts.iter().map(|t| signed_area(*t, Axis::Y)).sum::<f32>();
+        assert_eq!(area(&split), area(&plain));
+        assert!(split.iter().all(|t| signed_area(*t, Axis::Y) > 0.0));
+    }
+
+    /// A corner of another region's mesh, on the seam, splits the edge too:
+    /// the corners are world blocks, not region-relative ones.
+    #[test]
+    fn a_corner_across_a_region_seam_splits_the_edge() {
+        let here = ChunkMesh {
+            quads: vec![quad([0, 0, 0], Axis::Z, Facing::Positive, 4, 1)],
+        };
+        let there = ChunkMesh {
+            quads: vec![quad([2, 1, 0], Axis::Z, Facing::Positive, 1, 1)],
+        };
+        let corners = Corners::of(&[&here, &there]);
+        let region_min = BlockPos::new(-16, 0, -16);
+        let split = triangles(&chunk_vertices(&here, region_min, &corners).unwrap());
+        // (2, 1, 1) in the world is (18, 1, 17) relative to the region.
+        assert!(
+            split.iter().flatten().any(|p| *p == [18.0, 1.0, 17.0]),
+            "{split:?}"
+        );
+    }
+
+    /// Corners on both sides and at every corner of a face leave no corner
+    /// to fan from: the fan starts at the centre.
+    #[test]
+    fn a_face_split_on_every_side_fans_from_its_centre() {
+        let big = quad([0, 0, 0], Axis::X, Facing::Positive, 2, 2);
+        let mut quads = vec![big];
+        // Neighbours whose corners land mid-edge on all four sides.
+        for (y, z) in [(1, -1), (2, 1), (1, 2), (-1, 1)] {
+            quads.push(quad([0, y, z], Axis::X, Facing::Positive, 1, 1));
+        }
+        let mesh = ChunkMesh { quads };
+        let corners = Corners::of(&[&mesh]);
+        let only = ChunkMesh { quads: vec![big] };
+        let split = triangles(&chunk_vertices(&only, BlockPos::ORIGIN, &corners).unwrap());
+        assert_eq!(split.len(), 8, "eight boundary vertices, eight triangles");
+        assert!(
+            split.iter().all(|t| t[0] == [1.0, 1.0, 1.0]),
+            "all from the centre"
+        );
+        assert!(split.iter().all(|t| signed_area(*t, Axis::X) > 0.0));
     }
 
     #[test]
@@ -486,6 +778,6 @@ mod tests {
                 surface: SurfaceId(0),
             }],
         };
-        assert!(chunk_vertices(&mesh, BlockPos::ORIGIN).is_err());
+        assert!(chunk_vertices(&mesh, BlockPos::ORIGIN, &Corners::none()).is_err());
     }
 }

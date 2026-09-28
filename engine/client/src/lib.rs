@@ -45,8 +45,9 @@ use nexora_camera::{Camera, RenderOrigin};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::time::{CalendarConfig, TimeScale};
+use nexora_mesh::ChunkMesh;
 use nexora_render::reference::{check_frame, FrameCheck};
-use nexora_render::{ChunkPass, FrameStats, GpuChunk};
+use nexora_render::{ChunkPass, Corners, FrameStats, GpuChunk};
 use nexora_rhi::{CommandList, Rhi, TextureDesc, TextureFormat, TextureHandle, Usage};
 use nexora_rhi_wgpu::WgpuRhi;
 use nexora_runtime::frame::{BudgetClass, FrameBudget, FrameLoop, FrameSchedule, FrameStage};
@@ -364,23 +365,26 @@ fn run_in(
     })
 }
 
-/// Pixels judged per back-facing pixel tolerated in the first frame.
+/// Pixels judged per snapped edge tolerated in the first frame.
 ///
-/// Measured: on lavapipe at 384×256, twenty seeds gave 0 to 5 in about
-/// 79,500 judged pixels, every one a sub-pixel gap at a T-junction or a
-/// snapped silhouette edge (DEBT-0047). The bound is a sixteenth of the
-/// smallest wrong frame mutation-checked so far (a `Less` depth test gets
-/// 25% wrong), and anything that is not a back face is not tolerated at all.
-pub const BACKFACING_PER_JUDGED: usize = 5_000;
+/// Measured on lavapipe at 384×256 over twenty seeds, with the pass culling
+/// back faces and its quads split at every corner (DEBT-0047, closed): 0 to 2
+/// wrong pixels in about 79,500 judged, every one an edge the ray cast finds
+/// within 1/64 px of the pixel's centre that the rasteriser placed on the
+/// other side. The bound is far below the smallest wrong frame
+/// mutation-checked (a `Less` depth test gets 28% wrong).
+pub const SNAPPED_PER_JUDGED: usize = 5_000;
 
 /// Whether a checked frame is the one the ray cast says: at least half the
-/// pixels judged, and every judged pixel matching, except back faces seen
-/// through sub-pixel gaps, within [`BACKFACING_PER_JUDGED`].
+/// pixels judged; every judged pixel matching except snapped edges, within
+/// [`SNAPPED_PER_JUDGED`]; and **no back face at all**, which the pass culls,
+/// so one on screen means culling or winding broke.
 #[must_use]
 pub fn frame_holds(check: &FrameCheck) -> bool {
     check.judged * 2 >= check.pixels
-        && check.matching + check.backfacing + check.snapped == check.judged
-        && (check.backfacing + check.snapped) * BACKFACING_PER_JUDGED <= check.judged
+        && check.backfacing == 0
+        && check.matching + check.snapped == check.judged
+        && check.snapped * SNAPPED_PER_JUDGED <= check.judged
 }
 
 /// Where `now` is relative to `start`: forward, right and up in `start`'s
@@ -473,9 +477,13 @@ impl Client for Presentation<'_> {
         ))?;
         let pass = ChunkPass::new(rhi, TextureFormat::Rgba8Unorm)?;
         let mut upload = CommandList::new("client upload");
+        // Every column's corners, so the seams between columns are split
+        // too (DEBT-0047).
+        let meshes: Vec<&ChunkMesh> = self.scene.regions.iter().map(|(_, mesh)| mesh).collect();
+        let corners = Corners::of(&meshes);
         let mut chunks = Vec::with_capacity(self.scene.regions.len());
         for (region, mesh) in &self.scene.regions {
-            chunks.push(pass.upload(rhi, &mut upload, mesh, *region)?);
+            chunks.push(pass.upload(rhi, &mut upload, mesh, *region, &corners)?);
         }
         let fence = rhi.submit(upload)?;
         rhi.wait(fence)?;
@@ -667,8 +675,8 @@ pub fn format_report(report: &ClientReport) -> String {
     ));
     match report.first_frame {
         Some(check) => out.push_str(&format!(
-            "first frame        {} of {} pixels judged by the ray cast, {} matching, {} sub-pixel ({} back faces through gaps, {} snapped edges; DEBT-0047), read back from the surface\n",
-            check.judged, check.pixels, check.matching, check.backfacing + check.snapped, check.backfacing, check.snapped
+            "first frame        {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} back faces, read back from the surface\n",
+            check.judged, check.pixels, check.matching, check.snapped, check.backfacing
         )),
         None => out.push_str("first frame        not readable on this surface\n"),
     }
@@ -875,34 +883,30 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_holds_only_with_back_faces_rare_and_nothing_else_wrong() {
-        let check = |judged, matching, backfacing| FrameCheck {
-            pixels: 1000,
+    fn a_frame_holds_only_with_snapped_edges_rare_and_nothing_else_wrong() {
+        let check = |judged, matching, backfacing, snapped| FrameCheck {
+            pixels: 20_000,
             judged,
             matching,
             backfacing,
-            snapped: 0,
+            snapped,
         };
-        assert!(frame_holds(&check(800, 800, 0)));
-        assert!(!frame_holds(&check(400, 400, 0)), "too little judged");
+        assert!(frame_holds(&check(10_000, 10_000, 0, 0)));
+        assert!(frame_holds(&check(10_000, 9_998, 0, 2)));
         assert!(
-            !frame_holds(&check(800, 799, 0)),
-            "a wrong pixel that is not a back face"
+            !frame_holds(&check(9_000, 9_000, 0, 0)),
+            "too little judged"
         );
-        let many = FrameCheck {
-            pixels: 20_000,
-            judged: 10_000,
-            matching: 9_998,
-            backfacing: 1,
-            snapped: 1,
-        };
-        assert!(frame_holds(&many));
         assert!(
-            !frame_holds(&FrameCheck {
-                matching: 9_997,
-                backfacing: 3,
-                ..many
-            }),
+            !frame_holds(&check(10_000, 9_999, 0, 0)),
+            "a wrong pixel of no class"
+        );
+        assert!(
+            !frame_holds(&check(10_000, 9_999, 1, 0)),
+            "a back face, which the pass culls"
+        );
+        assert!(
+            !frame_holds(&check(10_000, 9_997, 0, 3)),
             "past one in 5,000"
         );
     }

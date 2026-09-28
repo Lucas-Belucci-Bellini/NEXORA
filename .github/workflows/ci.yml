@@ -85,6 +85,9 @@ jobs:
           # ADR-0028: a sampled image, a depth test and a uniform, each read back.
           grep '^bound              256 of 256 texels sampled, 256 kept by depth, 256 tinted by a uniform$' \
             "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+          # DEBT-0047: back faces culled, front faces kept, read back.
+          grep '^cull               16 of 16 texels shaded counter-clockwise, 0 clockwise, culling back faces$' \
+            "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
 
       # The window host on Xvfb: a real X11 window, a Vulkan surface on it, the
       # conformance suite with presentation on, and 60 frames shown. The first

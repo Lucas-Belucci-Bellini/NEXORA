@@ -98,6 +98,8 @@ pub fn run(rhi: &mut WgpuRhi) -> Result<Proof> {
         attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
         bindings: Vec::new(),
         depth: None,
+
+        cull: nexora_rhi::Cull::None,
         targets: vec![TextureFormat::Rgba8Unorm],
     })?;
     let mut draw = CommandList::new("proof draw");
@@ -214,6 +216,8 @@ pub fn bound(rhi: &mut WgpuRhi) -> Result<Bound> {
             compare: Compare::Greater,
             write: true,
         }),
+
+        cull: nexora_rhi::Cull::None,
         targets: vec![TextureFormat::Rgba8Unorm],
     })?;
     // A triangle covering the target at depth `z`, with texture coordinates
@@ -352,4 +356,113 @@ pub fn bound(rhi: &mut WgpuRhi) -> Result<Bound> {
         }
     }
     Ok(result)
+}
+
+/// What [`cull`] observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Culled {
+    /// Texels in the target.
+    pub texels: usize,
+    /// Shaded by a counter-clockwise triangle: its front, kept.
+    pub front: usize,
+    /// Shaded by the same triangle wound clockwise: its back, discarded.
+    pub back: usize,
+}
+
+/// Draw one triangle that covers the target twice with `Cull::Back`: wound
+/// counter-clockwise in normalized device coordinates, then clockwise. The
+/// first must shade every texel and the second none (DEBT-0047).
+///
+/// # Errors
+///
+/// Either draw shaded the wrong texels, or the backend refused a step.
+pub fn cull(rhi: &mut WgpuRhi) -> Result<Culled> {
+    let edge = 4;
+    let counter_clockwise = [
+        [-1.0f32, -1.0, 0.0, 1.0],
+        [3.0, -1.0, 0.0, 1.0],
+        [-1.0, 3.0, 0.0, 1.0],
+    ];
+    let clockwise = [
+        counter_clockwise[0],
+        counter_clockwise[2],
+        counter_clockwise[1],
+    ];
+    let shaders = conformance_shaders();
+    let pipeline = rhi.create_pipeline(&PipelineDesc {
+        label: "proof cull".into(),
+        vertex: shaders.vertex,
+        fragment: shaders.fragment,
+        vertex_stride: 16,
+        attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
+        bindings: Vec::new(),
+        depth: None,
+        cull: nexora_rhi::Cull::Back,
+        targets: vec![TextureFormat::Rgba8Unorm],
+    })?;
+    let mut shaded = [0usize; 2];
+    let mut texels = 0;
+    for (index, triangle) in [counter_clockwise, clockwise].iter().enumerate() {
+        let target = rhi.create_texture(&TextureDesc {
+            label: "proof cull target".into(),
+            width: edge,
+            height: edge,
+            format: TextureFormat::Rgba8Unorm,
+            usage: Usage::RENDER_TARGET | Usage::COPY_SRC,
+        })?;
+        let data: Vec<u8> = triangle
+            .iter()
+            .flatten()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let buffer = rhi.create_buffer(&BufferDesc {
+            label: "proof cull triangle".into(),
+            size: data.len() as u64,
+            usage: Usage::VERTEX | Usage::COPY_DST,
+        })?;
+        let mut draw = CommandList::new("proof cull draw");
+        draw.push(Command::Clear {
+            texture: target,
+            value: nexora_rhi::ClearValue::Color([0.0, 0.0, 0.0, 1.0]),
+        })
+        .push(Command::WriteBuffer {
+            buffer,
+            offset: 0,
+            data,
+        })
+        .push(Command::Draw {
+            pipeline,
+            buffer,
+            target,
+            depth: None,
+            bindings: Vec::new(),
+            vertices: 3,
+        });
+        let fence = rhi.submit(draw)?;
+        rhi.wait(fence)?;
+        let pixels = rhi.read_texture(target)?;
+        rhi.destroy_buffer(buffer)?;
+        rhi.destroy_texture(target)?;
+        texels = pixels.len() / 4;
+        shaded[index] = pixels
+            .chunks_exact(4)
+            .filter(|texel| *texel == SHADED)
+            .count();
+    }
+    rhi.destroy_pipeline(pipeline)?;
+    rhi.poll()?;
+    let culled = Culled {
+        texels,
+        front: shaded[0],
+        back: shaded[1],
+    };
+    if culled.front != texels || culled.back != 0 {
+        return Err(
+            wrong("culling back faces did not keep the front and discard the back")
+                .with_context("front", culled.front.to_string())
+                .with_context("back", culled.back.to_string())
+                .with_context("texels", texels.to_string()),
+        );
+    }
+    Ok(culled)
 }

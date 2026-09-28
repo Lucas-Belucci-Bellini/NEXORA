@@ -71,8 +71,8 @@ HARDWARE_GATED = [
                   "regions through the camera -- one 16^3 region into a texture and into a window "
                   "(benchmark_cpu's frame-time and window stages) and nine chunk columns of a "
                   "generated world in client mode (client_mode) -- every frame checked against a "
-                  "CPU ray cast; textures, streaming into the pass, back-face culling and "
-                  "crack-free meshing (DEBT-0047) are not built"),
+                  "CPU ray cast, culling back faces over quads split at every corner "
+                  "(ADR-0033); textures and streaming into the pass are not built"),
 ]
 
 
@@ -441,7 +441,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     else:
         results.append(needs_build("rhi_native", [probe],
                                    _lines("adapter", "conformance", "upload", "draw", "bound",
-                                          "result")))
+                                          "cull", "result")))
     # The window host: a window, its surface, the conformance suite with
     # presentation on, and frames shown in it, the first read back from the
     # surface where the platform allows (ADR-0027). No display is declared,

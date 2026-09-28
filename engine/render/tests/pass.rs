@@ -10,7 +10,7 @@ use nexora_camera::{Camera, CameraState, Projection, RenderOrigin};
 use nexora_foundation::spatial::{BlockPos, WorldPosition, MAX_BLOCK_COORD};
 use nexora_mesh::{mesh_region, Extent, SurfaceId, VoxelView};
 use nexora_render::reference::check_frame;
-use nexora_render::{ChunkPass, FrameStats};
+use nexora_render::{ChunkPass, Corners, FrameStats};
 use nexora_rhi::{CommandList, NullRhi, Rhi, TextureDesc, TextureFormat, Usage};
 use nexora_rhi_wgpu::WgpuRhi;
 
@@ -91,7 +91,13 @@ fn draw_frame(rhi: &mut WgpuRhi, scene: &Scene) -> (FrameStats, Vec<u8>, CameraS
     let mesh = mesh_region(scene, scene.region());
     let mut frame = CommandList::new("pass test frame");
     let chunk = pass
-        .upload(rhi, &mut frame, &mesh.opaque, scene.region())
+        .upload(
+            rhi,
+            &mut frame,
+            &mesh.opaque,
+            scene.region(),
+            &Corners::of(&[&mesh.opaque]),
+        )
         .unwrap();
     let (camera, origin) = camera_for(scene);
     let state = camera.sample(origin, SIZE, SIZE).unwrap();
@@ -197,11 +203,23 @@ fn a_frame_records_and_submits_on_the_null_backend() {
     let mut list = CommandList::new("null frame");
     let mesh = mesh_region(&scene, scene.region());
     let chunk = pass
-        .upload(&mut rhi, &mut list, &mesh.opaque, scene.region())
+        .upload(
+            &mut rhi,
+            &mut list,
+            &mesh.opaque,
+            scene.region(),
+            &Corners::of(&[&mesh.opaque]),
+        )
         .unwrap();
     let empty_region = Extent::cubic(BlockPos::new(0, 64, 0), EDGE).unwrap();
     let empty = pass
-        .upload(&mut rhi, &mut list, &mesh.cutout, empty_region)
+        .upload(
+            &mut rhi,
+            &mut list,
+            &mesh.cutout,
+            empty_region,
+            &Corners::none(),
+        )
         .unwrap();
     assert!(empty.vertices.is_none());
 
@@ -219,10 +237,11 @@ fn a_frame_records_and_submits_on_the_null_backend() {
             vertices: u64::from(chunk.vertex_count),
         }
     );
-    assert_eq!(
-        u64::from(chunk.vertex_count),
-        mesh.opaque.vertex_count() / 4 * 6
-    );
+    // Whole triangles, at least two a quad; more where a neighbour's corner
+    // splits an edge (DEBT-0047).
+    let quads = mesh.opaque.vertex_count() / 4;
+    assert_eq!(chunk.vertex_count % 3, 0);
+    assert!(u64::from(chunk.vertex_count) >= quads * 6);
     let fence = rhi.submit(list).unwrap();
     rhi.wait(fence).unwrap();
 

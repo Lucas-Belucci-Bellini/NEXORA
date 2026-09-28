@@ -88,3 +88,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md) | A primeira passada de render desenha sobre o contrato do RHI, e um ray cast confere cada quadro cronometrado | ACCEPTED |
 | [0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md) | A janela entrega o input como usages HID, uma vez por quadro | ACCEPTED |
 | [0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md) | O cliente é o runtime numa janela, não um segundo motor | ACCEPTED |
+| [0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | O pass descarta faces de costas e divide seus quads em todo canto | ACCEPTED |

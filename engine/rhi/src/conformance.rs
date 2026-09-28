@@ -14,8 +14,8 @@ use nexora_foundation::error::{Domain, Error, Recovery, Result};
 
 use crate::api::{Binding, ClearValue, Command, CommandList, Fence, Rhi};
 use crate::desc::{
-    BindingKind, BufferDesc, Compare, DepthState, Filter, PipelineDesc, ShaderStage, TextureDesc,
-    TextureFormat, Usage, VertexAttribute, VertexFormat, COPY_ALIGNMENT, MAX_BINDINGS,
+    BindingKind, BufferDesc, Compare, Cull, DepthState, Filter, PipelineDesc, ShaderStage,
+    TextureDesc, TextureFormat, Usage, VertexAttribute, VertexFormat, COPY_ALIGNMENT, MAX_BINDINGS,
 };
 
 /// The cases, in the order [`run`] runs them.
@@ -180,6 +180,8 @@ fn pipeline(shaders: &TestShaders, targets: Vec<TextureFormat>) -> PipelineDesc 
         attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
         bindings: Vec::new(),
         depth: None,
+
+        cull: Cull::None,
         targets,
     }
 }
@@ -197,6 +199,8 @@ fn bound_pipeline(shaders: &TestShaders) -> PipelineDesc {
             compare: Compare::LessEqual,
             write: true,
         }),
+
+        cull: Cull::None,
         targets: vec![TextureFormat::Rgba8Unorm],
     }
 }

@@ -59,11 +59,11 @@ pub struct FrameCheck {
     ///
     /// No correct frame shows one: every face the mesher emits separates a
     /// solid cell from an empty one, so a face seen from behind is seen from
-    /// inside a solid. The pass does not cull back faces, so this is what a
-    /// ray shows when it slips through a sub-pixel gap between two quads, at
-    /// a T-junction or a silhouette edge the rasteriser snapped across. It is
-    /// counted apart so that it can be told from a wrong frame, never so that
-    /// it can be ignored.
+    /// inside a solid. Before the pass culled back faces and split its quads
+    /// at every corner, this is what a ray showed when it slipped through a
+    /// sub-pixel gap at a T-junction, or when a silhouette edge's tie went to
+    /// the back face (DEBT-0047). Now the pass culls them, so any is an
+    /// error; it is counted apart so that the error says what it is.
     pub backfacing: usize,
     /// Judged pixels that do not match, are not back faces, and show a
     /// colour the reference itself finds within [`SNAP`] of the pixel's

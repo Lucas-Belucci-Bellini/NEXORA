@@ -68,6 +68,8 @@ fn shaders_are_validated_by_the_driver_stack_not_only_shaped() {
             attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
             bindings: Vec::new(),
             depth: None,
+
+            cull: nexora_rhi::Cull::None,
             targets: vec![TextureFormat::Rgba8Unorm],
         })
         .expect_err("not WGSL");
@@ -87,6 +89,8 @@ fn shaders_are_validated_by_the_driver_stack_not_only_shaped() {
             attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
             bindings: Vec::new(),
             depth: None,
+
+            cull: nexora_rhi::Cull::None,
             targets: vec![TextureFormat::Rgba8Unorm],
         })
         .is_err());
@@ -134,6 +138,8 @@ fn a_list_runs_in_the_order_it_was_recorded() {
             attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
             bindings: Vec::new(),
             depth: None,
+
+            cull: nexora_rhi::Cull::None,
             targets: vec![TextureFormat::Rgba8Unorm],
         })
         .unwrap();
@@ -279,6 +285,20 @@ fn bindings_samplers_and_depth_reach_the_gpu() {
         bound.tinted, 256,
         "a nearer, tinted draw did not replace the image"
     );
+    assert_eq!(rhi.live(), (0, 0, 0));
+    assert_eq!(rhi.allocated_bytes(), 0);
+}
+
+/// `Cull::Back` on a driver (DEBT-0047): the front of a triangle, wound
+/// counter-clockwise in normalized device coordinates, shades every texel;
+/// the same triangle wound clockwise shades none ([`proof::cull`]).
+#[test]
+fn culling_keeps_the_front_and_discards_the_back() {
+    let Some(mut rhi) = backend() else { return };
+    let culled = proof::cull(&mut rhi).unwrap();
+    assert_eq!(culled.texels, 16);
+    assert_eq!(culled.front, 16, "a front face was culled");
+    assert_eq!(culled.back, 0, "a back face was drawn");
     assert_eq!(rhi.live(), (0, 0, 0));
     assert_eq!(rhi.allocated_bytes(), 0);
 }

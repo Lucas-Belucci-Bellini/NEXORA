@@ -179,3 +179,11 @@ None. The client writes a save only with `--save`, in the existing format.
 Additive: a new crate and binary, and two new fields in `FrameCheck` (`backfacing`
 and `snapped`). Every existing check still requires `matching == judged`.
 `frame.stages_with_a_system` reads 6.
+
+## Amendment (2026-09-28): ADR-0033
+
+The first-frame rule above tolerated back faces because the pass drew
+them. ADR-0033 culls them and splits quads at every corner, so the rule now
+tolerates **no back face** and only snapped edges, at most 1 in 5,000. Over
+the same twenty seeds: 10 snapped edges in all, 0 back faces, and 13 seeds
+with no wrong pixel.
