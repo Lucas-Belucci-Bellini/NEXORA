@@ -677,9 +677,24 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   a partir de medição (o `doubling_from` segue sendo convenção), números numa
   máquina real (a checagem `client_mode` do `local-validation.py` ainda não
   rodou lá), e um quadro com mundo, física e streaming dentro do laço.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** o laço rodou na
+  máquina do operador (RX 6650 XT, Win32), quatro vezes sobre o mesmo código:
+  120 quadros cada, **mediana de 9,87–9,90 ms de parede, p95 de
+  10,33–10,68 ms, máximo de 28–52 ms, 0,11–0,12 ms não atribuídos**, todos
+  `target`. A evidência local deixa de faltar, e mostra por que o orçamento
+  ainda não pode sair dela: o quadro de um chunk custa 223–242 µs
+  (`frame.draw_chunk_16`), e o de nove colunas leva o mesmo que a janela sem
+  mundo nenhum (`window.present_chunk_16`, 9,94–9,98 ms). **O que o cliente
+  mede é o período do monitor, ~100 Hz**, porque o estágio `render` inclui a
+  espera do FIFO (baseline, Finding 33). Um orçamento tirado desse número
+  seria o orçamento do monitor. **Falta**, portanto: separar no relatório do
+  quadro o trabalho da espera pela apresentação, e só então publicar
+  target/warning/critical/emergency a partir de medição; e um quadro com
+  mundo, física e streaming dentro do laço.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio; o
-  orçamento publicado e a evidência local faltam)
+- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio, em CI e
+  no hardware do operador; o orçamento publicado falta, e o que o quadro mede
+  hoje inclui a espera pelo monitor)
 
 ### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
 
@@ -781,9 +796,22 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `input_devices` do `local-validation.py` existe e ainda não rodou), gamepad,
   toque, movimento do ponteiro, roda do mouse, entrada de texto, gravar o
   arquivo de remap em disco, e um snapshot que atravesse uma rede.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** **verificado no
+  hardware do operador.** Nos relatórios 7 e 9 um W apertado pelo operador
+  numa janela Win32 chegou ao motor como usage 26 e saiu como o press e o
+  release da ação (depois de 657 e 571 quadros; 6 e 4 sinais, nenhuma tecla
+  sem usage, nenhuma repetição). Nos relatórios 6 e 8 a checagem esgotou os 60 s
+  com 2 sinais e nenhuma tecla, e o probe não sabia dizer se a tecla não veio
+  ou se a janela nunca teve o foco do teclado. Agora a janela pede o foco ao
+  abrir (o Windows pode negar a um processo que não está em primeiro plano),
+  conta cada vez que ganha foco, e o timeout diz qual dos dois foi. **Falta**,
+  e a dívida fica aberta por isso: gamepad, toque, movimento do ponteiro, roda
+  do mouse, entrada de texto, gravar o arquivo de remap em disco, e um
+  snapshot que atravesse uma rede.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos e
-  verificados em CI; hardware local não testado)
+- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos,
+  verificados em CI e no hardware do operador; os outros dispositivos, o
+  remap em disco e a rede faltam)
 
 ### DEBT-0046 — O RHI ainda não apresenta nada, e nenhuma GPU real o executou
 
