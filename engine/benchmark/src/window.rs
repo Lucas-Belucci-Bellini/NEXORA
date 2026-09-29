@@ -99,6 +99,7 @@ pub fn window(budget: Budget, rhi_gap: Option<&'static str>) -> Result<WindowSta
         live: None,
         first_frame_ns: None,
         intervals: Vec::new(),
+        waits: Vec::new(),
         check: None,
         unreadable: false,
     };
@@ -144,6 +145,13 @@ pub fn window(budget: Budget, rhi_gap: Option<&'static str>) -> Result<WindowSta
                 samples: client.intervals,
                 bytes_per_op: None,
             },
+            Measurement {
+                name: "window.present_wait_chunk_16",
+                note: "Of each interval, the time present was blocked on the window system for a free surface image (the display's refresh, the GPU's earlier frames): not work (ADR-0017 amendment)",
+                unit: Unit::TimePerOp,
+                samples: client.waits,
+                bytes_per_op: None,
+            },
             record_quantity(
                 "window.pixels_judged",
                 "Of the first shown frame's 65,536 pixels, read back from the surface, those checked against the CPU ray cast (all matched)",
@@ -165,6 +173,7 @@ struct ChunkWindow<'a, V: nexora_mesh::VoxelView + ?Sized> {
     live: Option<Live>,
     first_frame_ns: Option<f64>,
     intervals: Vec<f64>,
+    waits: Vec<f64>,
     check: Option<FrameCheck>,
     unreadable: bool,
 }
@@ -292,6 +301,8 @@ impl<V: nexora_mesh::VoxelView + ?Sized> Client for ChunkWindow<'_, V> {
         let now = Instant::now();
         if let Some(last) = live.last {
             self.intervals.push((now - last).as_nanos() as f64);
+            // Inside the interval just pushed, so never longer than it.
+            self.waits.push(rhi.last_present_wait().as_nanos() as f64);
         }
         live.last = Some(now);
         live.shown += 1;

@@ -707,9 +707,10 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   (`FrameRun::waited_for_presentation`), e o orçamento classifica
   `FrameReport::work`, o tempo de parede menos a espera. A atribuição não
   muda: a espera continua na linha do `render` e no tempo de parede, e o
-  `unattributed` é o mesmo. O
-  relatório do cliente ganhou a linha `frame work`, que o
-  `local-validation.py` guarda. No lavapipe/Xvfb: trabalho mediano de
+  `unattributed` é o mesmo. O relatório do cliente ganhou a linha
+  `frame work`, que o `local-validation.py` guarda, e a etapa window do
+  benchmark ganhou `window.present_wait_chunk_16`, a parte de cada intervalo
+  bloqueada na apresentação. No lavapipe/Xvfb: trabalho mediano de
   ~37 ms, espera mediana de ~0,6 ms e p95 de ~38 ms, porque ali a espera às
   vezes é a rasterização do quadro anterior (a GPU é a CPU). **Falta**: o
   número de trabalho medido no hardware do operador (o próximo relatório

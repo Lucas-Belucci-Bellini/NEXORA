@@ -183,6 +183,7 @@ jobs:
           # Window: the same frame drawn in a window and presented; the first
           # frame, read back from the surface, matched the ray cast.
           grep '^window.present_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^window.present_wait_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^window.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
 
       # The texture forge is code too, and its output is content: generate a

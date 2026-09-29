@@ -168,6 +168,7 @@ profiled separately.
 **Consequences.** Every frame that declares no wait (the headless walk, the
 benchmark) is classified exactly as before. The client reports `frame work`
 and `presentation wait` beside `frame wall`, and `local-validation.py` keeps
-the line, so the next local report gives the first frame work measured on a
-real display. The frame budget stays `doubling_from(50 ms)` until two
+the line; the benchmark's window stage adds `window.present_wait_chunk_16`,
+the part of each interval blocked on presentation. So the next local report
+gives the first frame work measured on a real display. The frame budget stays `doubling_from(50 ms)` until two
 machines agree on the shape of that number (DEBT-0041).
