@@ -404,10 +404,17 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   etapas de GPU do plano têm número agora.** Desta dívida resta só a
   comparação em **escala de motor** do ADR-0009, que é uma questão de escopo
   do gate, não de GPU.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** as etapas **câmera**,
+  **frame time** e **window** também têm números na RX 6650 XT do operador,
+  quatro execuções do mesmo código
+  ([Apêndice O](docs/benchmarks/PHASE-0-BASELINE.md), achado 33): um quadro de
+  um chunk custa 223–242 µs, cerca de dois round-trips de fence, e o intervalo
+  entre quadros numa janela é o período de um monitor de ~100 Hz. Todas as
+  etapas de GPU do plano estão medidas em software (CI) e em hardware real.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
-  faltam frame time e câmera (código: não há renderer), números em GPU real
-  (relatório local) e a comparação em escala de motor
+- **STATUS:** IN PROGRESS — a segunda linguagem e todas as etapas do plano,
+  inclusive as de GPU em hardware real, estão medidas; resta só a comparação
+  em **escala de motor** do ADR-0009, que é uma decisão de escopo do gate
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 
@@ -691,10 +698,29 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   quadro o trabalho da espera pela apresentação, e só então publicar
   target/warning/critical/emergency a partir de medição; e um quadro com
   mundo, física e streaming dentro do laço.
+- **PROGRESS (2026-09-29, emenda à
+  [ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)):** o
+  quadro separa o **trabalho** da **espera pela apresentação**. O backend
+  cronometra as duas chamadas que bloqueiam no sistema de janelas (pegar uma
+  imagem da surface e entregar o quadro à fila, `WgpuRhi::last_present_wait`),
+  o cliente declara essa espera dentro do estágio `render`
+  (`FrameRun::waited_for_presentation`), e o orçamento classifica
+  `FrameReport::work`, o tempo de parede menos a espera. A atribuição não
+  muda: a espera continua na linha do `render` e no tempo de parede, e o
+  `unattributed` é o mesmo. O
+  relatório do cliente ganhou a linha `frame work`, que o
+  `local-validation.py` guarda. No lavapipe/Xvfb: trabalho mediano de
+  ~37 ms, espera mediana de ~0,6 ms e p95 de ~38 ms, porque ali a espera às
+  vezes é a rasterização do quadro anterior (a GPU é a CPU). **Falta**: o
+  número de trabalho medido no hardware do operador (o próximo relatório
+  local), duas máquinas concordando na forma dele antes de publicar
+  target/warning/critical/emergency, o lado GPU do quadro (o RHI não tem
+  timestamp queries), e um quadro com mundo, física e streaming dentro do
+  laço.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio, em CI e
-  no hardware do operador; o orçamento publicado falta, e o que o quadro mede
-  hoje inclui a espera pelo monitor)
+  no hardware do operador, e o orçamento classifica o trabalho do quadro, não
+  a espera pelo monitor; o orçamento publicado falta)
 
 ### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
 

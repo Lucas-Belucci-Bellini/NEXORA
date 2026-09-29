@@ -25,6 +25,18 @@
 //!    stage claimed. Without that last number the sum of the stages is a
 //!    tautology: it equals itself.
 //!
+//! A frame presented to a window also **waits**: handing it over blocks until
+//! a surface image comes free, which takes the display releasing one (with
+//! FIFO, at its next refresh) and the GPU finishing the frame drawn into it.
+//! On the operator's desktop a frame that works for 0.3 ms lasts the
+//! monitor's whole period (baseline, Finding 33). That wait is declared with
+//! [`FrameRun::waited_for_presentation`], inside the stage that spent it, and
+//! the budget classifies the frame's **work**: its wall time without the wait,
+//! which is the CPU's side of the frame. A budget that classified the wait
+//! would be the monitor's, and the GPU's side needs its own measurement
+//! (`NEXORA PERFORMANCE BUDGETS.md`: CPU and GPU work are profiled
+//! separately).
+//!
 //! ## No clock lives here
 //!
 //! `nexora_foundation::time` opens with the rule that shapes it: *a system that
@@ -439,7 +451,9 @@ impl FrameLoop {
             plan,
             budget: &self.budget,
             spans: [Duration::ZERO; FrameStage::COUNT],
+            charged: [false; FrameStage::COUNT],
             last_recorded: None,
+            presentation_wait: None,
         }
     }
 }
@@ -451,7 +465,9 @@ pub struct FrameRun<'a> {
     plan: StepPlan,
     budget: &'a FrameBudget,
     spans: [Duration; FrameStage::COUNT],
+    charged: [bool; FrameStage::COUNT],
     last_recorded: Option<usize>,
+    presentation_wait: Option<Duration>,
 }
 
 impl FrameRun<'_> {
@@ -491,28 +507,71 @@ impl FrameRun<'_> {
             }
         }
         self.spans[index] = spent;
+        self.charged[index] = true;
         self.last_recorded = Some(index);
+        Ok(())
+    }
+
+    /// Declare how much of a charged stage was spent waiting on presentation:
+    /// blocked until the window system took the frame, which needs a free
+    /// surface image (the display's refresh, the GPU's earlier frames).
+    ///
+    /// The wait stays in the stage's line, and in the frame's wall time, where
+    /// it happened. What changes is what the budget classifies: the frame's
+    /// work, its wall time less this wait ([`FrameReport::work`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `stage` has not been charged, when the wait is
+    /// longer than the stage that contains it, or when a wait was already
+    /// declared this frame. Each of those would let presentation absorb time
+    /// some subsystem spent, which is the invisibility this module refuses.
+    pub fn waited_for_presentation(&mut self, stage: FrameStage, waited: Duration) -> Result<()> {
+        let index = stage.index();
+        if !self.charged[index] {
+            return Err(
+                reject("a presentation wait names a stage that was not charged")
+                    .with_context("stage", stage.as_str()),
+            );
+        }
+        if waited > self.spans[index] {
+            return Err(
+                reject("a presentation wait is longer than the stage that contains it")
+                    .with_context("stage", stage.as_str())
+                    .with_context("waited_us", waited.as_micros().to_string())
+                    .with_context("stage_us", self.spans[index].as_micros().to_string()),
+            );
+        }
+        if self.presentation_wait.is_some() {
+            return Err(reject(
+                "a presentation wait was declared twice in one frame",
+            ));
+        }
+        self.presentation_wait = Some(waited);
         Ok(())
     }
 
     /// Close the frame, given how long the whole frame took.
     ///
     /// `wall` is measured by the host around everything the frame did, stages
-    /// included. It is what the budget classifies, and the difference between it
-    /// and the sum of the stages is [`FrameReport::unattributed`].
+    /// included. Less any presentation wait, it is what the budget
+    /// classifies, and the difference between it and the sum of the stages
+    /// is [`FrameReport::unattributed`].
     #[must_use]
     pub fn finish(self, wall: Duration) -> FrameReport {
         let attributed = self
             .spans
             .iter()
             .fold(Duration::ZERO, |total, span| total.saturating_add(*span));
+        let presentation_wait = self.presentation_wait.unwrap_or_default();
         FrameReport {
             number: self.number,
             plan: self.plan,
             spans: self.spans,
             wall,
             attributed,
-            class: self.budget.classify(wall),
+            presentation_wait,
+            class: self.budget.classify(wall.saturating_sub(presentation_wait)),
         }
     }
 }
@@ -525,6 +584,7 @@ pub struct FrameReport {
     spans: [Duration; FrameStage::COUNT],
     wall: Duration,
     attributed: Duration,
+    presentation_wait: Duration,
     class: BudgetClass,
 }
 
@@ -545,6 +605,20 @@ impl FrameReport {
     #[must_use]
     pub const fn wall(&self) -> Duration {
         self.wall
+    }
+
+    /// How much of the frame was spent waiting on presentation
+    /// ([`FrameRun::waited_for_presentation`]); zero when none was declared.
+    #[must_use]
+    pub const fn presentation_wait(&self) -> Duration {
+        self.presentation_wait
+    }
+
+    /// The frame's work: its wall time less the presentation wait. This is what
+    /// the budget classifies.
+    #[must_use]
+    pub fn work(&self) -> Duration {
+        self.wall.saturating_sub(self.presentation_wait)
     }
 
     /// What one stage was charged.
@@ -580,7 +654,7 @@ impl FrameReport {
         self.attributed.saturating_sub(self.wall)
     }
 
-    /// Which budget class the frame fell in.
+    /// Which budget class the frame's work fell in.
     #[must_use]
     pub const fn class(&self) -> BudgetClass {
         self.class
@@ -867,6 +941,95 @@ mod tests {
         let report = frame.finish(Duration::from_millis(250));
         assert_eq!(report.class(), BudgetClass::Emergency);
         assert!(report.is_over_budget());
+    }
+
+    /// Finding 33, replayed: a frame that works for 1.5 ms and then waits
+    /// 8.5 ms for a 100 Hz monitor is a 1.5 ms frame to the budget. Its wall
+    /// time and its render line still show the ten.
+    #[test]
+    fn the_budget_classifies_work_not_the_wait_for_presentation() {
+        let ms = Duration::from_millis;
+        let budget = FrameBudget::new(ms(4), ms(8), ms(16), ms(32)).expect("rising");
+        let mut engine = FrameLoop::new(schedule(4), budget);
+        let mut frame = engine.begin(STEP);
+        frame.record(FrameStage::RenderPrep, ms(1)).expect("prep");
+        frame.record(FrameStage::Render, ms(9)).expect("render");
+        frame
+            .waited_for_presentation(FrameStage::Render, Duration::from_micros(8_500))
+            .expect("the wait is inside render");
+        let report = frame.finish(ms(10));
+
+        assert_eq!(report.wall(), ms(10));
+        assert_eq!(report.stage(FrameStage::Render), ms(9));
+        assert_eq!(report.presentation_wait(), Duration::from_micros(8_500));
+        assert_eq!(report.work(), Duration::from_micros(1_500));
+        assert_eq!(report.class(), BudgetClass::Target);
+        assert_eq!(
+            report.unattributed(),
+            Duration::ZERO,
+            "the wait is attributed to render"
+        );
+    }
+
+    /// Without the wait the same frame is critical: the monitor, not the
+    /// engine, would be what the budget judged.
+    #[test]
+    fn a_frame_that_declares_no_wait_is_classified_by_its_wall_time() {
+        let ms = Duration::from_millis;
+        let budget = FrameBudget::new(ms(4), ms(8), ms(16), ms(32)).expect("rising");
+        let mut engine = FrameLoop::new(schedule(4), budget);
+        let mut frame = engine.begin(STEP);
+        frame.record(FrameStage::Render, ms(9)).expect("render");
+        let report = frame.finish(ms(10));
+        assert_eq!(report.presentation_wait(), Duration::ZERO);
+        assert_eq!(report.work(), ms(10));
+        assert_eq!(report.class(), BudgetClass::Critical);
+    }
+
+    #[test]
+    fn a_presentation_wait_must_sit_inside_a_charged_stage() {
+        let ms = Duration::from_millis;
+        let mut engine = engine(4);
+        let mut frame = engine.begin(STEP);
+        assert!(
+            frame
+                .waited_for_presentation(FrameStage::Render, ms(1))
+                .is_err(),
+            "render was never charged, so nothing contains the wait"
+        );
+        frame.record(FrameStage::Render, ms(2)).expect("render");
+        assert!(
+            frame
+                .waited_for_presentation(FrameStage::Render, ms(3))
+                .is_err(),
+            "a 3 ms wait cannot hide inside a 2 ms stage"
+        );
+        frame
+            .waited_for_presentation(FrameStage::Render, ms(2))
+            .expect("a stage that was all waiting");
+        assert!(
+            frame
+                .waited_for_presentation(FrameStage::Render, ms(1))
+                .is_err(),
+            "a second wait would count presentation twice"
+        );
+    }
+
+    /// A stage charged with zero time is still charged: a wait of zero may
+    /// name it, a longer one may not.
+    #[test]
+    fn a_stage_charged_with_nothing_holds_only_a_zero_wait() {
+        let mut engine = engine(4);
+        let mut frame = engine.begin(STEP);
+        frame
+            .record(FrameStage::Render, Duration::ZERO)
+            .expect("render");
+        assert!(frame
+            .waited_for_presentation(FrameStage::Render, Duration::from_nanos(1))
+            .is_err());
+        frame
+            .waited_for_presentation(FrameStage::Render, Duration::ZERO)
+            .expect("zero fits");
     }
 
     #[test]
