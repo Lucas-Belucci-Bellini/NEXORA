@@ -702,8 +702,8 @@ pub fn format_report(report: &ClientReport) -> String {
         report.drawn.drawn, report.drawn.culled, report.drawn.empty, report.drawn.vertices
     ));
     out.push_str(&format!(
-        "input              {} signals, {} keys without a HID usage, {} repeats dropped; actions held in {} frames\n",
-        report.input.delivered, report.input.unnumbered, report.input.repeats, report.active_frames
+        "input              {} signals, {} keys without a HID usage, {} repeats dropped, focus gained {} times; actions held in {} frames\n",
+        report.input.delivered, report.input.unnumbered, report.input.repeats, report.input.focused, report.active_frames
     ));
     out.push_str(&format!(
         "camera             moved {:.2} forward, {:.2} right, {:.2} up; turned {:.1} degrees\n",
