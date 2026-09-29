@@ -336,9 +336,10 @@ impl Signal {
 /// The signals of one frame.
 ///
 /// Named for the spec's `sample(frame: InputFrame)`. It is a plain list: the
-/// order inside a frame is the order the host observed things in, and two
-/// presses of the same button in one frame collapse to the last one, as they
-/// would on any sampled input.
+/// order inside a frame is the order the host observed things in. A button
+/// ends the frame in the state of its last signal, with one exception: a
+/// press released in the same frame is a tap, held for this frame and
+/// released at the next (see [`InputSystem::sample`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InputFrame {
     signals: Vec<Signal>,
@@ -867,6 +868,9 @@ pub struct InputSystem {
     contexts: BTreeMap<Identifier, i32>,
     attached: BTreeSet<DeviceId>,
     held: BTreeSet<(DeviceId, ButtonCode)>,
+    /// Buttons pressed and released inside one frame: held for that frame,
+    /// released at the start of the next sample.
+    tapped: BTreeSet<(DeviceId, ButtonCode)>,
     axes: BTreeMap<(DeviceId, AxisCode), f32>,
     active_last_frame: BTreeSet<Identifier>,
     frame: u64,
@@ -1029,9 +1033,21 @@ impl InputSystem {
     ///
     /// This is the only method that advances state. Everything it needs arrives
     /// in `frame`; nothing is read from the host.
+    ///
+    /// A button that goes down and comes back up between two samples is a
+    /// tap, and a tap is not lost: it is held for this frame (so it is
+    /// *just pressed*) and released at the start of the next one (so it is
+    /// then *just released*). Only the end-of-frame level would otherwise
+    /// survive, and a key tapped during a long frame would never reach
+    /// intent. A window host collects a whole frame's events before sampling
+    /// (ADR-0031), so a hitch longer than a tap makes this reachable.
     pub fn sample(&mut self, frame: &InputFrame) -> InputSnapshot {
         self.frame = self.frame.saturating_add(1);
         let mut dropped = 0_u32;
+        for tap in std::mem::take(&mut self.tapped) {
+            self.held.remove(&tap);
+        }
+        let mut went_down = BTreeSet::new();
 
         for signal in frame.signals() {
             match *signal {
@@ -1045,10 +1061,16 @@ impl InputSystem {
                     pressed,
                 } => {
                     if self.attached.contains(&device) {
+                        let key = (device, code);
                         if pressed {
-                            self.held.insert((device, code));
+                            self.tapped.remove(&key);
+                            if self.held.insert(key) {
+                                went_down.insert(key);
+                            }
+                        } else if went_down.contains(&key) {
+                            self.tapped.insert(key);
                         } else {
-                            self.held.remove(&(device, code));
+                            self.held.remove(&key);
                         }
                     } else {
                         dropped = dropped.saturating_add(1);
@@ -1711,6 +1733,50 @@ mod tests {
             "and the plain binding is consumed"
         );
         assert!(with_modifier.just_released(&step));
+    }
+
+    /// A key pressed and released between two samples. Take the tap out of
+    /// `sample` and the first snapshot sees nothing: the key was down only
+    /// between frames, and a jump pressed during a long frame is lost.
+    #[test]
+    fn a_tap_inside_one_frame_is_pressed_then_released() {
+        let mut input = ready();
+        let fire = button_action(&mut input, "action/fire");
+        input
+            .bind(Binding::new(
+                gameplay(),
+                fire.clone(),
+                Source::button(DeviceKind::Gamepad, ButtonCode(0)),
+            ))
+            .expect("the trigger");
+
+        let tap = InputFrame::new()
+            .with(Signal::button(PAD, ButtonCode(0), true))
+            .with(Signal::button(PAD, ButtonCode(0), false));
+        let first = input.sample(&tap);
+        assert!(first.just_pressed(&fire), "the tap reaches intent");
+        assert!(
+            input.validate_remote(&first).is_ok(),
+            "as a state a sampler produces"
+        );
+        let second = input.sample(&InputFrame::new());
+        assert!(second.just_released(&fire));
+        assert!(!second.is_pressed(&fire));
+
+        // Tapped, then pressed again inside the same frame: held, not released.
+        let again = tap.clone().with(Signal::button(PAD, ButtonCode(0), true));
+        assert!(input.sample(&again).just_pressed(&fire));
+        assert!(input.sample(&InputFrame::new()).is_pressed(&fire));
+
+        // A button already held that is released is released now, not deferred.
+        let up = input.sample(&InputFrame::new().with(Signal::button(PAD, ButtonCode(0), false)));
+        assert!(up.just_released(&fire));
+
+        // A device detached after a tap stays released when it comes back.
+        input.sample(&tap);
+        input.sample(&InputFrame::new().with(Signal::Detached(PAD)));
+        input.sample(&InputFrame::new().with(Signal::Attached(PAD)));
+        assert!(!input.sample(&InputFrame::new()).is_pressed(&fire));
     }
 
     /// `INPUT SYSTEM.md` §Tests: device disconnect.

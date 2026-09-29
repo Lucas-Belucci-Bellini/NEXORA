@@ -84,3 +84,8 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0026](docs/adr/ADR-0026-the-first-native-backend-is-wgpu-and-ci-runs-it.md) | O primeiro backend nativo é wgpu, e o CI o executa | ACCEPTED |
 | [0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md) | O host de janela é o winit, e ele é dono do laço de eventos | ACCEPTED |
 | [0028](docs/adr/ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md) | Um draw declara seu layout de vértice, seus bindings e sua profundidade | ACCEPTED |
+| [0029](docs/adr/ADR-0029-the-camera-is-reverse-z-over-a-floating-integer-origin.md) | A câmera é reverse-Z, sobre uma origem inteira flutuante | ACCEPTED |
+| [0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md) | A primeira passada de render desenha sobre o contrato do RHI, e um ray cast confere cada quadro cronometrado | ACCEPTED |
+| [0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md) | A janela entrega o input como usages HID, uma vez por quadro | ACCEPTED |
+| [0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md) | O cliente é o runtime numa janela, não um segundo motor | ACCEPTED |
+| [0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | O pass descarta faces de costas e divide seus quads em todo canto | ACCEPTED |

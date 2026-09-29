@@ -1,0 +1,22 @@
+[package]
+name = "nexora-camera"
+description = "The view onto the world: a camera, its reverse-Z projection, a floating render origin and a frustum, with no GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nexora_camera"
+path = "src/lib.rs"
+
+# Foundation only (ADR-0029). A camera turns a world position into matrices a
+# shader reads; it needs the spatial vocabulary and nothing else. The renderer
+# consumes it, and the RHI never sees it: to the RHI a view-projection is 64
+# bytes in a uniform buffer.
+[dependencies]
+nexora-foundation.workspace = true
+
+[lints]
+workspace = true

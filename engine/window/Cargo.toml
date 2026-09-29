@@ -29,6 +29,7 @@ harness = false
 # Windows and macOS need no feature: their back ends are always compiled in.
 [dependencies]
 nexora-foundation.workspace = true
+nexora-runtime.workspace = true
 nexora-rhi.workspace = true
 nexora-rhi-wgpu.workspace = true
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11"] }

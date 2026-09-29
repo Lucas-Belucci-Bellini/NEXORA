@@ -279,12 +279,22 @@ pub const UNIFORM_ALIGNMENT: u64 = 16;
 
 /// Which fragments pass the depth test, against what the depth texture
 /// already holds.
+///
+/// The contract does not say which end of `[0, 1]` is near: that is the
+/// projection's convention. The engine's camera uses **reverse-Z** (ADR-0029),
+/// where near is `1`, far is `0`, a frame's depth is cleared to `0`, and the
+/// nearer fragment passes [`Compare::Greater`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Compare {
-    /// Nearer than what is there.
+    /// A smaller depth than what is there: nearer, with a forward-Z projection.
     Less,
-    /// Nearer than or as near as what is there.
+    /// A smaller or equal depth.
     LessEqual,
+    /// A greater depth than what is there: nearer, with a reverse-Z
+    /// projection (ADR-0029).
+    Greater,
+    /// A greater or equal depth.
+    GreaterEqual,
     /// Every fragment.
     Always,
 }
@@ -297,6 +307,22 @@ pub struct DepthState {
     pub compare: Compare,
     /// Whether passing fragments write their depth.
     pub write: bool,
+}
+
+/// Which triangles a pipeline discards by the way they face.
+///
+/// A triangle's **front** is the side from which its vertices run
+/// counter-clockwise in normalized device coordinates (x right, y up), the
+/// convention of Vulkan's, Direct3D 12's and Metal's defaults as `wgpu`
+/// exposes them. A closed mesh wound that way from outside never shows a
+/// back face, so culling them costs nothing that should be seen and keeps a
+/// back face from winning a tie at a silhouette edge (DEBT-0047).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Cull {
+    /// Draw both sides.
+    None,
+    /// Discard triangles seen from behind.
+    Back,
 }
 
 /// A graphics pipeline to create.
@@ -317,6 +343,8 @@ pub struct PipelineDesc {
     pub bindings: Vec<BindingKind>,
     /// The depth test, or `None` to draw without a depth texture.
     pub depth: Option<DepthState>,
+    /// Which triangles are discarded by the way they face (DEBT-0047).
+    pub cull: Cull,
     /// The formats a draw with this pipeline may write to. At least one.
     pub targets: Vec<TextureFormat>,
 }
@@ -656,6 +684,8 @@ mod tests {
             attributes: vec![VertexAttribute::position(VertexFormat::Float32x3)],
             bindings: Vec::new(),
             depth: None,
+
+            cull: Cull::None,
             targets: vec![TextureFormat::Rgba8Unorm],
         };
         assert!(check_pipeline(&ok, &caps).is_ok());

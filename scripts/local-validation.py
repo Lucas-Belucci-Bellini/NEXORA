@@ -61,15 +61,18 @@ STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 
 # What a real machine is needed for, and why none of it can pass yet.
 # The window, its surface (swapchain) and presentation left this list with
-# ADR-0027: they are the `window` check now.
+# ADR-0027: they are the `window` check now. The benchmark's GPU stages (RHI,
+# camera, frame time) left it when the first render pass existed: they run
+# inside `benchmark_cpu` on this machine's adapter. Input devices left it with
+# ADR-0031: they are the `input_devices` check, which needs a person. Client
+# mode left it with ADR-0032: it is the `client_mode` check.
 HARDWARE_GATED = [
-    ("rendering", "no renderer: the native backend draws one triangle (rhi_native) and presents "
-                  "a 16x16 target (window); nothing draws the world; meshes are data (ADR-0012)"),
-    ("input_devices", "no real device has produced a signal (DEBT-0043)"),
-    ("client_mode", "the runtime starts headless only; client mode is Phase 1's exit"),
-    ("benchmark_gpu_stages", "partly built: the RHI stage (device, fence, upload, draw) runs inside "
-                             "benchmark_cpu on this machine's adapter; window frame time and camera "
-                             "have no implementation (DEBT-0008)"),
+    ("rendering", "partly built: the first render pass (nexora-render) draws meshed chunk "
+                  "regions through the camera -- one 16^3 region into a texture and into a window "
+                  "(benchmark_cpu's frame-time and window stages) and nine chunk columns of a "
+                  "generated world in client mode (client_mode) -- every frame checked against a "
+                  "CPU ray cast, culling back faces over quads split at every corner "
+                  "(ADR-0033); textures and streaming into the pass are not built"),
 ]
 
 
@@ -404,6 +407,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     bench = str(release / _exe("nexora-benchmark"))
     probe = str(release / _exe("nexora-rhi-probe"))
     window_probe = str(release / _exe("nexora-window-probe"))
+    client = str(release / _exe("nexora-client"))
     slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
@@ -437,7 +441,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     else:
         results.append(needs_build("rhi_native", [probe],
                                    _lines("adapter", "conformance", "upload", "draw", "bound",
-                                          "result")))
+                                          "cull", "result")))
     # The window host: a window, its surface, the conformance suite with
     # presentation on, and frames shown in it, the first read back from the
     # surface where the platform allows (ADR-0027). No display is declared,
@@ -450,10 +454,43 @@ def run_checks(scratch: Path, quick: bool) -> list:
         results.append(needs_build("window", [window_probe],
                                    _lines("adapter", "window", "surface", "conformance", "frame",
                                           "presented", "result")))
+    # The runtime in client mode (ADR-0032): the lifecycle in Client mode,
+    # the world drawn in a window for 120 frames against a real clock, the
+    # first frame read back from the surface and checked against the ray
+    # cast. A window opens for a few seconds; no key is needed.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("client_mode", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("client_mode", "NEXORA_GPU=none: nothing can present without a GPU"))
+    else:
+        results.append(needs_build("client_mode", [client, "--frames", "120", "--timeout", "120"],
+                                   _lines("adapter", "window", "first frame", "frames", "frame loop",
+                                          "frame wall", "result")))
+    # A real key through a real window (ADR-0031): the probe opens a window
+    # and waits for W. A person has to press it, so the check runs only when
+    # someone is at the terminal; --quick and a non-interactive run skip it,
+    # and NEXORA_INPUT=none declares that no one will.
+    if os.environ.get("NEXORA_INPUT") == "none":
+        results.append(skipped("input_devices", "NEXORA_INPUT=none: no one will press a key"))
+    elif quick:
+        results.append(skipped("input_devices", "--quick"))
+    elif not sys.stdin.isatty():
+        results.append(skipped("input_devices", "not run from a terminal: no one to press a key"))
+    elif os.environ.get("NEXORA_DISPLAY") == "none" or os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("input_devices", "no display or no GPU declared: no window to press a key in"))
+    else:
+        if built:
+            print("\n>>> A window titled 'NEXORA input probe: press W' is opening.\n"
+                  ">>> Click it, then press and release W (within 60 seconds).\n", flush=True)
+        results.append(needs_build("input_devices", [window_probe, "--input", "--timeout", "60"],
+                                   _lines("input", "signals", "result")))
     # The CPU benchmark is the point of a second machine for DEBT-0013 and
     # DEBT-0008: the container's numbers are one machine's. It also runs the
-    # RHI stage on this machine's adapter and names the adapter in its
-    # environment table; the check keeps its id so old reports still compare.
+    # RHI, camera, frame-time and window stages on this machine's adapter and
+    # display (each frame is checked against a CPU ray cast before it is
+    # timed; the window stage opens a window for a second or two) and names
+    # the adapter in its environment table; the check keeps its id so old
+    # reports still compare.
     results.append(needs_build("benchmark_cpu", [bench, "--markdown"] + (["--smoke"] if quick else [])
                                + ["--scratch", str(scratch / "bench")],
                                lambda out: "see the report's benchmark section", keep_whole=True))

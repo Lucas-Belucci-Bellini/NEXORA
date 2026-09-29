@@ -62,8 +62,9 @@ pub enum ClearValue {
     /// Red, green, blue, alpha, each finite and in `[0, 1]`, for a colour
     /// texture.
     Color([f32; 4]),
-    /// A depth, finite and in `[0, 1]`, for a depth texture. `1.0` is the far
-    /// plane, where a frame's depth starts.
+    /// A depth, finite and in `[0, 1]`, for a depth texture: the far plane,
+    /// where a frame's depth starts. Which end is far is the projection's
+    /// convention; with the engine's reverse-Z camera it is `0.0` (ADR-0029).
     Depth(f32),
 }
 

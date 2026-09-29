@@ -365,6 +365,45 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   números **em GPU real** (a próxima execução de `local-validation.py` na
   RX 6650 XT mede a etapa RHI no `benchmark_cpu`) e a comparação em **escala
   de motor** do ADR-0009.
+- **PROGRESS (2026-09-26, relatórios locais 4 e 5):** a etapa RHI tem
+  números **de GPU real**: a RX 6650 XT do operador, Vulkan, `discretegpu`,
+  duas execuções do mesmo código
+  ([Apêndice K](docs/benchmarks/PHASE-0-BASELINE.md), achado 29). O achado 28
+  se confirma e fica mais forte: num dispositivo do outro lado do PCIe, o
+  round-trip de fence (112–162 µs) é **maior** que no lavapipe (68 µs), e um
+  draw 16×16 (192–205 µs) custa pouco mais que um fence. Em GPU real o custo
+  pequeno é espera, não trabalho: o renderer precisa de **uma submissão por
+  quadro**, não de uma por draw. Nenhum orçamento: entre as duas execuções o
+  fence variou 45%. Continua faltando: **frame time**, **câmera**, a etapa
+  **window** no benchmark e a comparação em **escala de motor**.
+- **PROGRESS (2026-09-26, ADR-0029):** a etapa **câmera** existe e é medida:
+  `engine/camera` (visão, projeção reverse-Z, frustum e origem de render
+  inteira flutuante) e `suites::camera`, com a câmera a 2^40 blocos. Resolver
+  a câmera custa ~0,1 µs e testar as 625 colunas de um observador de raio 12
+  custa 3–7 µs: menos de 0,05% de um quadro de 60 Hz
+  ([Apêndice L](docs/benchmarks/PHASE-0-BASELINE.md), achado 30). Continua
+  faltando: **frame time** (nada desenha um quadro pela câmera ainda), a etapa
+  **window** no benchmark e a comparação em **escala de motor**.
+- **PROGRESS (2026-09-26, ADR-0030):** **frame time** existe e é medido:
+  `engine/render` (a primeira passada, sobre o contrato do RHI) desenha a
+  região 16³ meshada pela câmera, e `gpu::frame_time` cronometra um quadro
+  inteiro (clear, câmera, draw, uma submissão, um fence) a 256×256. Antes de
+  cronometrar, o quadro é conferido com um ray cast na CPU: 51.376 de 65.536
+  pixels julgados, todos corretos. No lavapipe um quadro custa 1,5–1,8 ms
+  ([Apêndice M](docs/benchmarks/PHASE-0-BASELINE.md), achado 31). Das etapas
+  de GPU, falta só **window** (o benchmark não abre janela); fora delas, a
+  comparação em **escala de motor**.
+- **PROGRESS (2026-09-26, emenda à ADR-0030):** a etapa **window** existe e é
+  medida: `nexora_benchmark::window` abre uma janela real (um `Client` do host
+  da ADR-0027), desenha a mesma região pela mesma câmera e apresenta. O
+  primeiro quadro é lido **da surface**, depois da apresentação, e conferido
+  com o ray cast antes de qualquer número (51.376 pixels julgados, todos
+  corretos). Sem display, a etapa fica como "não medida" com o motivo, como o
+  RHI sem adaptador. No Xvfb, um quadro apresentado a cada 2,5–3,1 ms
+  ([Apêndice N](docs/benchmarks/PHASE-0-BASELINE.md), achado 32). **Todas as
+  etapas de GPU do plano têm número agora.** Desta dívida resta só a
+  comparação em **escala de motor** do ADR-0009, que é uma questão de escopo
+  do gate, não de GPU.
 - **TARGET STAGE:** antes da Phase 2
 - **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
   faltam frame time e câmera (código: não há renderer), números em GPU real
@@ -623,8 +662,24 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `nexora_window::Client::frame` é chamado uma vez por redesenho, e é o lugar
   natural do relógio num cliente. Nada o liga ao `runtime::frame` ainda; o
   caminho headless descrito acima continua válido.
+- **PROGRESS (2026-09-27,
+  [ADR-0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md)):**
+  o `nexora-client` é **o primeiro processo que roda quadros contra um relógio
+  real**: a cada redesenho mede o tempo desde o anterior e o entrega ao
+  `FrameLoop` (passo de 50 ms, no máximo 4), e cobra input, simulação,
+  preparo do render e render aos seus estágios. O que o módulo existe para
+  medir agora aparece: no lavapipe/Xvfb, 120 quadros deram mediana de 41 ms de
+  parede, p95 de 50 ms, **0,19 ms não atribuídos no total**, 114 quadros
+  `target` e 6 `warning` contra o orçamento aritmético de 50 ms. A ordem que o
+  gatilho pedia está respeitada: geração e meshing acontecem antes do primeiro
+  quadro, então o laço mede a si mesmo, não o `DEBT-0018`/`DEBT-0027`.
+  **Falta**, e a dívida fica aberta por isso: um orçamento de quadro publicado
+  a partir de medição (o `doubling_from` segue sendo convenção), números numa
+  máquina real (a checagem `client_mode` do `local-validation.py` ainda não
+  rodou lá), e um quadro com mundo, física e streaming dentro do laço.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio; o
+  orçamento publicado e a evidência local faltam)
 
 ### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
 
@@ -708,8 +763,27 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   o `nexora-window` roda o laço de eventos do sistema operacional, e o `winit`
   já entrega a ele eventos de teclado e mouse, que o host hoje descarta. A
   tradução para `Signal` é o próximo passo desta dívida, não deste host.
+- **PROGRESS (2026-09-27,
+  [ADR-0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md)):**
+  a borda de teclado e de botões do mouse está **construída e verificada em CI**.
+  O `nexora-window` traduz as teclas físicas do `winit` para usages USB HID
+  (página 0x07) e os botões do mouse para a página de botões, junta os sinais do
+  quadro e os entrega ao cliente antes do quadro; repetição de tecla é
+  descartada (contada), perda de foco solta tudo, e o teclado e o mouse ficam
+  anexados quando a janela abre. Um `W` de verdade, apertado pela extensão de
+  teste do servidor X (XTEST) sob Xvfb, chega ao motor como usage 26 e sai do
+  `runtime::input` como o press e o release da ação ligada a ele
+  (`nexora-window-probe --input`). Juntar os eventos por quadro expôs uma
+  lacuna na lógica, provada por teste de unidade: um toque que desce e sobe
+  dentro de um quadro (um quadro longo, um engasgo) sumia; agora é mantido um
+  quadro e solto no seguinte. **Falta**, e a dívida fica aberta por
+  isso: a verificação no hardware do operador (a checagem interativa
+  `input_devices` do `local-validation.py` existe e ainda não rodou), gamepad,
+  toque, movimento do ponteiro, roda do mouse, entrada de texto, gravar o
+  arquivo de remap em disco, e um snapshot que atravesse uma rede.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos e
+  verificados em CI; hardware local não testado)
 
 ### DEBT-0046 — O RHI ainda não apresenta nada, e nenhuma GPU real o executou
 
@@ -758,16 +832,93 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
     nela, e `present` desenha o alvo na imagem da swapchain e a apresenta. No
     CI, sob Xvfb e lavapipe, o primeiro quadro é lido de volta da surface e
     bate nos 65.536 texels; a conformidade roda com `presents: true`;
-  - **uma GPU real**: as checagens `rhi_native` e `window` de
-    `local-validation.py` rodam os probes na máquina do operador, e até haver
-    um relatório, o backend e a janela foram verificados num driver conforme e
-    num servidor X virtual, não em hardware nem num desktop;
+  - ~~**uma GPU real**~~ — **verificada** (2026-09-26, relatórios locais 4 e
+    5): as checagens `rhi_native` e `window` de `local-validation.py`
+    passaram duas vezes no Windows 10 do operador, numa **AMD Radeon RX 6650
+    XT** (Vulkan, `discretegpu`), nos commits `786f77f` e `8331c15`, cujo
+    código é o mesmo do `HEAD` (`check`: `CURRENT_NO_RELEVANT_CHANGE`).
+    Onze de onze casos de conformidade, sem e com apresentação; upload e
+    desenho lidos de volta; a prova da ADR-0028 (256 de 256 texels
+    amostrados, mantidos pela profundidade e tingidos pelo uniform); uma
+    janela Win32 com surface `Bgra8UnormSrgb` FIFO, 0 redraws de espera, e o
+    primeiro quadro lido da surface batendo nos 65.536 texels;
   - ~~**regra provisória de vértice**~~ — **resolvida** (2026-09-26,
     [ADR-0028](docs/adr/ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md)):
     o pipeline declara seus atributos de vértice, os slots de binding
     (uniform, textura, sampler) e o teste de profundidade; a regra do stride
     saiu do backend.
-- **STATUS:** IN PROGRESS
+- **RESOLUTION (2026-09-26):** as três pendências fecharam. O que o título
+  dizia que nunca tinha acontecido aconteceu, e está lido de volta: buffers e
+  texturas alocados num dispositivo real, fences sinalizados por um driver
+  real, WGSL traduzido pelo naga para SPIR-V e compilado pelo driver da AMD,
+  um quadro apresentado num desktop. Os testes que provam isso são os mesmos do CI (`cargo test -p
+  nexora-rhi-wgpu`, `-p nexora-window`) e os probes que a validação local roda
+  (`nexora-rhi-probe`, `nexora-window-probe`). O que **não** está provado, para
+  não ser lido como provado: perda de dispositivo vinda de um driver (só de
+  `lose_device`), Direct3D 12 e Metal em hardware (só WARP e o dispositivo
+  paravirtual do macOS), e qualquer outra GPU. Nada disso é débito deste
+  item: são verificações de um renderer que ainda não existe.
+- **STATUS:** CLOSED (2026-09-26)
+
+### DEBT-0047 — O pass mostra faces de costas por frestas sub-pixel: T-junctions do greedy e nenhum back-face culling
+
+- **SYSTEM:** `engine/render` (`ChunkPass`), `engine/mesh` (greedy), `engine/rhi` (`PipelineDesc`)
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** o primeiro quadro do modo client
+  ([ADR-0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md)),
+  nove colunas de terreno vistas de 40 a 100 blocos, lido de volta da
+  superfície e conferido pelo ray cast, deu **0 a 5 pixels errados em cerca de
+  79.500 julgados**, em vinte sementes, no lavapipe. Os três primeiros foram
+  dissecados cruzando o raio central com todo quad da malha: num, o raio passa
+  a **0,0034 px** da aresta comum entre dois quads −X coplanares, um 4×1 e um
+  1×1 — uma T-junction, o vértice de um no meio da aresta do outro —, e pela
+  fresta aparece a face +Z de trás, vista de dentro do sólido; nos outros dois,
+  o raio passa a ~0,003 px de uma aresta de silhueta, e o rasterizador a
+  encaixou do outro lado. O `ChunkPass` não descarta faces de costas (o
+  `PipelineDesc` do RHI nem tem esse campo), então o que vaza é sempre uma
+  face de costas ou a face vizinha do outro lado de uma aresta — nunca o
+  quadro errado em si.
+- **IMPACT:** "brilhos" de um pixel que aparecem e somem com a câmera, onde o
+  greedy juntou retângulos de tamanhos diferentes. No quadro do cliente, até
+  uma parte em 16.000. O critério do primeiro quadro do cliente tolera
+  exatamente isso e nada mais: cada pixel errado precisa ser uma face de costas
+  (`FrameCheck::backfacing`) ou uma cor que o próprio ray cast acha a menos de
+  1/64 px do centro (`FrameCheck::snapped`), e juntos no máximo 1 em 5.000
+  julgados. As etapas do benchmark (uma região 16³ de perto) continuam exigindo
+  todos os pixels julgados certos, e seguem certas.
+- **RISK:** baixo hoje, visível depois: com texturas e iluminação, uma face de
+  costas escura atrás de uma fresta vira um pixel preto piscando, que é o
+  defeito clássico de malha greedy.
+- **PROPOSED REMEDIATION:** duas partes, em ordem. (1) **Back-face culling no
+  contrato do RHI** (`PipelineDesc` ganha o modo de descarte, os dois backends
+  o respeitam, a conformidade ganha um caso): faz a fresta mostrar a próxima
+  face da frente em vez da de costas, e corta pela metade os fragmentos do
+  pass. (2) **Tirar as T-junctions** do que vai à GPU — dividir as arestas dos
+  quads nos vértices dos vizinhos coplanares, ou não fundir através de uma
+  aresta que o vizinho corta — medido contra o custo em vértices, que é o que
+  o greedy existe para economizar. Nenhuma das duas é "expandir os quads por
+  um epsilon", que troca a fresta por sobreposição.
+- **TRIGGER:** já disparado: o quadro existe e o defeito foi medido.
+- **RESOLUTION (2026-09-28,
+  [ADR-0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md)):**
+  as duas partes, nesta ordem de necessidade. **Back-face culling no
+  contrato do RHI**: `PipelineDesc` ganhou `Cull { None, Back }` (frente =
+  anti-horário em NDC), o `wgpu` o respeita e o prova por leitura de pixel
+  (`nexora-rhi-probe`: 16 de 16 texels pela frente, 0 pelas costas), e o
+  `ChunkPass` descarta costas com todo triângulo enrolado de fora. **Quads
+  divididos em todo canto que cai nas suas arestas** (`Corners`), incluindo os
+  cantos das regiões vizinhas, então as costuras entre colunas também fecham.
+  Medido no cliente, vinte sementes: antes, 42 pixels errados; só dividindo,
+  28; **só com culling, 8 sementes falham** (pela fresta aparece uma face da
+  frente mais distante); **com os dois, 10 pixels, todos arestas encaixadas a
+  menos de 1/64 px, e 0 faces de costas**. O critério do cliente agora não
+  tolera face de costas nenhuma. Custo: +52% de vértices (4.842 → 7.377 na
+  região 16³), e mesmo assim o `frame.draw_chunk_16` caiu de 2,01 para
+  1,71 ms no lavapipe, porque o culling corta metade dos fragmentos. Numa GPU
+  dedicada o lado dos vértices pode pesar mais; é o relatório local que mede, e
+  index buffers são a alavanca.
+- **TARGET STAGE:** Phase 2 (renderer do voxel)
+- **STATUS:** CLOSED (2026-09-28)
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

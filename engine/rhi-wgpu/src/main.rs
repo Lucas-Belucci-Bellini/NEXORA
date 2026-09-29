@@ -54,5 +54,10 @@ fn probe() -> nexora_foundation::error::Result<()> {
         "bound              {} of {} texels sampled, {} kept by depth, {} tinted by a uniform",
         bound.sampled, bound.texels, bound.kept_by_depth, bound.tinted
     );
+    let culled = proof::cull(&mut rhi)?;
+    println!(
+        "cull               {} of {} texels shaded counter-clockwise, {} clockwise, culling back faces",
+        culled.front, culled.texels, culled.back
+    );
     Ok(())
 }

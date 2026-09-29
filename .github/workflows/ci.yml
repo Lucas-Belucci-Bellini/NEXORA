@@ -59,7 +59,7 @@ jobs:
       - name: Install a software Vulkan driver and a virtual display
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q mesa-vulkan-drivers xvfb libxkbcommon-x11-0
+          sudo apt-get install -y -q mesa-vulkan-drivers xvfb libxkbcommon-x11-0 xdotool
 
       # STAGE: UNIT + INTEGRATION + DETERMINISM + SAVE TESTS
       # The determinism and save/load suites live alongside the units they
@@ -85,6 +85,9 @@ jobs:
           # ADR-0028: a sampled image, a depth test and a uniform, each read back.
           grep '^bound              256 of 256 texels sampled, 256 kept by depth, 256 tinted by a uniform$' \
             "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
+          # DEBT-0047: back faces culled, front faces kept, read back.
+          grep '^cull               16 of 16 texels shaded counter-clockwise, 0 clockwise, culling back faces$' \
+            "${RUNNER_TEMP}/rhi-probe.txt" > /dev/null
 
       # The window host on Xvfb: a real X11 window, a Vulkan surface on it, the
       # conformance suite with presentation on, and 60 frames shown. The first
@@ -98,6 +101,35 @@ jobs:
           grep '^frame              65536 of 65536 window texels show the 16x16 target, read back from the surface$' \
             "${RUNNER_TEMP}/window-probe.txt" > /dev/null
           grep '^presented          61 frames, 60 of them by the probe$' "${RUNNER_TEMP}/window-probe.txt" > /dev/null
+
+      # A real key through the window (ADR-0031): W, pressed through the X
+      # server's test extension, must reach the engine as a HID usage (0x1A =
+      # 26) and come out of the input system as the bound action's press and
+      # release. Nothing on the way is simulated by the engine.
+      - name: Smoke test a key reaching the engine through the window
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/input-probe-xtest.sh \
+            ./target/release/nexora-window-probe 60 | tee "${RUNNER_TEMP}/input-probe.txt"
+          grep '^input              keyboard/0 button 26 (W) reached nexora:action/probe: pressed after [0-9]* frames, held [1-9][0-9]*$' \
+            "${RUNNER_TEMP}/input-probe.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/input-probe.txt" > /dev/null
+
+      # The runtime in client mode (ADR-0032): the lifecycle walks every phase
+      # including presentation, the generated world is drawn in a window, and
+      # its first frame, read back from the surface, holds against the ray
+      # cast. W is held for a second through XTEST and must move the camera
+      # forward; Escape must end the loop.
+      - name: Smoke test the runtime in client mode
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
+            ./target/release/nexora-client 90 | tee "${RUNNER_TEMP}/client.txt"
+          grep '^lifecycle          17 phases: .* -> simulation-running -> presentation-running -> .* -> process-exit$' \
+            "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^modules            .*nexora:module/renderer$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^frames             [0-9]* shown, ended by exit key$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^camera             moved [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.
@@ -126,7 +158,8 @@ jobs:
       # disabled. Real numbers come from a deliberate run on known hardware.
       - name: Smoke test the benchmark harness
         run: |
-          ./target/release/nexora-benchmark --smoke \
+          # Under Xvfb: the window stage opens a real window (ADR-0030).
+          xvfb-run -a -s "-screen 0 640x480x24" ./target/release/nexora-benchmark --smoke \
             --scratch "${RUNNER_TEMP}/bench" > "${RUNNER_TEMP}/bench.txt"
           # Physics' published budget is judged in every run (DEBT-0013). Its
           # class is not gated: time, unlike memory, depends on the runner.
@@ -139,6 +172,18 @@ jobs:
           grep '^gpu adapter: .* (vulkan, cpu)$' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^rhi.draw_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^rhi.upload_first_generation ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # The camera stage (ADR-0029) checks its target lands mid-screen and
+          # that culling keeps some columns and drops others before timing.
+          grep '^camera.sample ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^camera.visible_columns_r12 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # Frame time: the first render pass draws the meshed 16³ region
+          # through the camera; the frame matched a CPU ray cast before timing.
+          grep '^frame.draw_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^frame.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # Window: the same frame drawn in a window and presented; the first
+          # frame, read back from the surface, matched the ray cast.
+          grep '^window.present_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^window.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and
@@ -391,3 +436,8 @@ jobs:
           ${{ matrix.python }} scripts/local-validation.py run --quick \
             --out "${RUNNER_TEMP}/local-validation"
           cat "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          # The benchmark's window stage ran on this platform's window system
+          # (Win32, AppKit) and its frame matched the ray cast.
+          grep -q 'window.pixels_judged' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          # And the runtime ran in client mode on it (ADR-0032).
+          grep -q '^| `client_mode` | \*\*PASS\*\*' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"

@@ -710,18 +710,46 @@ dependencies = [
 name = "nexora-benchmark"
 version = "0.0.1"
 dependencies = [
+ "nexora-camera",
  "nexora-entity",
  "nexora-ffi-probe",
  "nexora-foundation",
  "nexora-mesh",
  "nexora-persistence",
  "nexora-physics",
+ "nexora-render",
  "nexora-rhi",
  "nexora-rhi-wgpu",
  "nexora-runtime",
  "nexora-simulation",
  "nexora-streaming",
+ "nexora-window",
  "nexora-world",
+]
+
+[[package]]
+name = "nexora-camera"
+version = "0.0.1"
+dependencies = [
+ "nexora-foundation",
+]
+
+[[package]]
+name = "nexora-client"
+version = "0.0.1"
+dependencies = [
+ "nexora-camera",
+ "nexora-foundation",
+ "nexora-mesh",
+ "nexora-persistence",
+ "nexora-render",
+ "nexora-rhi",
+ "nexora-rhi-wgpu",
+ "nexora-runtime",
+ "nexora-simulation",
+ "nexora-window",
+ "nexora-world",
+ "winit",
 ]
 
 [[package]]
@@ -809,6 +837,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexora-render"
+version = "0.0.1"
+dependencies = [
+ "nexora-camera",
+ "nexora-foundation",
+ "nexora-mesh",
+ "nexora-rhi",
+ "nexora-rhi-wgpu",
+]
+
+[[package]]
 name = "nexora-resource"
 version = "0.0.1"
 dependencies = [
@@ -878,6 +917,7 @@ dependencies = [
  "nexora-foundation",
  "nexora-rhi",
  "nexora-rhi-wgpu",
+ "nexora-runtime",
  "winit",
 ]
 

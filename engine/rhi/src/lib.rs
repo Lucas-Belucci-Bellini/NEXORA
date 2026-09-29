@@ -40,8 +40,8 @@ pub use api::{
     TextureHandle,
 };
 pub use desc::{
-    BindingKind, BufferDesc, Capabilities, Compare, DepthState, Filter, PipelineDesc, ShaderStage,
-    TextureDesc, TextureFormat, Usage, VertexAttribute, VertexFormat, COPY_ALIGNMENT, MAX_BINDINGS,
-    MAX_VERTEX_ATTRIBUTES, UNIFORM_ALIGNMENT,
+    BindingKind, BufferDesc, Capabilities, Compare, Cull, DepthState, Filter, PipelineDesc,
+    ShaderStage, TextureDesc, TextureFormat, Usage, VertexAttribute, VertexFormat, COPY_ALIGNMENT,
+    MAX_BINDINGS, MAX_VERTEX_ATTRIBUTES, UNIFORM_ALIGNMENT,
 };
 pub use null::{NullRhi, NullStats};

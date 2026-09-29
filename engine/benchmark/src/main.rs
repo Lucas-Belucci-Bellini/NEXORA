@@ -135,6 +135,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::input(standard)?);
     measurements.extend(suites::persistence(coarse, &options.scratch)?);
     measurements.extend(suites::meshing(coarse)?);
+    measurements.extend(suites::camera(standard)?);
     // The RHI stage uploads what the mesh stage produced: one workload.
     let mesh_vertices = measurements
         .iter()
@@ -142,6 +143,12 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
         .map_or(0, |measurement| measurement.median() as u64);
     let rhi = nexora_benchmark::gpu::rhi(coarse, mesh_vertices)?;
     measurements.extend(rhi.measurements);
+    if rhi.gap.is_none() {
+        measurements.extend(nexora_benchmark::gpu::frame_time(coarse)?);
+    }
+    // The window stage opens the process's one event loop, on the main thread.
+    let window = nexora_benchmark::window::window(coarse, rhi.gap)?;
+    measurements.extend(window.measurements);
     measurements.extend(suites::ffi(standard));
 
     // Captured last, so peak memory reflects the whole run.
@@ -150,7 +157,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     Ok(Report {
         measurements,
         budgets: suites::published_budgets()?,
-        unmeasured: suites::unmeasured_stages(rhi.gap),
+        unmeasured: suites::unmeasured_stages(rhi.gap, window.gap),
         environment,
     })
 }

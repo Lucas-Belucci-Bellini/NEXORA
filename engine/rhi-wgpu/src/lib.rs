@@ -973,7 +973,14 @@ impl Rhi for WgpuRhi {
                             attributes: &attributes,
                         })],
                     },
-                    primitive: wgpu::PrimitiveState::default(),
+                    primitive: wgpu::PrimitiveState {
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: match desc.cull {
+                            nexora_rhi::Cull::None => None,
+                            nexora_rhi::Cull::Back => Some(wgpu::Face::Back),
+                        },
+                        ..wgpu::PrimitiveState::default()
+                    },
                     depth_stencil: depth_stencil.clone(),
                     multisample: wgpu::MultisampleState::default(),
                     fragment: Some(wgpu::FragmentState {
@@ -1191,6 +1198,8 @@ const fn compare(compare: Compare) -> wgpu::CompareFunction {
     match compare {
         Compare::Less => wgpu::CompareFunction::Less,
         Compare::LessEqual => wgpu::CompareFunction::LessEqual,
+        Compare::Greater => wgpu::CompareFunction::Greater,
+        Compare::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
         Compare::Always => wgpu::CompareFunction::Always,
     }
 }

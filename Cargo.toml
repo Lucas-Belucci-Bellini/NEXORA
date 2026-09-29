@@ -16,11 +16,15 @@
 #     physics     -> foundation
 #     streaming   -> foundation
 #     mesh        -> foundation
+#     camera      -> foundation   (view, projection, render origin; ADR-0029)
+#     render      -> foundation, rhi, mesh, camera   (the contract, never a backend)
 #     rhi         -> foundation
 #     rhi-wgpu    -> foundation, rhi, wgpu   (the one external dependency, ADR-0026)
-#     window      -> foundation, rhi, rhi-wgpu, winit   (the window host, ADR-0027)
+#     window      -> foundation, runtime, rhi, rhi-wgpu, winit   (the window host, ADR-0027; input, ADR-0031)
 #     simulation  -> foundation, runtime, asset, world, physics, streaming, command, query
 #     headless    -> all of the above
+#     client      -> foundation, runtime, persistence, world, mesh, camera, render,
+#                    rhi, rhi-wgpu, window, simulation   (client mode, ADR-0032)
 #
 # Outside engine/, over the public contracts only:
 #     texture-forge -> foundation, asset, resource, image
@@ -44,10 +48,13 @@ members = [
     "engine/physics",
     "engine/streaming",
     "engine/mesh",
+    "engine/camera",
+    "engine/render",
     "engine/rhi",
     "engine/rhi-wgpu",
     "engine/window",
     "engine/simulation",
+    "engine/client",
     "engine/headless",
     "engine/benchmark",
     # Not an engine crate: a content tool, over the public asset contracts.
@@ -78,10 +85,13 @@ nexora-entity = { path = "engine/entity", version = "0.0.1" }
 nexora-physics = { path = "engine/physics", version = "0.0.1" }
 nexora-streaming = { path = "engine/streaming", version = "0.0.1" }
 nexora-mesh = { path = "engine/mesh", version = "0.0.1" }
+nexora-camera = { path = "engine/camera", version = "0.0.1" }
+nexora-render = { path = "engine/render", version = "0.0.1" }
 nexora-rhi = { path = "engine/rhi", version = "0.0.1" }
 nexora-rhi-wgpu = { path = "engine/rhi-wgpu", version = "0.0.1" }
 nexora-window = { path = "engine/window", version = "0.0.1" }
 nexora-simulation = { path = "engine/simulation", version = "0.0.1" }
+nexora-client = { path = "engine/client", version = "0.0.1" }
 nexora-ffi-probe = { path = "benchmarks/ffi-probe", version = "0.0.1" }
 nexora-texture-forge = { path = "tools/texture-forge", version = "0.0.1" }
 

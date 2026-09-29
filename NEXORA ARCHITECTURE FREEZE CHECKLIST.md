@@ -37,12 +37,13 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 
 | Contract | Defined | Built | Where |
 | --- | :---: | :---: | --- |
-| RHI boundary | [x] | [~] | the **contract** is built (`engine/rhi`, ADR-0025): generational handles that a device loss also kills, all-or-nothing submission, four-byte copy alignment, declared usages, ordered fences, destruction deferred until the last use's fence, device loss as `DisableSubsystem` with `recreate`, `present` exactly when the capabilities say. A **null backend** keeps every rule with no GPU, and an eleven-case **conformance suite** runs against it on every slice, which also uploads the first generation's sixteen albedos through it. The **first native backend is built** (`engine/rhi-wgpu`, ADR-0026): `wgpu` over Vulkan / Direct3D 12 / Metal, WGSL validated by naga, rules shared with the null backend through `rhi::kit`. It passes the same eleven cases, uploads a texture and draws a triangle, and reads both back. Since ADR-0028 the contract also declares **vertex layouts, binding slots (uniform, texture, sampler) and a depth test**, and a draw that samples a texture through a uniform-tinted pipeline with depth is read back texel for texel on the driver. It is **verified in CI on all three of its APIs**: Vulkan (Mesa's lavapipe, Linux), Direct3D 12 (WARP, Windows) and Metal (Apple's paravirtual device, macOS). All three are software or virtual, and it is **not yet verified on the operator's GPU** (the `rhi_native` check waits for a report). It **presents** (ADR-0027): a `winit` window host (`engine/window`) owns the event loop, the backend opens a surface on the window and `present` draws the target onto it; CI reads the first frame back from the surface on Xvfb and matches all 65,536 texels. Not yet verified on the operator's desktop (the `window` check waits for the same report) |
-| Input boundary | [x] | [ ] | a window and an OS event loop exist now (ADR-0027); no device event reaches `runtime::input` yet (DEBT-0043) |
+| RHI boundary | [x] | [~] | the **contract** is built (`engine/rhi`, ADR-0025): generational handles that a device loss also kills, all-or-nothing submission, four-byte copy alignment, declared usages, ordered fences, destruction deferred until the last use's fence, device loss as `DisableSubsystem` with `recreate`, `present` exactly when the capabilities say. A **null backend** keeps every rule with no GPU, and an eleven-case **conformance suite** runs against it on every slice, which also uploads the first generation's sixteen albedos through it. The **first native backend is built** (`engine/rhi-wgpu`, ADR-0026): `wgpu` over Vulkan / Direct3D 12 / Metal, WGSL validated by naga, rules shared with the null backend through `rhi::kit`. It passes the same eleven cases, uploads a texture and draws a triangle, and reads both back. Since ADR-0028 the contract also declares **vertex layouts, binding slots (uniform, texture, sampler) and a depth test**, and a draw that samples a texture through a uniform-tinted pipeline with depth is read back texel for texel on the driver. Since ADR-0033 it also declares **back-face culling** (`Cull`), read back on the driver by `nexora-rhi-probe`, and the chunk pass uses it. It is **verified in CI on all three of its APIs**: Vulkan (Mesa's lavapipe, Linux), Direct3D 12 (WARP, Windows) and Metal (Apple's paravirtual device, macOS). All three are software or virtual. It **presents** (ADR-0027): a `winit` window host (`engine/window`) owns the event loop, the backend opens a surface on the window and `present` draws the target onto it; CI reads the first frame back from the surface on Xvfb and matches all 65,536 texels. **Verified on the operator's hardware** (local reports 4 and 5, 2026-09-26, code identical to `HEAD`): an AMD Radeon RX 6650 XT over Vulkan passes the eleven cases with and without presentation, the upload, the draw and ADR-0028's bound draw read back, and a Win32 window shows the target in 65,536 of 65,536 texels read from its surface. Not verified on hardware: Direct3D 12, Metal, any other GPU, and a device loss raised by a driver |
+| Input boundary | [x] | [~] | the window host translates keyboard and mouse buttons into `runtime::input` signals as **USB HID usages** (keyboard page 0x07, mouse buttons 1–5 and 16+), collected per frame and handed to the client before its frame; key repeat is dropped, focus loss releases everything held, and a tap inside one frame is no longer lost (ADR-0031). **Verified in CI**: a real `W` pressed through the X server's test extension on Xvfb reaches the engine as usage 26 and the bound action's press and release. Not verified on the operator's hardware yet (the interactive `input_devices` check exists), and gamepads, touch, pointer motion, the wheel and text entry are not built (DEBT-0043) |
 | Audio boundary | [x] | [ ] | — |
 | Asset lifecycle | [x] | [~] | `ResourceID → Manifest → Resolver → Loader → Cache → Handle` built, with integrity checked before any loader runs and declared fallbacks (`engine/resource`, ADR-0021); the runtime decodes its own textures with the one PNG decoder, bounded by each file's declared size (`engine/image`, ADR-0022); it inflates with the foundation's `inflate_bounded`, all three deflate block types, one inflater in the workspace; resource packs do not layer |
 | Streaming lifecycle | [x] | [~] | `request · cancel · set_interest · tick` of `STREAMING SYSTEM.md` are built (ADR-0008), and of its test list fast travel, save-before-evict and low-memory pressure are covered (`engine/streaming::system` tests); the slice's **initial** load is still explicit, through the job system rather than through streaming (DEBT-0018, DEBT-0024), and dimension transfer and reconnect have no subsystem to test against. *Corrected 2026-09-25: the row said `[ ]` and predated ADR-0008.* |
 | Headless mode | [x] | [x] | `nexora-headless` |
+| Client mode | [x] | [~] | `nexora-client` (ADR-0032): the lifecycle in `RuntimeMode::Client` through `PresentationRunning`, the renderer module, a generated world drawn in a window, `runtime::frame` against a real clock, WASD through the input system; verified in CI (Xvfb, and Win32/AppKit through the quick local report), not on the operator's machine; no streaming, textures, player or physics in the frame |
 
 ## Simulation
 
@@ -108,9 +109,9 @@ Legend: `[x]` yes · `[ ]` no · `[~]` partial, with the gap named.
 | Observability | [x] | [x] | `foundation::diagnostics` |
 | Testing strategy | [x] | [x] | 850+ tests; unit, integration, property, determinism, corruption, content-catalog, plus 12 cross-stack conformance digests |
 | CI / build / release strategy | [x] | [~] | format, lint, test, build and smoke run in CI; packaging and release do not |
-| Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); **the gate is still open** — the GPU stages cannot run here and no engine-scale comparison exists (DEBT-0008, ADR-0009) |
+| Technology benchmark | [x] | [~] | harness built; a second stack (C++20 kernels, two compilers) is now measured and conformance-gated, FFI overhead included ([Appendix D](docs/benchmarks/PHASE-0-BASELINE.md)); the RHI stage is measured, in CI on lavapipe and on the operator's RX 6650 XT (Appendices J and K), and so are the camera stage (ADR-0029, Appendix L), frame time, a frame of the first render pass checked against a CPU ray cast before it is timed (ADR-0030, Appendix M), and the window stage, the same frame presented in a real window and read back from its surface (ADR-0030 amendment, Appendix N); **the gate is still open** — no engine-scale comparison exists (DEBT-0008, ADR-0009) |
 
-## Phase status (2026-09-24)
+## Phase status (2026-09-26)
 
 Two numbering schemes meet here, and they must not be confused.
 `NEXORA DEVELOPMENT ROADMAP.md` calls **Phase 0 the Architecture Freeze**, with
@@ -121,27 +122,41 @@ anything.
 
 | Roadmap phase | State | Evidence |
 | --- | --- | --- |
-| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met: the benchmark measures the RHI stage (on software Vulkan so far) but has no frame time, no camera and no engine-scale comparison (DEBT-0008), and the RHI has not run on the operator's hardware. Its contract, a null backend and a native `wgpu` backend are built and pass the same suite, the native one on a real (software) Vulkan driver in CI, and it presents to a real window (ADR-0025, ADR-0026, ADR-0027). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
-| 1 — Engine Bootstrap | **largely built, not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and now resources are built and run in CI. Exit asks the runtime to start *"em modo client/headless"*: headless does; client needs a window (ADR-0005), and now has one (ADR-0027), but nothing runs the frame loop, a renderer or input inside it yet |
-| 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming exist; camera, input, render and player do not |
+| 0 — Architecture Freeze | **open: blocked by unbuilt code, not by the environment** | the Final gate below is not met, and **one blocker remains**: the benchmark measures the RHI stage (in CI on software Vulkan, and on the operator's RX 6650 XT) the camera stage (ADR-0029), frame time and a window (ADR-0030), and every GPU stage of the plan now has a number; what is left is the engine-scale comparison (DEBT-0008). The second blocker **closed on 2026-09-26**: the contract, a null backend and a native `wgpu` backend pass the same suite, and the native one draws and presents on the operator's GPU and desktop (ADR-0025 to ADR-0028, local reports 4 and 5). *Reclassified 2026-09-25: this row said "blocked by environment", but lavapipe gives every headless GPU path a conformant driver, so what remains is code (window, presentation, the benchmark's GPU stages) plus one local report on real hardware.* Both are recorded with decisions (ADR-0001, ADR-0005, ADR-0009); neither can honestly be reclassified as a post-freeze extension, because the RHI row is exactly the contract that has not been tested |
+| 1 — Engine Bootstrap | **exit criterion met in CI, not on local hardware; not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and resources are built and run in CI. The exit asks the runtime to start *"em modo client/headless"*: headless does, and since ADR-0032 **client mode does**: `nexora-client` walks all 17 lifecycle phases in `RuntimeMode::Client` (the renderer module initializes, presentation is entered), draws a generated world in a window through the first render pass, runs `runtime::frame` against a real clock and moves the camera by real keys. CI runs it on Xvfb (a real W through XTEST moves it 8 blocks) and, through `local-validation.py --quick`, on Win32 and AppKit. It is not verified on the operator's machine until a report runs `client_mode`, and the roadmap's phases are ordered: Phase 0 is still open |
+| 2 — Voxel Vertical Slice | partly built ahead of order | chunk, storage, meshing, coordinates, streaming, the camera's core (view, projection, frustum, floating origin; ADR-0029), a render pass that draws meshed chunks (ADR-0030), keyboard and mouse input (ADR-0031) and a free camera over nine chunk columns in the client (ADR-0032), drawn without gaps (back faces culled, quads split at every corner; ADR-0033, DEBT-0047 closed) exist; camera modes, textured rendering, streaming into the pass and a player do not |
 
 Work continues on what can be verified headless — the roadmap's own rule is
 that a phase advances on its technical criteria, and the criteria that remain
 need hardware this environment does not have. Nothing here claims otherwise.
 
-**Local evidence (2026-09-25): three reports, one machine** —
+**Local evidence (2026-09-26): five reports, one machine** —
 [`docs/validation/local/NEXORA-LOCAL-VALIDATION.md`](docs/validation/local/NEXORA-LOCAL-VALIDATION.md).
-The current one ran on commit `0b7bcec`, a real Windows 10 machine (AMD Ryzen
-5 5500, 12 threads, 16 GiB, AMD Radeon RX 6650 XT). Release build, **1138
-tests**, the slice with and without the first generation, the forge's build of
-it, the textures and the whole CPU benchmark: all `VERIFIED_ON_LOCAL_HARDWARE`
-for that commit. The two earlier reports (`700eed6`, `7991083`) said the same
-but lost the benchmark's numbers, which the script now keeps. The third report's
-numbers closed DEBT-0013 (baseline Appendix I). Every GPU item stays
-`NOT_IMPLEMENTED`: the reports prove the machine has a GPU, not that the engine
-can use one, and they move neither blocker. The report predates `engine/rhi`,
-so it reads as `STALE_LOCAL_EVIDENCE` against `HEAD`, and the RHI's null backend
-has not yet run on that machine. The previous note, kept for the record:
+The current one ran on commit `8331c15` (report 5); report 4 ran sixteen
+minutes earlier on `786f77f`, the merge of ADR-0028. The code is the same in
+both and in `HEAD`, and `local-validation.py check` says
+`CURRENT_NO_RELEVANT_CHANGE`. The machine is a real Windows 10 desktop (AMD
+Ryzen 5 5500, 12 threads, 16 GiB, AMD Radeon RX 6650 XT). Every executed check
+is `VERIFIED_ON_LOCAL_HARDWARE` in both: release build, **1178 tests**, the
+slice with and without the first generation, the forge's build of it, the
+textures, **`rhi_native`** (adapter `RX 6650 XT (vulkan, discretegpu)`, 11/11
+cases, upload, draw and bound draw read back), **`window`** (Win32, surface
+`Bgra8UnormSrgb` FIFO, 0 redraws waited, 65,536 of 65,536 texels read back,
+61 frames) and the whole benchmark, whose RHI stage now carries GPU numbers
+(baseline Appendix K, Finding 29). In that report `rendering`,
+`input_devices`, `client_mode` and the remaining `benchmark_gpu_stages` stay
+`NOT_IMPLEMENTED`: at its commit no code drew the world, read a device, ran a
+client or timed a frame. Since then the camera (ADR-0029) and the first render
+pass with frame time (ADR-0030) exist, so the next report on `main` runs them
+in `benchmark_cpu`, and until then they are `NOT_TESTED_LOCALLY`. The input
+boundary (ADR-0031) left `input_devices` for an interactive check that asks the
+operator to press W; it is `NOT_TESTED_LOCALLY` until a report runs it. Client
+mode (ADR-0032) left `client_mode` for a check that opens the client for 120
+frames; it is `NOT_TESTED_LOCALLY` for the same reason.
+
+**Before (2026-09-25): three reports.** Report 3 ran on `0b7bcec` and closed
+DEBT-0013 (Appendix I). It predated `engine/rhi`, so it said nothing about the
+GPU. The previous note, kept for the record:
 
 **Before the first report:** The bridge exists —
 `scripts/local-validation.py` and [`docs/validation/local/`](docs/validation/local/README.md):
@@ -160,7 +175,7 @@ The architecture can be frozen only when unresolved items are either completed
 or explicitly classified as post-freeze extensions with no impact on frozen
 contracts.
 
-**Not met.** Two blockers stand out:
+**Not met.** One blocker remains; the second closed on 2026-09-26:
 
 1. **The technology benchmark now has two stacks, and still cannot close**
    (DEBT-0008). The second stack exists: `benchmarks/cpp/` mirrors the engine's
@@ -174,8 +189,15 @@ contracts.
    in a headless container. That stopped being true with ADR-0026 and
    ADR-0027: the **RHI stage is measured** now, on lavapipe in CI and on any
    machine's own adapter, with its answers checked before timing (Appendix J,
-   Finding 28). Frame time and camera still have no code (there is no
-   renderer), and no GPU number exists until the operator's report runs it.
+   Finding 28). Since local reports 4 and 5 it is also measured **on the operator's RX
+   6650 XT** (Appendix K, Finding 29: on real hardware the fence is the cost,
+   so a renderer submits once per frame). The camera stage is measured too
+   (ADR-0029, Appendix L), and so is **frame time**: the first render pass
+   draws the meshed 16³ region through the camera, and the frame must match a
+   CPU ray cast before it is timed (ADR-0030, Appendix M), and so is the
+   **window** stage: the same frame presented in a real window, the first one
+   read back from the surface and checked the same way (ADR-0030 amendment,
+   Appendix N). **Every GPU stage of the plan now has a number.**
    **An engine-scale comparison** is explicitly out
    of scope for a kernel reference (ADR-0009) — nine pieces of arithmetic say
    nothing about allocation, cache behaviour at scale, or threading.
@@ -188,13 +210,15 @@ contracts.
    question the gate exists to ask, and
    `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves the language lock for the
    completed benchmark.
-2. **The RHI has met a driver and a window, but not the operator's
-   hardware.** Its contract, a null backend and a native `wgpu` backend are
-   built (ADR-0025, ADR-0026), and a `winit` window host presents through it
-   (ADR-0027). The native one passes the conformance suite, an
-   upload-and-draw readback and, with presentation on, a frame read back from
-   the window's surface, on Mesa's software Vulkan and Xvfb in CI. So the
-   boundary has survived contact with a conformant driver and a real window
-   system. One thing remains before this blocker closes: **a report from the
-   operator's GPU and desktop** (`rhi_native` and `window` in
-   `local-validation.py`). See DEBT-0046.
+2. ~~**The RHI has met a driver and a window, but not the operator's
+   hardware.**~~ **Closed 2026-09-26.** The contract, a null backend and a
+   native `wgpu` backend are built (ADR-0025, ADR-0026, ADR-0028), and a
+   `winit` window host presents through it (ADR-0027). They pass the
+   conformance suite, the upload, draw and bound-draw readbacks and, with
+   presentation on, a frame read back from the window's surface: in CI on
+   Vulkan (lavapipe), Direct3D 12 (WARP) and Metal (paravirtual), and on the
+   operator's **AMD Radeon RX 6650 XT over Vulkan on a Win32 desktop**, in two
+   local reports on code identical to `HEAD`. DEBT-0046 is closed. What this
+   does not claim: Direct3D 12 or Metal on hardware, any other GPU, or a
+   device loss raised by a driver. None of those is a contract question the
+   freeze depends on; each is a renderer test for later.

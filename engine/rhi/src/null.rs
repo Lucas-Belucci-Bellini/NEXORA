@@ -462,6 +462,8 @@ mod tests {
                 attributes: vec![VertexAttribute::position(VertexFormat::Float32x4)],
                 bindings: Vec::new(),
                 depth: None,
+
+                cull: crate::Cull::None,
                 targets: vec![TextureFormat::Rgba8Unorm],
             })
             .unwrap();
