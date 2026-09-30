@@ -7,7 +7,10 @@
 //!   schema and content versions that produced it.
 //! * **Atomicity.** "Never replace a valid save with partially written data."
 //!   Writes go to a temporary file, are flushed, decoded back, and only then
-//!   renamed over the original.
+//!   renamed over the original. A rename the operating system refuses only
+//!   for the moment (Windows, while another process such as a virus scanner
+//!   still holds the file just written) is tried again, a bounded number of
+//!   times, before the save fails.
 //! * **Corruption detection.** Each section carries a CRC; the header carries
 //!   its own. A damaged section is detected before the caller sees the bytes.
 //! * **Quarantine over overwrite.** A file that fails to load is moved aside
@@ -18,8 +21,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use nexora_foundation::deflate::{deflate, inflate};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
@@ -344,8 +349,14 @@ impl SaveContainer {
             .with_source(cause));
         }
 
-        fs::rename(&temporary, path).map_err(|cause| io_error("commit save", path, &cause))?;
-        Ok(())
+        rename_with_retry(
+            &temporary,
+            path,
+            "commit save",
+            |from, to| fs::rename(from, to),
+            refused_for_now,
+            thread::sleep,
+        )
     }
 
     /// Read and verify a container from disk.
@@ -398,8 +409,70 @@ pub fn quarantine(path: &Path) -> Result<PathBuf> {
         }
     }
 
-    fs::rename(path, &target).map_err(|cause| io_error("quarantine save", path, &cause))?;
+    rename_with_retry(
+        path,
+        &target,
+        "quarantine save",
+        |from, to| fs::rename(from, to),
+        refused_for_now,
+        thread::sleep,
+    )?;
     Ok(target)
+}
+
+/// How many times a rename is tried before the save fails.
+pub const RENAME_ATTEMPTS: u32 = 8;
+
+/// The pause after the first refused rename. Each later pause doubles it, so
+/// eight attempts wait at most 635 ms in all.
+pub const RENAME_FIRST_PAUSE: Duration = Duration::from_millis(5);
+
+/// Whether the operating system refused a rename only for the moment.
+///
+/// On Windows, replacing a file another process still has open fails with
+/// `ERROR_ACCESS_DENIED` (5), `ERROR_SHARING_VIOLATION` (32) or
+/// `ERROR_LOCK_VIOLATION` (33). A virus scanner opens every file just
+/// written, so a save that rewrites a file milliseconds after writing it (the
+/// region store does, as streaming evicts and saves) meets this in normal
+/// use: local report 6 failed a save test on it. Elsewhere a refused rename
+/// is a real permission problem, and is not tried again.
+fn refused_for_now(cause: &io::Error) -> bool {
+    cfg!(windows)
+        && (cause.kind() == io::ErrorKind::PermissionDenied
+            || matches!(cause.raw_os_error(), Some(5 | 32 | 33)))
+}
+
+/// Rename `from` to `to`, trying again after a doubling pause while
+/// `transient` says the refusal was only for the moment, up to
+/// [`RENAME_ATTEMPTS`] tries.
+///
+/// The rename, the judgement and the pause are arguments, so the policy is
+/// tested on every platform with a rename that refuses on cue.
+fn rename_with_retry(
+    from: &Path,
+    to: &Path,
+    action: &'static str,
+    mut rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+    transient: impl Fn(&io::Error) -> bool,
+    mut pause: impl FnMut(Duration),
+) -> Result<()> {
+    let mut wait = RENAME_FIRST_PAUSE;
+    let mut attempt = 1;
+    loop {
+        match rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(cause) if transient(&cause) && attempt < RENAME_ATTEMPTS => {
+                pause(wait);
+                wait = wait.saturating_mul(2);
+                attempt += 1;
+            }
+            Err(cause) => {
+                return Err(
+                    io_error(action, to, &cause).with_context("attempts", attempt.to_string())
+                );
+            }
+        }
+    }
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -537,6 +610,97 @@ fn io_error(action: &'static str, path: &Path, cause: &std::io::Error) -> Error 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rename that refuses the first `refusals` times with `kind`, then
+    /// succeeds, and counts its calls.
+    fn refusing(refusals: u32, kind: io::ErrorKind) -> impl FnMut(&Path, &Path) -> io::Result<()> {
+        let mut calls = 0;
+        move |_: &Path, _: &Path| {
+            calls += 1;
+            if calls <= refusals {
+                Err(io::Error::from(kind))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn denied(cause: &io::Error) -> bool {
+        cause.kind() == io::ErrorKind::PermissionDenied
+    }
+
+    /// Report 6's failure, replayed: the rename is refused twice while the
+    /// scanner holds the file, then goes through. The save succeeds after two
+    /// doubling pauses.
+    #[test]
+    fn a_rename_refused_for_the_moment_is_tried_again() {
+        let mut pauses = Vec::new();
+        let result = rename_with_retry(
+            Path::new("a.tmp"),
+            Path::new("a"),
+            "commit save",
+            refusing(2, io::ErrorKind::PermissionDenied),
+            denied,
+            |pause| pauses.push(pause),
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(pauses, vec![RENAME_FIRST_PAUSE, RENAME_FIRST_PAUSE * 2]);
+    }
+
+    /// A refusal that is not transient fails at once: no pause, one attempt.
+    #[test]
+    fn a_real_refusal_fails_at_once() {
+        let mut pauses = Vec::new();
+        let error = rename_with_retry(
+            Path::new("a.tmp"),
+            Path::new("a"),
+            "commit save",
+            refusing(1, io::ErrorKind::NotFound),
+            denied,
+            |pause| pauses.push(pause),
+        )
+        .unwrap_err();
+        assert!(pauses.is_empty());
+        assert!(error.to_string().contains("attempts=1"), "{error}");
+        assert_eq!(error.recovery(), Recovery::Retry);
+    }
+
+    /// A file held forever fails after the bounded attempts, having waited
+    /// less than a second, and says how many it made.
+    #[test]
+    fn a_rename_refused_every_time_gives_up_after_the_bound() {
+        let mut pauses = Vec::new();
+        let error = rename_with_retry(
+            Path::new("a.tmp"),
+            Path::new("a"),
+            "commit save",
+            refusing(u32::MAX, io::ErrorKind::PermissionDenied),
+            denied,
+            |pause| pauses.push(pause),
+        )
+        .unwrap_err();
+        assert_eq!(pauses.len() as u32, RENAME_ATTEMPTS - 1);
+        let waited: Duration = pauses.iter().sum();
+        assert_eq!(waited, Duration::from_millis(635));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("attempts={RENAME_ATTEMPTS}")),
+            "{error}"
+        );
+    }
+
+    /// Only Windows' transient refusals are judged transient; elsewhere a
+    /// denied rename is a real permission problem.
+    #[test]
+    fn only_windows_refusals_are_transient() {
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        let sharing = io::Error::from_raw_os_error(32);
+        let missing = io::Error::from(io::ErrorKind::NotFound);
+        assert_eq!(refused_for_now(&denied), cfg!(windows));
+        assert_eq!(refused_for_now(&sharing), cfg!(windows));
+        assert!(!refused_for_now(&missing));
+    }
 
     fn id(raw: &str) -> Identifier {
         Identifier::parse(raw).expect("valid identifier")

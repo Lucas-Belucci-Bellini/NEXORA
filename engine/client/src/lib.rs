@@ -19,7 +19,10 @@
 //! 3. **Render prep**: the render origin follows the camera (ADR-0029), the
 //!    camera is sampled, and the frame is recorded by the first render pass
 //!    (ADR-0030).
-//! 4. **Render**: one submission, and the frame presented to the window.
+//! 4. **Render**: one submission, and the frame presented to the window. The
+//!    part of it the backend spent blocked handing the frame to the window
+//!    system (`WgpuRhi::last_present_wait`) is declared as presentation's,
+//!    so the budget classifies the frame's work, not the monitor's refresh.
 //!
 //! The time between frames is measured with the host's clock and handed in;
 //! the loop itself still reads no clock (ADR-0017). This is the first process
@@ -168,6 +171,11 @@ pub struct ClientReport {
     pub discarded: u64,
     /// Frame wall times: median, 95th percentile, maximum.
     pub wall: [Duration; 3],
+    /// Frame work, the wall time less the wait on presentation (what the
+    /// budget classifies): median, 95th percentile, maximum.
+    pub work: [Duration; 3],
+    /// Waits on presentation: median, 95th percentile, maximum.
+    pub presentation_wait: [Duration; 3],
     /// Time inside frames no stage claimed, summed.
     pub unattributed: Duration,
     /// The last frame's pass statistics.
@@ -326,13 +334,15 @@ fn run_in(
     lifecycle.advance_through(Phase::ProcessExit)?;
     log(diagnostics, "runtime shut down");
 
-    let mut walls = tally.walls;
-    walls.sort_unstable();
-    let percentile = |p: usize| {
-        walls
-            .get((walls.len().saturating_sub(1)) * p / 100)
-            .copied()
-            .unwrap_or_default()
+    let spread = |mut samples: Vec<Duration>| {
+        samples.sort_unstable();
+        let percentile = |p: usize| {
+            samples
+                .get((samples.len().saturating_sub(1)) * p / 100)
+                .copied()
+                .unwrap_or_default()
+        };
+        [percentile(50), percentile(95), percentile(100)]
     };
     Ok(ClientReport {
         phases: lifecycle
@@ -354,7 +364,9 @@ fn run_in(
         classes: tally.classes,
         ticks: tally.ticks,
         discarded: tally.discarded,
-        wall: [percentile(50), percentile(95), percentile(100)],
+        wall: spread(tally.walls),
+        work: spread(tally.works),
+        presentation_wait: spread(tally.waits),
         unattributed: tally.unattributed,
         drawn: tally.drawn,
         input: session.input,
@@ -416,6 +428,8 @@ struct Tally {
     ticks: u64,
     discarded: u64,
     walls: Vec<Duration>,
+    works: Vec<Duration>,
+    waits: Vec<Duration>,
     unattributed: Duration,
     drawn: FrameStats,
     active_frames: u64,
@@ -578,6 +592,9 @@ impl Client for Presentation<'_> {
             }
         };
         frame.record(FrameStage::Render, clock.elapsed())?;
+        // The part of render spent blocked until the window system took the
+        // frame (a free surface image): not the engine's work (Finding 33).
+        frame.waited_for_presentation(FrameStage::Render, rhi.last_present_wait())?;
         let report = frame.finish(begun.elapsed());
 
         let tally = &mut self.tally;
@@ -585,6 +602,8 @@ impl Client for Presentation<'_> {
         tally.discarded = tally.discarded.saturating_add(plan.discarded);
         tally.classes[class_index(report.class())] += 1;
         tally.walls.push(report.wall());
+        tally.works.push(report.work());
+        tally.waits.push(report.presentation_wait());
         tally.unattributed += report.unattributed();
         tally.drawn = drawn;
         if intent.held > 0 {
@@ -698,12 +717,21 @@ pub fn format_report(report: &ClientReport) -> String {
         ms(report.unattributed)
     ));
     out.push_str(&format!(
+        "frame work         median {}, p95 {}, max {}; presentation wait median {}, p95 {}, max {}\n",
+        ms(report.work[0]),
+        ms(report.work[1]),
+        ms(report.work[2]),
+        ms(report.presentation_wait[0]),
+        ms(report.presentation_wait[1]),
+        ms(report.presentation_wait[2])
+    ));
+    out.push_str(&format!(
         "last frame         {} columns drawn, {} culled, {} empty, {} vertices\n",
         report.drawn.drawn, report.drawn.culled, report.drawn.empty, report.drawn.vertices
     ));
     out.push_str(&format!(
-        "input              {} signals, {} keys without a HID usage, {} repeats dropped; actions held in {} frames\n",
-        report.input.delivered, report.input.unnumbered, report.input.repeats, report.active_frames
+        "input              {} signals, {} keys without a HID usage, {} repeats dropped, focus gained {} times; actions held in {} frames\n",
+        report.input.delivered, report.input.unnumbered, report.input.repeats, report.input.focused, report.active_frames
     ));
     out.push_str(&format!(
         "camera             moved {:.2} forward, {:.2} right, {:.2} up; turned {:.1} degrees\n",

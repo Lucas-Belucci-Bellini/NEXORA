@@ -2256,3 +2256,75 @@ one frame. On the operator's GPU, device creation alone took 249–276 ms
   report runs this stage on the real desktop.
 - **Not a world.** One chunk, as in Appendix M.
 - **Not a budget.** One machine, one software driver, 20% between runs.
+
+# Appendix O — the camera, frame and window stages, on a real GPU (2026-09-29)
+
+Findings 31 and 32 each ended with a prediction the operator's machine would
+test. Four local reports ran the stages there, fourteen minutes apart, all on
+the same engine code: `6ad11f2` (the merge of ADR-0029 to ADR-0033) and three
+commits that only add the previous report's files. The machine, driver
+(`32.0.21045.5002`, AMD 26.8.1) and toolchain (rustc 1.94.1) are the ones
+Appendix K used. Every frame was checked against the ray cast before it was
+timed, as everywhere: **51,376 pixels judged, all matching**, both headless
+and read back from the window's surface.
+
+| | |
+| --- | --- |
+| machine | machine A of Appendix I: Windows 10, AMD Ryzen 5 5500, 12 logical CPUs |
+| adapter / display | `AMD Radeon RX 6650 XT`, Vulkan, `discretegpu` / a Win32 window, FIFO |
+| mesh | 7,377 vertices: ADR-0033 splits quads at corners (4,842 in Appendix M) |
+
+| measurement (median) | report 6 | 7 | 8 | 9 | p95, widest |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `camera.sample` | 100 ns | 200 ns | 100 ns | 100 ns | 200 ns |
+| `camera.cull_columns_r12` | 4.40 µs | 7.50 µs | 4.30 µs | 4.30 µs | 7.60 µs |
+| `rhi.device_open` | 185.40 ms | 175.03 ms | 170.26 ms | 193.53 ms | 202.21 ms |
+| `rhi.fence_roundtrip` | 102.62 µs | 94.50 µs | 111.06 µs | 99.26 µs | 132.75 µs |
+| `rhi.draw_16` | 139.78 µs | 130.09 µs | 125.91 µs | 136.93 µs | 986.41 µs |
+| `frame.draw_chunk_16` | 241.95 µs | 230.74 µs | 225.81 µs | 223.16 µs | 268.45 µs |
+| `window.present_chunk_16` | 9.97 ms | 9.94 ms | 9.98 ms | 9.98 ms | 10.58 ms |
+| `window.first_frame` | 433.67 ms | 401.90 ms | 393.37 ms | 378.73 ms | — |
+
+The client (`client_mode`, all four reports, on the operator's desktop) drew
+nine chunk columns, 487,461 vertices, for 120 frames: **median 9.87–9.90 ms
+of wall time a frame, p95 10.33–10.68 ms, max 28.03–52.34 ms**, 0.11–0.12 ms
+unattributed in all. Every first frame held: 79,391 judged, 79,390 matching,
+1 snapped edge, 0 back faces (ADR-0033).
+
+## Finding 33 — on the operator's GPU a frame costs two fences, and the monitor sets the rest
+
+**Finding 31 said a frame of the pass would cost about one fence. It costs
+two.** 223–242 µs a frame against 95–111 µs a fence, a ratio of 2.0 to 2.4
+in every report. Against lavapipe's 1.5–1.8 ms (Appendix M, with fewer
+vertices), it is seven times cheaper, so the shape Finding 29 argued for
+held: the frame is wait, not rasterisation. What the second fence's worth is
+(recording the pass, the uniform write, or the GPU's own work at 256×256)
+the benchmark does not separate, and this appendix does not guess.
+
+**Finding 32 said the monitor would bound the interval. It does, at about
+100 Hz.** `window.present_chunk_16` is 9.94–9.98 ms in all four reports, and
+so is the client's median with nine columns and sixty-six times the
+vertices. One chunk's frame is 2.3% of that interval. The frame the client
+reports is therefore **the display's period, not the engine's cost**: its
+`render` stage includes the wait for the next refresh. A frame budget drawn
+from it would be a budget of the monitor.
+
+**Startup is the driver's.** From nothing to the first frame on screen takes
+379–434 ms, of which opening the device is 170–194 ms. On lavapipe both were
+about 50 and 21 ms (Appendix N, Appendix J).
+
+**The same machine and driver ran 25–35% faster than three days earlier.**
+Against Appendix K: the fence 95–111 µs against 112–162, the draw 126–140 µs
+against 192–205, opening the device 170–194 ms against 249–276. Nothing in
+the engine, the toolchain or the driver changed between them. It is the kind
+of spread Appendix I's rule exists for.
+
+### What these numbers are not
+
+- **Not a budget.** One machine, and 30% between two days on it. The
+  client's frame time measures the refresh rate, not the frame.
+- **Not a world.** Nine columns, flat-coloured, no textures, no streaming
+  inside the frame.
+- **Not the frame's parts.** The benchmark times record, submit and wait as
+  one number; Finding 29's rule (one submission, one fence a frame) is what
+  keeps that number near the fence.

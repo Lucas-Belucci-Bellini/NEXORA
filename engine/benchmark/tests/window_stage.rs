@@ -43,9 +43,10 @@ fn main() -> ExitCode {
             .find(|m| m.name == name)
             .map(nexora_benchmark::Measurement::median)
     };
-    let (Some(first), Some(interval), Some(judged)) = (
+    let (Some(first), Some(interval), Some(wait), Some(judged)) = (
         value("window.first_frame"),
         value("window.present_chunk_16"),
+        value("window.present_wait_chunk_16"),
         value("window.pixels_judged"),
     ) else {
         eprintln!("window stage: FAILED: a measurement is missing");
@@ -53,9 +54,12 @@ fn main() -> ExitCode {
     };
     // The frame read back from the surface matched the ray cast, or the stage
     // would have returned an error; at least half the pixels were judged.
-    if first <= 0.0 || interval <= 0.0 || judged * 2.0 < 256.0 * 256.0 {
+    // Each wait lies inside its interval, so the median wait cannot pass the
+    // median interval.
+    if first <= 0.0 || interval <= 0.0 || wait > interval || judged * 2.0 < 256.0 * 256.0 {
         eprintln!(
-            "window stage: FAILED: first {first} ns, interval {interval} ns, judged {judged}"
+            "window stage: FAILED: first {first} ns, interval {interval} ns, \
+             wait {wait} ns, judged {judged}"
         );
         return ExitCode::FAILURE;
     }

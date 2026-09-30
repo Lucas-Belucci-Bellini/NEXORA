@@ -185,6 +185,7 @@ pub struct InputCollector {
     delivered: u64,
     unnumbered: u64,
     repeats: u64,
+    focused: u64,
 }
 
 /// What the host has done with device events so far.
@@ -196,6 +197,9 @@ pub struct InputCounts {
     pub unnumbered: u64,
     /// Key repeats the operating system sent, dropped.
     pub repeats: u64,
+    /// Times the window gained keyboard focus. Zero after a run that saw no
+    /// key says the keys went to another window, not that none was pressed.
+    pub focused: u64,
 }
 
 impl InputCollector {
@@ -241,6 +245,12 @@ impl InputCollector {
         }
     }
 
+    /// The window gained keyboard focus. Nothing is signalled: a key held
+    /// before the window had focus is not a press the engine saw.
+    pub fn focus_gained(&mut self) {
+        self.focused += 1;
+    }
+
     /// The signals since the last frame, leaving the collector empty.
     pub fn take(&mut self) -> InputFrame {
         let frame = std::mem::take(&mut self.frame);
@@ -255,6 +265,7 @@ impl InputCollector {
             delivered: self.delivered,
             unnumbered: self.unnumbered,
             repeats: self.repeats,
+            focused: self.focused,
         }
     }
 }
@@ -452,6 +463,18 @@ mod tests {
         );
         assert!(input.sample(&collector.take()).just_released(&forward));
         assert_eq!(collector.counts().repeats, 1);
+    }
+
+    /// Gaining focus is counted, and signals nothing: the engine did not see
+    /// a key that went down while another window had the keyboard.
+    #[test]
+    fn gaining_focus_is_counted_and_signals_nothing() {
+        let mut collector = InputCollector::default();
+        collector.focus_gained();
+        collector.focus_gained();
+        assert!(collector.take().is_empty());
+        assert_eq!(collector.counts().focused, 2);
+        assert_eq!(collector.counts().delivered, 0);
     }
 
     #[test]

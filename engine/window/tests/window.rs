@@ -46,6 +46,14 @@ fn main() -> ExitCode {
             report.frames, report.surface.presented
         ));
     }
+    // Every presentation waited on the window system for some time, and the
+    // last wait is part of the total the surface keeps.
+    if report.surface.waited.is_zero() || report.surface.last_wait > report.surface.waited {
+        failures.push(format!(
+            "presentation waits: last {:?}, {:?} in all",
+            report.surface.last_wait, report.surface.waited
+        ));
+    }
     if let Some(captured) = report.captured {
         if captured.checked == 0 || captured.matching != captured.checked {
             failures.push(format!(

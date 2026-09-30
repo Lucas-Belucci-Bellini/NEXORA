@@ -404,10 +404,17 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   etapas de GPU do plano têm número agora.** Desta dívida resta só a
   comparação em **escala de motor** do ADR-0009, que é uma questão de escopo
   do gate, não de GPU.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** as etapas **câmera**,
+  **frame time** e **window** também têm números na RX 6650 XT do operador,
+  quatro execuções do mesmo código
+  ([Apêndice O](docs/benchmarks/PHASE-0-BASELINE.md), achado 33): um quadro de
+  um chunk custa 223–242 µs, cerca de dois round-trips de fence, e o intervalo
+  entre quadros numa janela é o período de um monitor de ~100 Hz. Todas as
+  etapas de GPU do plano estão medidas em software (CI) e em hardware real.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
-  faltam frame time e câmera (código: não há renderer), números em GPU real
-  (relatório local) e a comparação em escala de motor
+- **STATUS:** IN PROGRESS — a segunda linguagem e todas as etapas do plano,
+  inclusive as de GPU em hardware real, estão medidas; resta só a comparação
+  em **escala de motor** do ADR-0009, que é uma decisão de escopo do gate
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 
@@ -677,9 +684,44 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   a partir de medição (o `doubling_from` segue sendo convenção), números numa
   máquina real (a checagem `client_mode` do `local-validation.py` ainda não
   rodou lá), e um quadro com mundo, física e streaming dentro do laço.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** o laço rodou na
+  máquina do operador (RX 6650 XT, Win32), quatro vezes sobre o mesmo código:
+  120 quadros cada, **mediana de 9,87–9,90 ms de parede, p95 de
+  10,33–10,68 ms, máximo de 28–52 ms, 0,11–0,12 ms não atribuídos**, todos
+  `target`. A evidência local deixa de faltar, e mostra por que o orçamento
+  ainda não pode sair dela: o quadro de um chunk custa 223–242 µs
+  (`frame.draw_chunk_16`), e o de nove colunas leva o mesmo que a janela sem
+  mundo nenhum (`window.present_chunk_16`, 9,94–9,98 ms). **O que o cliente
+  mede é o período do monitor, ~100 Hz**, porque o estágio `render` inclui a
+  espera do FIFO (baseline, Finding 33). Um orçamento tirado desse número
+  seria o orçamento do monitor. **Falta**, portanto: separar no relatório do
+  quadro o trabalho da espera pela apresentação, e só então publicar
+  target/warning/critical/emergency a partir de medição; e um quadro com
+  mundo, física e streaming dentro do laço.
+- **PROGRESS (2026-09-29, emenda à
+  [ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)):** o
+  quadro separa o **trabalho** da **espera pela apresentação**. O backend
+  cronometra as duas chamadas que bloqueiam no sistema de janelas (pegar uma
+  imagem da surface e entregar o quadro à fila, `WgpuRhi::last_present_wait`),
+  o cliente declara essa espera dentro do estágio `render`
+  (`FrameRun::waited_for_presentation`), e o orçamento classifica
+  `FrameReport::work`, o tempo de parede menos a espera. A atribuição não
+  muda: a espera continua na linha do `render` e no tempo de parede, e o
+  `unattributed` é o mesmo. O relatório do cliente ganhou a linha
+  `frame work`, que o `local-validation.py` guarda, e a etapa window do
+  benchmark ganhou `window.present_wait_chunk_16`, a parte de cada intervalo
+  bloqueada na apresentação. No lavapipe/Xvfb: trabalho mediano de
+  ~37 ms, espera mediana de ~0,6 ms e p95 de ~38 ms, porque ali a espera às
+  vezes é a rasterização do quadro anterior (a GPU é a CPU). **Falta**: o
+  número de trabalho medido no hardware do operador (o próximo relatório
+  local), duas máquinas concordando na forma dele antes de publicar
+  target/warning/critical/emergency, o lado GPU do quadro (o RHI não tem
+  timestamp queries), e um quadro com mundo, física e streaming dentro do
+  laço.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio; o
-  orçamento publicado e a evidência local faltam)
+- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio, em CI e
+  no hardware do operador, e o orçamento classifica o trabalho do quadro, não
+  a espera pelo monitor; o orçamento publicado falta)
 
 ### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
 
@@ -781,9 +823,22 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `input_devices` do `local-validation.py` existe e ainda não rodou), gamepad,
   toque, movimento do ponteiro, roda do mouse, entrada de texto, gravar o
   arquivo de remap em disco, e um snapshot que atravesse uma rede.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** **verificado no
+  hardware do operador.** Nos relatórios 7 e 9 um W apertado pelo operador
+  numa janela Win32 chegou ao motor como usage 26 e saiu como o press e o
+  release da ação (depois de 657 e 571 quadros; 6 e 4 sinais, nenhuma tecla
+  sem usage, nenhuma repetição). Nos relatórios 6 e 8 a checagem esgotou os 60 s
+  com 2 sinais e nenhuma tecla, e o probe não sabia dizer se a tecla não veio
+  ou se a janela nunca teve o foco do teclado. Agora a janela pede o foco ao
+  abrir (o Windows pode negar a um processo que não está em primeiro plano),
+  conta cada vez que ganha foco, e o timeout diz qual dos dois foi. **Falta**,
+  e a dívida fica aberta por isso: gamepad, toque, movimento do ponteiro, roda
+  do mouse, entrada de texto, gravar o arquivo de remap em disco, e um
+  snapshot que atravesse uma rede.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos e
-  verificados em CI; hardware local não testado)
+- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos,
+  verificados em CI e no hardware do operador; os outros dispositivos, o
+  remap em disco e a rede faltam)
 
 ### DEBT-0046 — O RHI ainda não apresenta nada, e nenhuma GPU real o executou
 

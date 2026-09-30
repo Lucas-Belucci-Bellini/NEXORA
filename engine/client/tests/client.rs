@@ -64,6 +64,17 @@ fn main() -> ExitCode {
     if report.moved != [0.0; 3] || report.active_frames != 0 {
         failures.push(format!("moved {:?} with no key", report.moved));
     }
+    // Work is each frame's wall time less its wait on presentation, so no
+    // order statistic of the work can exceed the wall's, and no wait can
+    // outlast the longest frame.
+    if (0..3).any(|k| report.work[k] > report.wall[k])
+        || report.presentation_wait[2] > report.wall[2]
+    {
+        failures.push(format!(
+            "work {:?} against wall {:?}, presentation wait {:?}",
+            report.work, report.wall, report.presentation_wait
+        ));
+    }
     if let Some(check) = report.first_frame {
         if !frame_holds(&check) {
             failures.push(format!("first frame {check:?}"));
