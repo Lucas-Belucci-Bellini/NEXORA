@@ -426,6 +426,12 @@ jobs:
             target
           key: platforms-${{ matrix.label }}-${{ hashFiles('**/Cargo.lock') }}
 
+      # The check job's clippy runs on Linux, which never compiles code behind
+      # `cfg(windows)` or `cfg(target_os = "macos")` -- the save commit's
+      # Windows refusal judgement and its tests among it. Here it does.
+      - name: Clippy on this platform
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       # The full report runs the test suite; nothing else runs it off Linux.
       - name: Test on this platform
         run: cargo test --workspace --all-targets

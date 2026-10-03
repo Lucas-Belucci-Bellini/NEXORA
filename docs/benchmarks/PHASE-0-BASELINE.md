@@ -2319,6 +2319,15 @@ against 192–205, opening the device 170–194 ms against 249–276. Nothing in
 the engine, the toolchain or the driver changed between them. It is the kind
 of spread Appendix I's rule exists for.
 
+**And one of the four ran on a busier machine, which a published budget
+felt.** Report 6 is the run whose test suite lost a save to a process holding
+the file (`DEBT-0048`). In it `physics.thousand_bodies_step` has a median of
+165.88 µs against 82.62–93.17 µs in reports 7–9, and a p95 of **243.43 µs —
+7 µs under the 250 µs target** the physics budget publishes (`DEBT-0013`,
+Appendix I). The budget held in all four runs, once by 3%, on identical code
+on the machine it was measured on. That is why the benchmark reports budgets
+rather than gating on them.
+
 ### What these numbers are not
 
 - **Not a budget.** One machine, and 30% between two days on it. The

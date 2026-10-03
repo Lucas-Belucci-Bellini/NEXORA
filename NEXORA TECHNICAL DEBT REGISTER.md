@@ -411,10 +411,34 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   um chunk custa 223–242 µs, cerca de dois round-trips de fence, e o intervalo
   entre quadros numa janela é o período de um monitor de ~100 Hz. Todas as
   etapas de GPU do plano estão medidas em software (CI) e em hardware real.
+- **CORREÇÃO (2026-10-03):** "todas as etapas do plano estão medidas" não é
+  verdade, e esta entrada nunca listou o que falta. Os documentos do gate
+  nomeiam três etapas que nada constrói: *player movement* e *one
+  cross-language tool call* (§17 da
+  `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md`) e a *mod boundary*
+  (`NEXORA TECHNOLOGY BENCHMARK PLAN.md`; o próprio benchmark a lista como
+  "não medida: Phase 7"). O `player movement` é o player da Phase 2 e dá para
+  construir agora; a chamada de ferramenta entre linguagens também. A
+  `mod boundary` não dá, na ordem do roadmap — é da Phase 7 —, e o §18 pede
+  ainda uma fronteira de mod estável e uma fronteira editor/runtime estável
+  (Phases 7 e 8) antes do lock. Lido como "o benchmark completo e o lock
+  inteiro antes do freeze", o gate espera fases que vêm depois do freeze.
+  **Isso é uma decisão a registrar, não código a escrever**, e está
+  **proposta** em
+  [ADR-0034](docs/adr/ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md)
+  (PROPOSED — cabe ao dono do projeto aceitar ou rejeitar): o freeze trava a
+  linguagem do núcleo pelas etapas do núcleo, e as linguagens atrás de uma
+  fronteira neutra (mod, editor, ferramentas) viram extensões das Phases 7 e
+  8. Aceita ou não, `player movement` e a chamada de ferramenta estão no §17
+  nas duas leituras, e seguem sem esperar por ela.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS — a segunda linguagem e todas as etapas do plano,
-  inclusive as de GPU em hardware real, estão medidas; resta só a comparação
-  em **escala de motor** do ADR-0009, que é uma decisão de escopo do gate
+- **STATUS:** IN PROGRESS — a segunda linguagem está medida e toda etapa de GPU
+  do plano tem número, em CI e na GPU e no display do operador; faltam a
+  comparação em escala de motor (ADR-0009), três etapas que os documentos do
+  gate nomeiam e nada constrói (`player movement`,
+  `one cross-language tool call`, `mod boundary`), e uma decisão registrada
+  sobre a parte do gate que só pode fechar nas Phases 7 e 8 (proposta:
+  ADR-0034)
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 
@@ -974,6 +998,57 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   index buffers são a alavanca.
 - **TARGET STAGE:** Phase 2 (renderer do voxel)
 - **STATUS:** CLOSED (2026-09-28)
+
+### DEBT-0048 — O commit de um save dizia `Retry` e ninguém tentava de novo: no Windows, um processo alheio derrubava o save
+
+- **SYSTEM:** `engine/persistence` (`SaveContainer::write_atomic`, `quarantine`)
+- **CLASS:** COMPATIBILITY (plataforma), com risco de save
+- **WHY CREATED:** o relatório local 6 (`6ad11f2`, 2026-09-29) falhou `tests`
+  com `Acesso negado. (os error 5)` no passo `commit save` de
+  `r.-1.-1.nxsv`, em `the_same_seed_produces_the_same_world_twice`; os
+  relatórios 7–9 no mesmo código passaram, e o `check` só lê o último. A
+  mesma falha, idêntica, apareceu de novo numa execução independente da suíte
+  na mesma máquina. O `write_atomic` escreve o temporário, faz `fsync`, relê e
+  decodifica, e só então **renomeia** por cima do save antigo; no Windows esse
+  rename é **recusado por outro processo** — erro 5 enquanto algo segura o
+  destino sem compartilhar exclusão, erro 32 enquanto segura a origem —, e
+  esse algo é tipicamente o antivírus ou o indexador abrindo o arquivo recém-
+  escrito. O erro já saía `Recovery::Retry`, e nada no caminho do save tentava
+  de novo.
+- **MEASUREMENT (2026-09-29, a máquina do operador, `%TEMP%`):** um laço de
+  rascunho com a mesma sequência (escrever → `fsync` → reler → renomear):
+  **3.000 commits sozinho, nenhuma recusa; 40.000 commits durante a suíte de
+  testes, 2 recusas, ambas erro 5, ambas liberadas na segunda tentativa
+  depois de 1 ms.** Uma em ~20.000, sob carga. Reproduzida sob demanda:
+  segurar o destino com `share_mode(FILE_SHARE_READ)` dá exatamente
+  `Acesso negado. (os error 5)`, e o save antigo fica intacto — a atomicidade
+  nunca esteve em risco; a disponibilidade do save, sim.
+- **RESOLUTION:** o `rename_with_retry` do contêiner (PR #40): o rename — e
+  só ele, porque o temporário já está escrito e verificado — é tentado até
+  **8 vezes, com pausa dobrando de 5 ms, 635 ms no máximo**, só no Windows e
+  só para os erros 5, 32 e 33; o `quarantine` segue a mesma política; quando
+  desiste, o erro é o mesmo `Retry`, com `attempts` no contexto. A política é
+  testada em toda plataforma com um rename que recusa sob comando. **E com o
+  próprio sistema operacional recusando**: dois testes Windows seguram o
+  arquivo como um antivírus segura e o soltam no instante em que o retry pausa
+  — então a recusa é fato, não corrida contra um relógio —, registrando os
+  códigos que o SO devolveu (destino segurado: 5; origem: 32); um terceiro
+  segura o save durante todo o `write_atomic` real e confere o limite e o save
+  antigo intacto. Com `RENAME_ATTEMPTS = 1` — sem retry — o primeiro falha com
+  **o mesmo erro do relatório 6**: `Acesso negado. (os error 5)`,
+  `commit save`. O job `platforms` do CI roda esses testes no Windows e agora
+  também o `clippy`, porque o do Linux nunca compila código atrás de
+  `cfg(windows)`.
+- **O QUE ISTO NÃO RESOLVE:** um rename que *termina* devagar (sob carga, um
+  rename bem-sucedido levou 582 ms) é latência, não recusa. Só o rename é
+  tentado de novo: um antivírus que segure o **temporário** por mais que o
+  limite faz o próximo save falhar já no `File::create`. E o `quarantine`
+  escolhe o nome livre antes de renomear (checar-e-depois-agir), o que a
+  espera alarga; hoje ele não tem chamador de produção e os saves são de uma
+  thread só.
+- **TARGET STAGE:** Phase 3 (Persistence + Simulation)
+- **STATUS:** CLOSED (2026-09-29, PR #40; verificação contra o SO em
+  2026-10-03)
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

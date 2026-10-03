@@ -702,6 +702,102 @@ mod tests {
         assert!(!refused_for_now(&missing));
     }
 
+    /// Open `path` the way a scanner does right after a file is written:
+    /// sharing reads, not deletion. While this handle lives, Windows refuses
+    /// to rename over `path` (`ERROR_ACCESS_DENIED`, 5 — report 6's error) and
+    /// to rename `path` itself (`ERROR_SHARING_VIOLATION`, 32). `std`'s own
+    /// `File::open` shares deletion and would not reproduce either.
+    #[cfg(windows)]
+    fn hold_without_delete_sharing(path: &Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+            .expect("hold the file open")
+    }
+
+    /// The tests above replay the refusal with a rename that refuses on cue.
+    /// This one has **the operating system** refuse it: a handle held the way
+    /// a scanner holds a fresh file, on each end of the rename in turn, let go
+    /// at the moment the retry pauses — so the refusal is a fact rather than a
+    /// race against a wall clock — and the classifier records the codes the OS
+    /// actually returned.
+    #[cfg(windows)]
+    #[test]
+    fn the_operating_system_refuses_a_held_file_and_the_retry_waits_it_out() {
+        let dir = TempDir::new("held-rename");
+        let destination = dir.path("world.nxsv");
+        let source = dir.path("world.nxsv.tmp");
+        for (held, expected) in [(&destination, 5), (&source, 32)] {
+            fs::write(&destination, b"old").unwrap();
+            fs::write(&source, b"new").unwrap();
+            let mut holder = Some(hold_without_delete_sharing(held));
+            let seen = std::cell::RefCell::new(Vec::new());
+            let result = rename_with_retry(
+                &source,
+                &destination,
+                "commit save",
+                |from, to| fs::rename(from, to),
+                |cause| {
+                    seen.borrow_mut().push(cause.raw_os_error());
+                    refused_for_now(cause)
+                },
+                |pause| {
+                    drop(holder.take());
+                    thread::sleep(pause);
+                },
+            );
+            assert!(result.is_ok(), "held {held:?}: {result:?}");
+            assert!(
+                holder.is_none(),
+                "held {held:?}: the rename was never refused"
+            );
+            assert_eq!(
+                seen.borrow().first(),
+                Some(&Some(expected)),
+                "held {held:?}"
+            );
+            assert_eq!(fs::read(&destination).unwrap(), b"new");
+        }
+    }
+
+    /// A save held past the bound, through the real `write_atomic`: the error
+    /// is the same `Retry` as before and names the attempts, and the previous
+    /// save is exactly as it was. Takes the full 635 ms of pauses.
+    #[cfg(windows)]
+    #[test]
+    fn a_save_held_past_the_bound_fails_and_the_previous_save_survives() {
+        let dir = TempDir::new("held-save");
+        let path = dir.path("world.nxsv");
+        let generation = |label: &[u8]| {
+            let mut container = SaveContainer::new();
+            container.put(id("nexora:save/world_header"), label.to_vec());
+            container
+        };
+        generation(b"generation one").write_atomic(&path).unwrap();
+
+        let holder = hold_without_delete_sharing(&path);
+        let error = generation(b"generation two")
+            .write_atomic(&path)
+            .expect_err("a handle held throughout must not be waited on forever");
+        drop(holder);
+
+        assert_eq!(error.recovery(), Recovery::Retry, "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("attempts={RENAME_ATTEMPTS}")),
+            "{error}"
+        );
+        let survivor = SaveContainer::read(&path).expect("the previous save still reads");
+        assert_eq!(
+            survivor.require(&id("nexora:save/world_header")).unwrap(),
+            b"generation one"
+        );
+    }
+
     fn id(raw: &str) -> Identifier {
         Identifier::parse(raw).expect("valid identifier")
     }
