@@ -1,7 +1,8 @@
 # First visual generation — catalog
 
 The **catalog mestre** of issue #27, for what exists so far: the sixteen stones
-of issue #5. Every row is a first-generation asset under the rule the operator
+of issue #5, and five terrain materials — dry earth, clay and gravel from
+issue #17, pale quartz sand from issue #7, grass from issue #16. Every row is a first-generation asset under the rule the operator
 set for 2026 — **16×16, albedo only** — and that rule is not a promise here: it
 is the `policy` of [`plan.json`](plan.json), and the forge refuses to
 generate anything from that build plan that breaks it.
@@ -77,11 +78,35 @@ failure `DEBT-0044` described — sixteen seeds of one stone share one palette.
 | `nexora:material/stone/brittle_stone` | stone | Brittle Stone | brittle_stone | 16×16 | `nexora/stone/brittle_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/brittle_stone` | #5 prompt 14 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 215 B | `0x816f2570a18e0a0f` |
 | `nexora:material/stone/mountain_stone` | stone | Mountain Stone | mountain_stone | 16×16 | `nexora/stone/mountain_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/mountain_stone` | #5 prompt 15 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 334 B | `0xc9ba73cb4d6677c1` |
 | `nexora:material/stone/ancient_stone` | stone | Ancient Stone | ancient_stone | 16×16 | `nexora/stone/ancient_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/ancient_stone` | #5 prompt 16 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 231 B | `0x60fc4c441a97f7d8` |
+| `nexora:material/soil/dry_earth` | soil | Dry Earth | dry_earth | 16×16 | `nexora/soil/dry_earth/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/soil/dry_earth` | #17 prompt 01 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 361 B | `0x471d49ded5686c0b` |
+| `nexora:material/soil/clay` | soil | Clay | clay | 16×16 | `nexora/soil/clay/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/soil/clay` | #17 prompt 05 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 241 B | `0xc4e824f0107c8487` |
+| `nexora:material/sand/gravel` | sand | Gravel | gravel | 16×16 | `nexora/sand/gravel/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/sand/gravel` | #17 prompt 06 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 364 B | `0x961b635a407186d8` |
+| `nexora:material/sand/quartz_sand` | sand | Quartz Sand | quartz_sand | 16×16 | `nexora/sand/quartz_sand/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/sand/quartz_sand` | #7 prompt 01 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 397 B | `0xe5852d5b9984e9dc` |
+| `nexora:material/vegetation/grass` | vegetation | Grass | grass | 16×16 | `nexora/vegetation/grass/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/vegetation/grass` | #16 prompt 06 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 337 B | `0x8bd25abb9625597e` |
 
 `version` is the material's revision as the forge writes it: authored at v1,
 generated at v2, through the pipeline at v3. `status` is the release status
 from the provenance record; nothing here has been reviewed for release, so
-all sixteen are `draft` and `may ship` is false.
+all twenty-one are `draft` and `may ship` is false.
+
+## The terrain set (2026-10-03)
+
+The five terrain materials were made exactly as the stones were: a material
+under `soil/`, `sand/` or `vegetation/` naming a recipe under
+`content/recipes/nexora/`, the prompt read as art direction and turned into a
+ramp, a mottle and a speckle — no new forge code, no image model. Two took a
+second recipe after being looked at enlarged and tiled 3×3: the first gravel
+read as dark noise with pale flecks rather than separate stones, and the
+first grass tiled into regular vertical stripes. Both were redrawn with a
+lighter bed and shorter clusters before anything was catalogued.
+
+**What they are not yet:** the surface of the generated world. The world
+generator places its own `nexora:block/dirt` and `nexora:block/grass`, which
+are untextured engine blocks; these materials are drawn on the content blocks
+`nexora:block/soil/dry_earth`, `nexora:block/vegetation/grass` and the rest,
+which the slice registers, places, meshes, saves, recovers and textures like
+every stone. Letting the generator's terrain use them is engine work —
+mapping built-in blocks to content surfaces — not an asset.
 
 ## In the game
 

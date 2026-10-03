@@ -16,7 +16,12 @@
     "stone/mossy_stone.json",
     "stone/brittle_stone.json",
     "stone/mountain_stone.json",
-    "stone/ancient_stone.json"
+    "stone/ancient_stone.json",
+    "soil/dry_earth.json",
+    "soil/clay.json",
+    "sand/gravel.json",
+    "sand/quartz_sand.json",
+    "vegetation/grass.json"
   ],
   "blocks": [
     {
@@ -98,6 +103,31 @@
       "id": "nexora:block/stone/ancient_stone",
       "solid": true,
       "surface": "nexora:material/stone/ancient_stone"
+    },
+    {
+      "id": "nexora:block/soil/dry_earth",
+      "solid": true,
+      "surface": "nexora:material/soil/dry_earth"
+    },
+    {
+      "id": "nexora:block/soil/clay",
+      "solid": true,
+      "surface": "nexora:material/soil/clay"
+    },
+    {
+      "id": "nexora:block/sand/gravel",
+      "solid": true,
+      "surface": "nexora:material/sand/gravel"
+    },
+    {
+      "id": "nexora:block/sand/quartz_sand",
+      "solid": true,
+      "surface": "nexora:material/sand/quartz_sand"
+    },
+    {
+      "id": "nexora:block/vegetation/grass",
+      "solid": true,
+      "surface": "nexora:material/vegetation/grass"
     }
   ]
 }

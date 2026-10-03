@@ -73,6 +73,26 @@
     {
       "definition": "stone/ancient_stone.json",
       "seed": null
+    },
+    {
+      "definition": "soil/dry_earth.json",
+      "seed": null
+    },
+    {
+      "definition": "soil/clay.json",
+      "seed": null
+    },
+    {
+      "definition": "sand/gravel.json",
+      "seed": null
+    },
+    {
+      "definition": "sand/quartz_sand.json",
+      "seed": null
+    },
+    {
+      "definition": "vegetation/grass.json",
+      "seed": null
     }
   ]
 }

@@ -613,9 +613,9 @@ fn a_resource_index_missing_what_the_content_asks_for_is_refused_whole() {
 
     let err = run_slice(&config).expect_err("nothing the content needs is indexed");
     let text = err.to_string();
-    // Sixteen materials and their sixteen albedos, all named, before any
-    // texture is opened -- not whichever one a loader reached first.
-    assert!(text.contains("gaps=32"), "{text}");
+    // Twenty-one materials and their twenty-one albedos, all named, before
+    // any texture is opened -- not whichever one a loader reached first.
+    assert!(text.contains("gaps=42"), "{text}");
     assert!(
         text.contains("nexora:material/stone/basalt: no albedo map"),
         "{text}"
@@ -636,8 +636,8 @@ fn the_first_generation_content_survives_every_stage() {
         ..config(&scratch, "world.nxsv")
     };
     let report = run_slice(&config).expect("the slice completes with content");
-    assert_eq!(report.content_blocks, 16);
-    assert_eq!(report.content_surfaces, 16);
+    assert_eq!(report.content_blocks, 21);
+    assert_eq!(report.content_surfaces, 21);
     assert_eq!(report.probes_verified, report.blocks_edited);
     assert_eq!(report.recovered_probes, report.probes_verified);
 }

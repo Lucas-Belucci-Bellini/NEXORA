@@ -170,7 +170,7 @@ fn the_runtime_reaches_every_first_generation_texture_by_identifier() {
     assert!(plan.run(&forge, false).unwrap().succeeded());
     forge.write_index().expect("the INDEX stage");
 
-    // Small enough that sixteen textures cannot all stay resident: the budget
+    // Small enough that the textures cannot all stay resident: the budget
     // must hold while every one of them is still served.
     let budget = 2 * 1024;
     let mut resources = ResourceManager::open(&out, budget).expect("the build plan reads");
@@ -200,7 +200,7 @@ fn the_runtime_reaches_every_first_generation_texture_by_identifier() {
         assert_eq!(order, [texture.clone(), material.clone()]);
     }
     let stats = resources.cache().stats();
-    assert_eq!(stats.inserts, 16);
+    assert_eq!(stats.inserts, plan.entries.len() as u64);
     assert!(
         stats.evictions > 0,
         "the budget forced evictions: {stats:?}"

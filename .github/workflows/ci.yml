@@ -146,11 +146,11 @@ jobs:
           grep '^rhi                null backend, conformance 11/11 cases, no GPU initialized$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
-          # stones must register, show its own surface in a mesh, and survive
+          # stones and five terrain materials must register, show its own surface in a mesh, and survive
           # the save, the reload and the journal replay as a probe.
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-content.nxsv" \
             --content content/first-generation/blocks.json \
-            | grep '^content blocks     16 (16 surfaces in the mesh)$' > /dev/null
+            | grep '^content blocks     21 (21 surfaces in the mesh)$' > /dev/null
 
       # The benchmark harness is code too: run a minimal pass so it cannot rot.
       # Deliberately NOT gated on timings - a shared runner's numbers would
@@ -311,12 +311,12 @@ jobs:
           ./target/release/nexora-texture-forge validate nexora:material/stone/basalt \
             --out "${RUNNER_TEMP}/first-generation"
           # The build ends with the pipeline's INDEX stage: the runtime's view
-          # of what was generated -- 16 textures and 16 materials.
+          # of what was generated -- 21 textures and 21 materials.
           grep -q '"id": "nexora:texture/stone/basalt/albedo"' \
             "${RUNNER_TEMP}/first-generation/resources.json"
           ./target/release/nexora-texture-forge build content/first-generation/plan.json \
             --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes \
-            | grep '^build .*: 0 written, 16 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
+            | grep '^build .*: 0 written, 21 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
 
       # The runtime reading what the forge wrote: every first-generation
       # block's texture resolved by identifier through the index the build
@@ -326,14 +326,14 @@ jobs:
           ./target/release/nexora-headless --quiet --radius 1 --save "${RUNNER_TEMP}/ci-textures.nxsv" \
             --content content/first-generation/blocks.json \
             --resources "${RUNNER_TEMP}/first-generation" > "${RUNNER_TEMP}/ci-textures.txt"
-          grep '^content textures   16 (resolved, verified and decoded)$' \
+          grep '^content textures   21 (resolved, verified and decoded)$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
           # The decoded textures are a fourth pool, and the cache that held them
           # must have given its bytes back when the stage ended -- as must the
-          # RHI, which received all sixteen as RGBA8 in one submission.
+          # RHI, which received all twenty-one as RGBA8 in one submission.
           grep '^memory             4 pools, worst nominal, 0 suspected leaks$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
-          grep '^rhi uploads        16 textures as RGBA8, 16384 bytes, one fence$' \
+          grep '^rhi uploads        21 textures as RGBA8, 21504 bytes, one fence$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
 
       # The bridge to a real machine (docs/validation/local/): its rules are
