@@ -431,6 +431,12 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   fronteira neutra (mod, editor, ferramentas) viram extensões das Phases 7 e
   8. Aceita ou não, `player movement` e a chamada de ferramenta estão no §17
   nas duas leituras, e seguem sem esperar por ela.
+- **PROGRESS (2026-10-04, [ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md)):**
+  *player movement* está construído e medido: `player.walk_route`, um player
+  que anda um segundo de tempo de mundo sobre o terreno gerado, conferido
+  antes de cronometrar (distância de vinte ticks de caminhada, e
+  bit-idêntico ao repetir). Das três etapas sem construção, restam duas: a
+  chamada de ferramenta entre linguagens e a *mod boundary*.
 - **TARGET STAGE:** antes da Phase 2
 - **STATUS:** IN PROGRESS — a segunda linguagem está medida e toda etapa de GPU
   do plano tem número, em CI e na GPU e no display do operador; faltam a
@@ -1049,6 +1055,45 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 3 (Persistence + Simulation)
 - **STATUS:** CLOSED (2026-09-29, PR #40; verificação contra o SO em
   2026-10-03)
+
+### DEBT-0049 — A câmera mostra ticks inteiros de 20 Hz, sem interpolação
+
+- **SYSTEM:** `engine/client` (a câmera derivada do olho do player)
+- **CLASS:** TEMPORARY
+- **WHY CREATED:** [ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md).
+  A câmera é derivada do olho do player a cada quadro, e o player só muda a
+  cada tick de 50 ms; entre ticks o quadro repete a mesma vista, e um
+  step-up levanta o olho um bloco num tick só. O gatilho que a ADR-0029
+  deixou para a interpolação — existir um alvo que a câmera segue — chegou.
+- **IMPACT:** movimento visivelmente em degraus a 20 Hz num display de
+  ~100 Hz; nenhum efeito na simulação, que não lê a câmera.
+- **PROPOSED REMEDIATION:** interpolar a apresentação entre os dois últimos
+  estados do player pela fração do passo que o `FrameSchedule` já calcula —
+  sem tocar no estado autoritativo — e suavizar o step-up no olho.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0050 — O player é um corpo, não uma entidade, e não é salvo
+
+- **SYSTEM:** `engine/simulation::player`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** [ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md).
+  O primeiro player é um corpo de personagem num `PhysicsWorld` só dele, e
+  não uma entidade do `engine/entity` (ADR-0006), embora `PLAYER SYSTEM.md`
+  e `Entity System.md` digam que o player é uma entidade persistente. Nada
+  mais compartilha o quadro com ele ainda, e ligá-lo ao store de entidades e
+  ao save antes de existir um segundo participante seria construir na frente
+  da evidência.
+- **IMPACT:** o player não sobrevive a um save/reload; um NPC ou um caixote
+  não colide com ele nem o empurra.
+- **PROPOSED REMEDIATION:** o player vira uma entidade com identidade
+  persistente, salva na seção de entidades, e o corpo passa a viver no mesmo
+  mundo de física que os outros corpos. A superfície pública — `spawn`,
+  `tick`, `eye`, `state` — é o que fica.
+- **TRIGGER:** o primeiro NPC ou caixote no quadro do cliente, ou o
+  save/load do player (PLAYER-31) — o que vier primeiro.
+- **TARGET STAGE:** Phase 2/3
+- **STATUS:** OPEN
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

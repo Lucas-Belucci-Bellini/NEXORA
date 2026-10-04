@@ -26,7 +26,9 @@ The slice has a **client** now too, the same runtime in a window
 walks the lifecycle in client mode, draws a generated world of nine chunk
 columns through the first render pass
 ([ADR-0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md)),
-moves a free camera by real keys, and runs its frames against a real clock. The
+walks a first-person player by real keys — gravity, collision and a jump, the
+camera following its eye ([ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md))
+— and runs its frames against a real clock. The
 first frame it shows is read back from the window's surface and held against a
 CPU ray cast pixel by pixel; it does not claim to draw the world unless the
 pixels say so. It has run on the operator's AMD Radeon RX 6650 XT on Windows

@@ -115,11 +115,49 @@ fn physics_does_not_depend_on_the_worker_count_either() {
     assert_eq!(single.physics_drop_cm, many.physics_drop_cm);
     assert_eq!(single.physics_contacts, many.physics_contacts);
     assert_eq!(single.physics_settled, many.physics_settled);
+    // The player too: it reads the world the workers generated, and must
+    // not be able to tell how many there were.
+    assert_eq!(single.player_ticks, many.player_ticks);
+    assert_eq!(single.player_walked_cm, many.player_walked_cm);
+    assert_eq!(single.player_rose_cm, many.player_rose_cm);
+    assert_eq!(single.player_stop_cm, many.player_stop_cm);
     assert_eq!(
         fs::read(scratch.save("one.nxsv")).expect("read"),
         fs::read(scratch.save("many.nxsv")).expect("read"),
         "the physics stage must leave the world untouched"
     );
+}
+
+/// ADR-0035's player on generated terrain, by scripted keys through the
+/// client's own table: twelve ticks of W, one tap of Space, W until a wall,
+/// and a quarter turn. The stage checks each leg itself — never buried,
+/// never inside terrain, standing still to the bit, the turn exact, the feet
+/// unmoved by it — so reaching these numbers means every check held.
+#[test]
+fn the_player_walks_jumps_turns_and_stops_at_a_wall() {
+    for (label, radius) in [("player-r1", 1), ("player-r0", 0)] {
+        let scratch = Scratch::new(label);
+        let report = run_slice(&SliceConfig {
+            radius,
+            ..config(&scratch, "world.nxsv")
+        })
+        .expect("slice");
+        assert!(
+            (228..=258).contains(&report.player_walked_cm),
+            "radius {radius}: walked {} cm in 12 ticks",
+            report.player_walked_cm
+        );
+        assert!(
+            (110..=135).contains(&report.player_rose_cm),
+            "radius {radius}: rose {} cm",
+            report.player_rose_cm
+        );
+        assert_eq!(
+            report.player_stop_cm, 30,
+            "radius {radius}: the eye stops half a body from the wall"
+        );
+        assert!(report.player_ticks > 0);
+    }
 }
 
 #[test]
@@ -259,6 +297,11 @@ fn the_same_seed_produces_the_same_world_twice() {
     assert_eq!(first.non_air_blocks, second.non_air_blocks);
     assert_eq!(first.storage_bytes, second.storage_bytes);
     assert_eq!(first.save_bytes, second.save_bytes);
+    // The same seed and the same scripted keys give the same player.
+    assert_eq!(first.player_ticks, second.player_ticks);
+    assert_eq!(first.player_walked_cm, second.player_walked_cm);
+    assert_eq!(first.player_rose_cm, second.player_rose_cm);
+    assert_eq!(first.player_stop_cm, second.player_stop_cm);
 
     // The byte-for-byte comparison is the strong form: identical inputs must
     // produce an identical save, not merely an equivalent one.
@@ -368,6 +411,7 @@ fn the_report_renders_every_field() {
         "physics bodies",
         "physics substeps",
         "character drop",
+        "player",
         "streaming ticks",
         "frames",
         "input",

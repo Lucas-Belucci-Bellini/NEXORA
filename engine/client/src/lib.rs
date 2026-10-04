@@ -12,39 +12,47 @@
 //! A frame, in `CORE.md` §16's order, through `runtime::frame`:
 //!
 //! 1. **Input**: the window host's signals for the frame (ADR-0031) sampled
-//!    once into an [`controls::Intent`].
+//!    once into an [`Intent`]. The player is handed only its
+//!    [`Intent::walk`]; exit and the held count stay with the frame loop.
 //! 2. **Simulation**: the fixed steps the real time since the last frame
-//!    buys ([`FrameSchedule`]): the world clock advances one tick a step, and
-//!    the camera moves by the intent for each step.
-//! 3. **Render prep**: the render origin follows the camera (ADR-0029), the
-//!    camera is sampled, and the frame is recorded by the first render pass
+//!    buys ([`FrameSchedule`]): the world clock advances one tick a step.
+//! 3. **Physics**: the player (ADR-0035) — a character body the simulation
+//!    steers — runs one tick for each of those steps, against one view of
+//!    the world built for the frame. Nothing edits the client's world, so a
+//!    tick that had to push the body out of terrain is a defect, not a fix.
+//! 4. **Render prep**: the camera is made from the player's eye, and never
+//!    the other way round; the render origin follows it (ADR-0029), it is
+//!    sampled, and the frame is recorded by the first render pass
 //!    (ADR-0030).
-//! 4. **Render**: one submission, and the frame presented to the window. The
+//! 5. **Render**: one submission, and the frame presented to the window. The
 //!    part of it the backend spent blocked handing the frame to the window
 //!    system (`WgpuRhi::last_present_wait`) is declared as presentation's,
 //!    so the budget classifies the frame's work, not the monitor's refresh.
 //!
 //! The time between frames is measured with the host's clock and handed in;
 //! the loop itself still reads no clock (ADR-0017). This is the first process
-//! that runs `runtime::frame` against a real clock (DEBT-0041).
+//! that runs `runtime::frame` against a real clock (DEBT-0041). A step is one
+//! world tick, and the client refuses to start if the calendar says
+//! otherwise: the player's physics is paced by ticks, and a step that was not
+//! one would walk it at the wrong speed in silence.
 //!
-//! The first frame shown is read back from the surface and, after the window
-//! closes, checked against the CPU ray cast (`nexora_render::reference`) over
-//! every drawn column: the client does not claim to draw the world unless the
-//! pixels say so.
+//! The first frame shown — from the player's eye, before any step — is read
+//! back from the surface and, after the window closes, checked against the
+//! CPU ray cast (`nexora_render::reference`) over every drawn column: the
+//! client does not claim to draw the world unless the pixels say so.
 //!
 //! Not built: streaming into the pass (the world is generated and meshed
-//! before the first frame), textures, pointer look, a player body, physics in
-//! the frame, audio. The frame budget is the arithmetic
-//! [`FrameBudget::doubling_from`] the step, not a measured one.
+//! before the first frame), textures, pointer look, interpolation between
+//! ticks (DEBT-0049), the player as an entity or in the save (DEBT-0050),
+//! audio. The frame budget is the arithmetic [`FrameBudget::doubling_from`]
+//! the step, not a measured one.
 
-pub mod controls;
 pub mod scene;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexora_camera::{Camera, RenderOrigin};
+use nexora_camera::{Camera, Projection, RenderOrigin};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::time::{CalendarConfig, TimeScale};
@@ -59,13 +67,14 @@ use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
-use nexora_simulation::WorldSurfaces;
+use nexora_simulation::{
+    Controls, Eye, Intent, PhysicsModule, Player, PlayerState, WorldSurfaces, WorldVoxels,
+};
 use nexora_window::input::InputCounts;
 use nexora_window::{run, Client, Flow, WindowFacts, WindowSpec};
 use nexora_world::persist;
 use nexora_world::world::{World, WorldDescriptor};
 
-use crate::controls::{Controls, Intent};
 use crate::scene::Scene;
 
 /// The window's title.
@@ -185,12 +194,25 @@ pub struct ClientReport {
     /// Frames in which at least one client action was held.
     pub active_frames: u64,
     /// Where the camera went: forward, right and up of where it started, in
-    /// the starting camera's horizontal frame, and how far it turned.
+    /// the starting camera's horizontal frame, and how far it turned. The
+    /// camera is the player's eye, so this is the eye's path as drawn.
     pub moved: [f64; 3],
     /// Yaw turned, in degrees.
     pub turned: f64,
+    /// What the player's body did, read from the body rather than the camera.
+    pub player: PlayerSummary,
     /// The flushed world's size, and where it was written.
     pub flushed: (usize, Option<PathBuf>),
+}
+
+/// What the player's body did over a run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerSummary {
+    /// Where the feet went: forward, right and up of where they started, in
+    /// the spawn facing's horizontal frame.
+    pub walked: [f64; 3],
+    /// Whether the body ended the run standing on something.
+    pub grounded: bool,
 }
 
 /// Start the runtime in client mode, run it until it ends, and shut it down.
@@ -227,10 +249,13 @@ fn run_in(
     log(diagnostics, "runtime foundation initialized");
 
     // --- modules: the headless graph, with the renderer on its side ---------
+    // Physics runs inside the frame now (the player), so it is in the graph,
+    // after the world it collides against.
     let mut modules = ModuleManager::new();
     modules.register(Box::new(FoundationModule))?;
     modules.register(Box::new(WorldModule))?;
     modules.register(Box::new(RendererModule))?;
+    modules.register(Box::new(PhysicsModule))?;
     lifecycle.advance_to(Phase::ModuleDiscovery)?;
     modules.resolve(RuntimeMode::Client)?;
     lifecycle.advance_to(Phase::ModuleResolution)?;
@@ -247,21 +272,46 @@ fn run_in(
     // --- world --------------------------------------------------------------
     let descriptor = WorldDescriptor::new("nexora-client", config.seed)?;
     let mut world = World::create(descriptor, CalendarConfig::earthlike())?;
+    let ticks_per_second = world.clock().calendar().ticks_per_second();
+    if ticks_per_second == 0 || STEP != Duration::from_secs(1) / ticks_per_second {
+        return Err(Error::new(
+            Domain::Time,
+            "client",
+            "the frame loop's step is not one world tick",
+        )
+        .with_recovery(Recovery::Manual)
+        .with_context("step", format!("{STEP:?}"))
+        .with_context("ticks_per_second", ticks_per_second.to_string()));
+    }
     lifecycle.advance_to(Phase::WorldAttach)?;
     world.bring_online()?;
     lifecycle.advance_to(Phase::SimulationRunning)?;
     let scene = scene::build(&mut world, config.radius)?;
     log(diagnostics, "world generated and meshed");
 
+    // --- the player ---------------------------------------------------------
+    // On the first column of a run the scene found, at rest before the first
+    // frame, so that frame shows - and is judged from - the eye it starts at.
+    let player = Player::spawn(
+        &WorldVoxels::new(&world),
+        &scene.spawn,
+        scene::SPAWN_PITCH,
+        ticks_per_second,
+    )?;
+    let start = player.state();
+    log(diagnostics, "player spawned and at rest");
+
     // --- presentation -------------------------------------------------------
-    let start_camera = scene.camera;
+    let start_camera = camera_at(player.eye(), scene.projection)?;
     let mut presentation = Presentation {
         world: &mut world,
         lifecycle,
         scene: &scene,
         controls: Controls::new()?,
-        camera: scene.camera,
-        origin: RenderOrigin::containing(scene.camera.position())?,
+        player,
+        projection: scene.projection,
+        camera: start_camera,
+        origin: RenderOrigin::containing(start_camera.position())?,
         frame_loop: FrameLoop::new(
             FrameSchedule::new(STEP, MAX_STEPS)?,
             FrameBudget::doubling_from(STEP),
@@ -281,10 +331,18 @@ fn run_in(
     let session = run(&spec, &mut presentation)?;
     let Presentation {
         camera,
+        player,
+        projection,
         tally,
         adapter,
         ..
     } = presentation;
+    // The camera is derived from the eye and never written back; a run in
+    // which they part ways drew something the player was not looking at.
+    if camera != camera_at(player.eye(), projection)? {
+        return Err(wrong("the camera is not the player's eye"));
+    }
+    let now = player.state();
     let ending = if session.closed {
         Ending::WindowClosed
     } else {
@@ -373,8 +431,24 @@ fn run_in(
         active_frames: tally.active_frames,
         moved: displacement(&start_camera, &camera),
         turned: (camera.yaw() - start_camera.yaw()).to_degrees(),
+        player: PlayerSummary {
+            walked: walked(&start, &now),
+            grounded: now.grounded,
+        },
         flushed: (flushed, config.save.clone()),
     })
+}
+
+/// The camera at the player's eye: made from it every frame, never read
+/// back (`CAMERA SYSTEM.md`: the camera owns no gameplay transform).
+///
+/// # Errors
+///
+/// The eye is not finite, or the projection is invalid.
+fn camera_at(eye: Eye, projection: Projection) -> Result<Camera> {
+    let mut camera = Camera::new(eye.position, projection)?;
+    camera.set_orientation(eye.yaw, eye.pitch)?;
+    Ok(camera)
 }
 
 /// Pixels judged per snapped edge tolerated in the first frame.
@@ -403,8 +477,20 @@ pub fn frame_holds(check: &FrameCheck) -> bool {
 /// horizontal frame.
 fn displacement(start: &Camera, now: &Camera) -> [f64; 3] {
     let (a, b) = (start.position(), now.position());
-    let d = [b.x - a.x, b.y - a.y, b.z - a.z];
-    let (sin_yaw, cos_yaw) = start.yaw().sin_cos();
+    in_frame(start.yaw(), [b.x - a.x, b.y - a.y, b.z - a.z])
+}
+
+/// Where the feet went from `start` to `now`: forward, right and up in the
+/// horizontal frame the player faced at `start`.
+fn walked(start: &PlayerState, now: &PlayerState) -> [f64; 3] {
+    let (a, b) = (start.feet, now.feet);
+    in_frame(start.yaw, [b.x - a.x, b.y - a.y, b.z - a.z])
+}
+
+/// A world offset as forward, right and up for a facing of `yaw`: forward
+/// is `(-sin, -cos)` and right `(cos, -sin)` in x and z.
+fn in_frame(yaw: f64, d: [f64; 3]) -> [f64; 3] {
+    let (sin_yaw, cos_yaw) = yaw.sin_cos();
     [
         -sin_yaw * d[0] - cos_yaw * d[2],
         cos_yaw * d[0] - sin_yaw * d[2],
@@ -456,6 +542,10 @@ struct Presentation<'a> {
     lifecycle: &'a mut Lifecycle,
     scene: &'a Scene,
     controls: Controls,
+    /// The player the keys steer, which owns where the view is.
+    player: Player,
+    projection: Projection,
+    /// The player's eye as a camera: derived each frame, never written back.
     camera: Camera,
     origin: RenderOrigin,
     frame_loop: FrameLoop,
@@ -535,21 +625,44 @@ impl Client for Presentation<'_> {
         let mut frame = self.frame_loop.begin(elapsed);
         let plan = frame.plan();
 
-        // Input.
+        // Input: one sample; the player gets the walk and nothing else.
         let clock = Instant::now();
         let intent: Intent = self.controls.sample(&std::mem::take(&mut self.pending));
+        let walk = intent.walk();
         frame.record(FrameStage::Input, clock.elapsed())?;
 
-        // Simulation: the steps real time bought.
+        // Simulation: the steps real time bought, each one world tick.
         let clock = Instant::now();
         for _ in 0..plan.steps {
             self.world.clock_mut().advance_by(TimeScale::Tick, 1)?;
-            controls::step(&mut self.camera, intent, STEP)?;
         }
         frame.record(FrameStage::Simulation, clock.elapsed())?;
 
-        // Render prep: the origin follows the camera, the pass is recorded.
+        // Physics: the player, one tick for each step, against one view of
+        // the world built after the clock has moved (the clock needs the
+        // world mutably; the view borrows it).
+        if plan.steps > 0 {
+            let clock = Instant::now();
+            let terrain = WorldVoxels::new(&*self.world);
+            for _ in 0..plan.steps {
+                let outcome = self.player.tick(&terrain, walk)?;
+                if outcome.depenetrated > 0 {
+                    return Err(Error::new(
+                        Domain::Physics,
+                        "client",
+                        "the player was pushed out of terrain that nothing edited",
+                    )
+                    .with_recovery(Recovery::Manual)
+                    .with_context("substeps", outcome.depenetrated.to_string()));
+                }
+            }
+            frame.record(FrameStage::Physics, clock.elapsed())?;
+        }
+
+        // Render prep: the camera is the player's eye, the origin follows
+        // it, the pass is recorded.
         let clock = Instant::now();
+        self.camera = camera_at(self.player.eye(), self.projection)?;
         self.origin = self.origin.follow(self.camera.position())?;
         let state = self.camera.sample(self.origin, live.width, live.height)?;
         let mut list = CommandList::new("client frame");
@@ -740,6 +853,17 @@ pub fn format_report(report: &ClientReport) -> String {
         tidy(report.moved[2]),
         tidy(report.turned)
     ));
+    out.push_str(&format!(
+        "player             walked {:.2} forward, {:.2} right, {:.2} up, {}\n",
+        tidy(report.player.walked[0]),
+        tidy(report.player.walked[1]),
+        tidy(report.player.walked[2]),
+        if report.player.grounded {
+            "grounded"
+        } else {
+            "airborne"
+        }
+    ));
     match &report.flushed.1 {
         Some(path) => out.push_str(&format!(
             "world flush        {} bytes, written to {}\n",
@@ -849,8 +973,171 @@ fn wrong(message: &'static str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexora_camera::Projection;
     use nexora_foundation::spatial::WorldPosition;
+    use nexora_foundation::time::DEFAULT_TICKS_PER_SECOND;
+    use nexora_runtime::input::{ButtonCode, DeviceId, DeviceKind, Signal};
+    use nexora_simulation::player::{EYE_HEIGHT, MAX_PITCH};
+    use nexora_simulation::{Walk, DEFAULT_KEYS};
+
+    /// The default seed's world, its scene, and the player standing in it.
+    fn the_default_scene() -> (World, Scene, Player) {
+        let mut world = World::create(
+            WorldDescriptor::new("nexora-client", ClientConfig::default().seed).unwrap(),
+            CalendarConfig::earthlike(),
+        )
+        .unwrap();
+        world.bring_online().unwrap();
+        let scene = scene::build(&mut world, ClientConfig::default().radius).unwrap();
+        let player = Player::spawn(
+            &WorldVoxels::new(&world),
+            &scene.spawn,
+            scene::SPAWN_PITCH,
+            DEFAULT_TICKS_PER_SECOND,
+        )
+        .unwrap();
+        (world, scene, player)
+    }
+
+    const KEYBOARD: DeviceId = DeviceId::new(DeviceKind::Keyboard, 0);
+
+    /// The table is HID usages, the numbers the window host hands in: checked
+    /// against the host's own translation, so the two cannot drift.
+    #[test]
+    fn the_default_keys_are_the_hosts_hid_usages() {
+        use nexora_window::input::key_usage;
+        use winit::keyboard::KeyCode as K;
+        let keys = [
+            K::KeyW,
+            K::KeyS,
+            K::KeyA,
+            K::KeyD,
+            K::Space,
+            K::ArrowLeft,
+            K::ArrowRight,
+            K::ArrowUp,
+            K::ArrowDown,
+            K::Escape,
+        ];
+        assert_eq!(keys.len(), DEFAULT_KEYS.len());
+        for ((path, usage), key) in DEFAULT_KEYS.iter().zip(keys) {
+            assert_eq!(key_usage(key), Some(ButtonCode(*usage)), "{path}");
+        }
+    }
+
+    /// A camera made from the eye must never clamp what the player decided,
+    /// and a frame step must be one world tick, or the player walks at the
+    /// wrong speed.
+    #[test]
+    fn the_pitch_limits_agree_and_the_step_is_one_tick() {
+        assert_eq!(MAX_PITCH.to_bits(), nexora_camera::MAX_PITCH.to_bits());
+        assert_eq!(STEP, Duration::from_secs(1) / DEFAULT_TICKS_PER_SECOND);
+    }
+
+    /// The eye is 0.18 below the top of the body's box and 0.3 from any wall
+    /// it touches; the near plane's corner is closer than both, so nothing
+    /// the body can touch is clipped away.
+    #[test]
+    fn the_eye_clears_the_near_plane() {
+        let near: f64 = 0.1;
+        let half_height = near * (35f64.to_radians()).tan();
+        let half_width = half_height * 384.0 / 256.0;
+        let corner = (near * near + half_height * half_height + half_width * half_width).sqrt();
+        assert!((corner - 0.161).abs() < 1e-3, "{corner}");
+        assert!(
+            1.8 - EYE_HEIGHT > corner,
+            "{} above the eye",
+            1.8 - EYE_HEIGHT
+        );
+        assert!(0.3 > corner);
+    }
+
+    /// What CI's `camera moved [1-9]... forward` grep rests on, proved without
+    /// a display: one second of W, sampled through the controls the window
+    /// feeds, walks the default seed's player 3.8 to 4.3 blocks forward, and
+    /// the camera made from its eye says the same.
+    #[test]
+    fn holding_w_for_a_second_walks_the_default_seed_forward() {
+        let (world, scene, mut player) = the_default_scene();
+        let terrain = WorldVoxels::new(&world);
+        let mut controls = Controls::new().unwrap();
+        let start = player.state();
+        let start_camera = camera_at(player.eye(), scene.projection).unwrap();
+        for tick in 0..DEFAULT_TICKS_PER_SECOND {
+            let frame = if tick == 0 {
+                InputFrame::new()
+                    .with(Signal::Attached(KEYBOARD))
+                    .with(Signal::button(KEYBOARD, ButtonCode(0x1A), true))
+            } else {
+                InputFrame::new()
+            };
+            let walk = controls.sample(&frame).walk();
+            assert_eq!(walk.forward, 1.0, "tick {tick}: W is held");
+            player.tick(&terrain, walk).unwrap();
+        }
+        let [forward, right, _] = walked(&start, &player.state());
+        assert!((3.8..=4.3).contains(&forward), "walked {forward}");
+        assert!(right.abs() < 1e-6, "drifted {right}");
+        let camera = camera_at(player.eye(), scene.projection).unwrap();
+        let seen = displacement(&start_camera, &camera)[0];
+        assert!((seen - forward).abs() < 1e-12, "{seen} against {forward}");
+    }
+
+    #[test]
+    fn the_camera_is_the_players_eye() {
+        let (world, scene, mut player) = the_default_scene();
+        let terrain = WorldVoxels::new(&world);
+        let script = [
+            (
+                10,
+                Walk {
+                    forward: 1.0,
+                    ..Walk::default()
+                },
+            ),
+            (
+                10,
+                Walk {
+                    forward: 1.0,
+                    turn: 1.0,
+                    ..Walk::default()
+                },
+            ),
+            (
+                5,
+                Walk {
+                    look: 1.0,
+                    turn: -1.0,
+                    ..Walk::default()
+                },
+            ),
+        ];
+        for (ticks, walk) in script {
+            for _ in 0..ticks {
+                player.tick(&terrain, walk).unwrap();
+                let eye = player.eye();
+                let camera = camera_at(eye, scene.projection).unwrap();
+                let (at, from) = (camera.position(), eye.position);
+                assert_eq!(
+                    [at.x.to_bits(), at.y.to_bits(), at.z.to_bits()],
+                    [from.x.to_bits(), from.y.to_bits(), from.z.to_bits()]
+                );
+                assert_eq!(camera.pitch().to_bits(), eye.pitch.to_bits());
+                assert!((camera.yaw() - eye.yaw).abs() < 1e-12);
+                // Made from its own state, the camera is the camera again:
+                // nothing is lost or added on the way through.
+                let again = camera_at(
+                    Eye {
+                        position: camera.position(),
+                        yaw: camera.yaw(),
+                        pitch: camera.pitch(),
+                    },
+                    scene.projection,
+                )
+                .unwrap();
+                assert_eq!(again, camera);
+            }
+        }
+    }
 
     #[test]
     fn displacement_is_in_the_starting_cameras_frame() {
@@ -889,24 +1176,36 @@ mod tests {
     }
 
     /// The client's module graph initializes the renderer, which headless
-    /// skips: the same modules, a different side.
+    /// skips: the same modules, a different side. Physics is in both, after
+    /// the world, and sorts before the renderer — which CI's
+    /// `modules .*nexora:module/renderer$` grep relies on.
     #[test]
     fn the_renderer_initializes_in_client_mode_only() {
-        for (mode, expected) in [(RuntimeMode::Client, 3), (RuntimeMode::Headless, 2)] {
+        for (mode, expected) in [(RuntimeMode::Client, 4), (RuntimeMode::Headless, 3)] {
             let mut modules = ModuleManager::new();
             modules.register(Box::new(FoundationModule)).unwrap();
             modules.register(Box::new(WorldModule)).unwrap();
             modules.register(Box::new(RendererModule)).unwrap();
+            modules.register(Box::new(PhysicsModule)).unwrap();
             modules.resolve(mode).unwrap();
             modules
                 .initialize_all(&ModuleContext::new(mode, Diagnostics::silent()))
                 .unwrap();
-            assert_eq!(
-                modules.resolved_order().len(),
-                expected,
-                "{}",
-                mode.as_str()
-            );
+            let order: Vec<String> = modules
+                .resolved_order()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(order.len(), expected, "{}", mode.as_str());
+            let physics = order.iter().position(|id| id == "nexora:module/physics");
+            assert!(physics.is_some(), "{order:?}");
+            if mode == RuntimeMode::Client {
+                assert_eq!(
+                    order.last().map(String::as_str),
+                    Some("nexora:module/renderer")
+                );
+                assert!(physics < order.iter().position(|id| id == "nexora:module/renderer"));
+            }
         }
     }
 

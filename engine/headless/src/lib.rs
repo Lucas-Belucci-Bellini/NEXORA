@@ -11,6 +11,7 @@
 //!   -> generate chunks in parallel through the job system
 //!   -> mutate voxels
 //!   -> drop a character onto the terrain and simulate it
+//!   -> walk a player by scripted keys: walk, jump, stop at a wall, turn
 //!   -> walk an observer away and back, streaming chunks out and in
 //!   -> advance the world clock
 //!   -> save
@@ -78,8 +79,8 @@ use nexora_runtime::module::{
 use nexora_simulation::queries::WORLD_QUERY_VERSION;
 use nexora_simulation::WorldQueries;
 use nexora_simulation::{
-    BlockContent, PhysicsModule, RetainedChunks, WorldResidency, WorldSurfaces, WorldVoxels,
-    UNMAPPED_SURFACE,
+    find_walkable_run, BlockContent, Cardinal, ColumnArea, Controls, PhysicsModule, Player,
+    PlayerState, RetainedChunks, WorldResidency, WorldSurfaces, WorldVoxels, UNMAPPED_SURFACE,
 };
 use nexora_streaming::budget::StreamingBudget;
 use nexora_streaming::interest::{InterestId, InterestSource, LodRadii};
@@ -172,6 +173,17 @@ pub struct SliceReport {
     pub physics_settled: usize,
     /// How far the dropped character fell before landing, in centimetres.
     pub physics_drop_cm: i64,
+    /// World ticks the scripted player ran, every leg included.
+    pub player_ticks: u64,
+    /// How far the player walked forward in twelve ticks of W, in
+    /// centimetres.
+    pub player_walked_cm: i64,
+    /// How high one tap of Space lifted the player's feet, in centimetres.
+    pub player_rose_cm: i64,
+    /// How far from the wall at the end of its run the player's centre — its
+    /// eye — stopped, in centimetres: the body's half-width when its leading
+    /// face is flush with the wall.
+    pub player_stop_cm: i64,
     /// Streaming ticks run while the observer walked away and back.
     pub streaming_ticks: u32,
     /// Frames the walk ran through the engine's frame loop.
@@ -460,6 +472,17 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         .add("physics.substeps", u64::from(physics.substeps));
     log(&diagnostics, "physics settled");
 
+    // --- the player --------------------------------------------------------
+    // ADR-0035's player, driven by scripted keys through the client's own
+    // table. It reads the world and never writes it, opens no memory pool
+    // and does not advance the world clock, so the save below is unaffected.
+    let walked = walk_a_player(&world, config.radius, &diagnostics)?;
+    diagnostics.counters().add("player.ticks", walked.ticks);
+    log(
+        &diagnostics,
+        "player walked, jumped, stopped at a wall and turned",
+    );
+
     // --- streaming ---------------------------------------------------------
     // Walks an observer away from the edited region and back. Everything the
     // walk touches is regenerable except the columns edited above, so this is
@@ -668,6 +691,10 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         physics_contacts: physics.contacts,
         physics_settled: physics.settled,
         physics_drop_cm: physics.drop_cm,
+        player_ticks: walked.ticks,
+        player_walked_cm: walked.walked_cm,
+        player_rose_cm: walked.rose_cm,
+        player_stop_cm: walked.stop_cm,
         streaming_ticks: streaming.ticks,
         frames: streaming.frames,
         frame_steps: streaming.steps,
@@ -1371,6 +1398,13 @@ pub fn format_report(report: &SliceReport) -> String {
         report.physics_drop_cm
     ));
     out.push_str(&format!(
+        "player             walked {:.2} in {PLAYER_WALK_TICKS} ticks, rose {:.2}, stopped {:.2} from a wall, {} ticks in all\n",
+        report.player_walked_cm as f64 / 100.0,
+        report.player_rose_cm as f64 / 100.0,
+        report.player_stop_cm as f64 / 100.0,
+        report.player_ticks
+    ));
+    out.push_str(&format!(
         "streaming ticks    {} ({} generated, {} evicted, {} restored)\n",
         report.streaming_ticks,
         report.streaming_generated,
@@ -2046,6 +2080,293 @@ fn simulate_physics(world: &World, diagnostics: &Diagnostics) -> Result<PhysicsO
         settled,
         drop_cm,
     })
+}
+
+/// The shortest run the scripted player starts on: twelve ticks of W cover
+/// about 2.5 blocks, and four columns give 3.2 ahead of the body's face.
+const PLAYER_RUN: u32 = 4;
+
+/// Ticks of W in the walking leg.
+const PLAYER_WALK_TICKS: u64 = 12;
+
+/// Blocks of air above the highest generated surface the run search reads.
+///
+/// The search reads each column down from this ceiling, so it must sit above
+/// the terrain and below the slice's edits in the sky (y = 200 and up): a
+/// block hanging there is not the ground.
+const PLAYER_CEILING_MARGIN: i64 = 8;
+
+/// The HID usages the scripted player presses (the client's table).
+const KEY_W: u16 = 0x1A;
+const KEY_SPACE: u16 = 0x2C;
+const KEY_LEFT: u16 = 0x50;
+
+/// Most ticks a leg may wait for the player to stand still.
+const PLAYER_SETTLE_LIMIT: u32 = 100;
+
+/// What the player stage observed.
+struct PlayerOutcome {
+    ticks: u64,
+    walked_cm: i64,
+    rose_cm: i64,
+    stop_cm: i64,
+}
+
+/// A player driven one frame per world tick by scripted keys, through the
+/// same table and the same sampling the client's window feeds.
+struct ScriptedPlayer<'a> {
+    terrain: WorldVoxels<'a>,
+    player: Player,
+    controls: Controls,
+    keyboard: DeviceId,
+    attached: bool,
+    ticks: u64,
+}
+
+impl ScriptedPlayer<'_> {
+    /// One frame: `keys` go down (`true`) or up (`false`), then one tick.
+    fn frame(&mut self, keys: &[(u16, bool)]) -> Result<PlayerState> {
+        let mut signals = InputFrame::new();
+        if !self.attached {
+            // The host reports its devices before the player uses them.
+            signals.push(Signal::Attached(self.keyboard));
+            self.attached = true;
+        }
+        for &(usage, pressed) in keys {
+            signals.push(Signal::button(self.keyboard, ButtonCode(usage), pressed));
+        }
+        let walk = self.controls.sample(&signals).walk();
+        let outcome = self.player.tick(&self.terrain, walk)?;
+        self.ticks += 1;
+        if outcome.depenetrated > 0 {
+            return Err(player_failure(
+                "the player was pushed out of terrain the stage does not edit",
+            ));
+        }
+        Ok(self.player.state())
+    }
+
+    /// Frames with no key change until a tick leaves the player grounded and
+    /// identical to the bit: standing still, wherever the last leg left it.
+    fn settle(&mut self) -> Result<PlayerState> {
+        let mut before = self.player.state();
+        for _ in 0..PLAYER_SETTLE_LIMIT {
+            let now = self.frame(&[])?;
+            if now.grounded && now.is_bit_identical(&before) {
+                return Ok(now);
+            }
+            before = now;
+        }
+        Err(
+            player_failure("the player did not come to rest between legs")
+                .with_context("ticks", PLAYER_SETTLE_LIMIT.to_string()),
+        )
+    }
+}
+
+/// How far `to` is from `from` along `facing`, and across it.
+fn along(facing: Cardinal, from: &PlayerState, to: &PlayerState) -> (f64, f64) {
+    let (dx, dz) = facing.step();
+    let (x, z) = (to.feet.x - from.feet.x, to.feet.z - from.feet.z);
+    (x * dx as f64 + z * dz as f64, x * dz as f64 - z * dx as f64)
+}
+
+/// Walk ADR-0035's player through the slice's terrain by scripted keys.
+///
+/// This is `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md` §17's *player
+/// movement*, proved where only the generator can show it: on white-noise
+/// terrain, through the client's own key table, a frame a tick. The player
+/// spawns on the first run of four walkable columns found from the centre of
+/// the generated area — whose edge is the unloaded wall — and then:
+///
+/// 1. **stands** for ten ticks with no key, unmoved to the bit;
+/// 2. **walks**: W for twelve ticks, 0.19 to 0.215 blocks a tick forward
+///    (slower in the air than on the ground) and no drift across;
+/// 3. **jumps**: Space tapped once, rising 1.10 to 1.35 blocks and landing
+///    exactly where it took off;
+/// 4. **stops at a wall**: W until it stops making progress, which must be
+///    with its leading face flush with the end of its run;
+/// 5. **turns**: the left arrow for twenty ticks, a quarter turn to 1e-9,
+///    the feet unmoved to the bit.
+///
+/// Between legs it is let come to rest. Every tick must be clean — never
+/// buried, never inside terrain, never pushed out of it. It reads the world
+/// and nothing else: no pool, no clock, no write.
+fn walk_a_player(world: &World, radius: i64, diagnostics: &Diagnostics) -> Result<PlayerOutcome> {
+    let shape = world.descriptor().shape;
+    let (sx, sz) = (i64::from(shape.size_x()), i64::from(shape.size_z()));
+    let (min_x, max_x) = (-radius * sx, (radius + 1) * sx);
+    let (min_z, max_z) = (-radius * sz, (radius + 1) * sz);
+    let mut high = i64::MIN;
+    for x in min_x..max_x {
+        for z in min_z..max_z {
+            high = high.max(world.surface_height(x, z));
+        }
+    }
+    let area = ColumnArea {
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+        floor_y: world.descriptor().bounds.min_y,
+        ceiling_y: high + PLAYER_CEILING_MARGIN,
+    };
+    let terrain = WorldVoxels::new(world);
+    let run = find_walkable_run(&terrain, &area, PLAYER_RUN)?;
+    let player = Player::spawn(
+        &terrain,
+        &run,
+        0.0,
+        world.clock().calendar().ticks_per_second(),
+    )?;
+    let mut scripted = ScriptedPlayer {
+        terrain,
+        player,
+        controls: Controls::new()?,
+        keyboard: DeviceId::new(DeviceKind::Keyboard, 0),
+        attached: false,
+        ticks: 0,
+    };
+    let facing = run.facing;
+
+    // 1. Stand: no key, no movement, to the bit.
+    let spawned = scripted.player.state();
+    for _ in 0..10 {
+        if !scripted.frame(&[])?.is_bit_identical(&spawned) {
+            return Err(player_failure("a player with no key held moved"));
+        }
+    }
+
+    // 2. Walk: twelve ticks of W.
+    let before = scripted.player.state();
+    scripted.frame(&[(KEY_W, true)])?;
+    for _ in 1..PLAYER_WALK_TICKS {
+        scripted.frame(&[])?;
+    }
+    let (forward, across) = along(facing, &before, &scripted.player.state());
+    let ticks = PLAYER_WALK_TICKS as f64;
+    if !(0.19 * ticks..=0.215 * ticks).contains(&forward) || across.abs() >= 1e-6 {
+        return Err(
+            player_failure("twelve ticks of W did not walk the player forward")
+                .with_context("forward", format!("{forward:.6}"))
+                .with_context("across", format!("{across:e}")),
+        );
+    }
+    scripted.frame(&[(KEY_W, false)])?;
+    let landed = scripted.settle()?;
+
+    // 3. Jump: Space tapped once.
+    let mut apex = scripted.frame(&[(KEY_SPACE, true)])?.feet.y;
+    let mut now = scripted.frame(&[(KEY_SPACE, false)])?;
+    apex = apex.max(now.feet.y);
+    let mut airborne = 0;
+    while !now.grounded {
+        airborne += 1;
+        if airborne > PLAYER_SETTLE_LIMIT {
+            return Err(player_failure("the player jumped and never came down"));
+        }
+        now = scripted.frame(&[])?;
+        apex = apex.max(now.feet.y);
+    }
+    let rose = apex - landed.feet.y;
+    let same = |a: f64, b: f64| a.to_bits() == b.to_bits();
+    if !(1.10..=1.35).contains(&rose)
+        || !same(now.feet.y, landed.feet.y)
+        || !same(now.feet.x, landed.feet.x)
+        || !same(now.feet.z, landed.feet.z)
+    {
+        return Err(
+            player_failure("a jump did not rise about a block and land where it began")
+                .with_context("rose", format!("{rose:.6}"))
+                .with_context("took_off", format!("{:?}", landed.feet))
+                .with_context("landed", format!("{:?}", now.feet)),
+        );
+    }
+    scripted.settle()?;
+
+    // 4. Stop at the wall: W until ten grounded ticks make no progress.
+    let limit = (f64::from(run.length + 1) / 0.19).ceil() as u64 + 20;
+    let mut last = scripted.frame(&[(KEY_W, true)])?;
+    let mut still = 0;
+    let mut held = 1;
+    while still < 10 {
+        held += 1;
+        if held > limit {
+            return Err(
+                player_failure("the player never stopped at the end of its run")
+                    .with_context("ticks", limit.to_string()),
+            );
+        }
+        let now = scripted.frame(&[])?;
+        let (progress, _) = along(facing, &last, &now);
+        still = if now.grounded && progress.abs() < 1e-9 {
+            still + 1
+        } else {
+            0
+        };
+        last = now;
+    }
+    let (dx, dz) = facing.step();
+    let centre = if dx != 0 { last.feet.x } else { last.feet.z };
+    let sign = (dx + dz) as f64;
+    let leading_face = centre + 0.3 * sign;
+    if (leading_face - run.end_plane as f64).abs() >= 1e-6 {
+        return Err(
+            player_failure("the player stopped short of the end of its run, or past it")
+                .with_context("leading_face", format!("{leading_face:.9}"))
+                .with_context("end_plane", run.end_plane.to_string()),
+        );
+    }
+    let stop = (run.end_plane as f64 - centre).abs();
+    scripted.frame(&[(KEY_W, false)])?;
+    let stopped = scripted.settle()?;
+
+    // 5. Turn: twenty ticks of the left arrow, a quarter turn.
+    scripted.frame(&[(KEY_LEFT, true)])?;
+    for _ in 1..20 {
+        scripted.frame(&[])?;
+    }
+    let turned = scripted.player.state();
+    scripted.frame(&[(KEY_LEFT, false)])?;
+    let wrap = |angle: f64| {
+        let wrapped = angle.rem_euclid(2.0 * std::f64::consts::PI);
+        if wrapped > std::f64::consts::PI {
+            wrapped - 2.0 * std::f64::consts::PI
+        } else {
+            wrapped
+        }
+    };
+    let off = wrap(turned.yaw - (stopped.yaw + std::f64::consts::FRAC_PI_2));
+    let unmoved = [
+        same(turned.feet.x, stopped.feet.x),
+        same(turned.feet.y, stopped.feet.y),
+        same(turned.feet.z, stopped.feet.z),
+    ];
+    if off.abs() >= 1e-9 || unmoved.contains(&false) {
+        return Err(player_failure(
+            "twenty ticks of the left arrow were not a quarter turn on the spot",
+        )
+        .with_context("off_by", format!("{off:e}"))
+        .with_context("feet", format!("{:?} from {:?}", turned.feet, stopped.feet)));
+    }
+
+    diagnostics.log(
+        Level::Debug,
+        Category::World,
+        "slice/player",
+        "the scripted player walked its legs on generated terrain",
+    );
+    let centimetres = |metres: f64| (metres * 100.0).round() as i64;
+    Ok(PlayerOutcome {
+        ticks: scripted.ticks,
+        walked_cm: centimetres(forward),
+        rose_cm: centimetres(rose),
+        stop_cm: centimetres(stop),
+    })
+}
+
+fn player_failure(message: &'static str) -> Error {
+    Error::new(Domain::Physics, "slice/player", message).with_recovery(Recovery::Manual)
 }
 
 /// A world time helper used by the binary's summary output.

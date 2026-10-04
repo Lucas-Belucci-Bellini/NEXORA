@@ -129,6 +129,9 @@ jobs:
           grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^frames             [0-9]* shown, ended by exit key$' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^camera             moved [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
+          # And it was the player that moved, by walking: the camera only
+          # follows its eye (ADR-0035).
+          grep '^player             walked [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
@@ -144,6 +147,10 @@ jobs:
           # The RHI's null backend, held to the suite every backend must pass,
           # with no GPU initialized (ADR-0025). Its pool is the third above.
           grep '^rhi                null backend, conformance 11/11 cases, no GPU initialized$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # A player walks, jumps, turns and stops at a wall, deterministically
+          # (ADR-0035).
+          grep '^player             walked [1-9]\.[0-9]* in 12 ticks, rose 1\.[0-9]*, stopped 0\.30 from a wall, [0-9]* ticks in all$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones and five terrain materials must register, show its own surface in a mesh, and survive
@@ -175,6 +182,9 @@ jobs:
           # The camera stage (ADR-0029) checks its target lands mid-screen and
           # that culling keeps some columns and drops others before timing.
           grep '^camera.sample ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # Player movement, the stage the language gate names (ADR-0035): its
+          # route was checked before it was timed.
+          grep '^player.walk_route ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^camera.visible_columns_r12 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           # Frame time: the first render pass draws the meshed 16³ region
           # through the camera; the frame matched a CPU ray cast before timing.

@@ -129,6 +129,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::worldgen(coarse)?);
     measurements.extend(suites::entities(coarse)?);
     measurements.extend(suites::physics(coarse)?);
+    measurements.extend(suites::player(coarse)?);
     measurements.extend(suites::streaming(coarse, &options.scratch)?);
     measurements.extend(suites::jobs(coarse)?);
     measurements.extend(suites::frame(standard)?);
