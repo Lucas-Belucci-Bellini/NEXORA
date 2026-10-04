@@ -270,6 +270,9 @@ engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,
                      batch manifests, build plans, INDEX
+tools/catalog-digest the catalog's digest columns, in Python (stdlib only),
+                     over a versioned stdin/stdout contract: the language
+                     gate's cross-language tool call
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
 benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)
@@ -322,12 +325,16 @@ on the operator's RX 6650 XT
 ([Appendices K and O](docs/benchmarks/PHASE-0-BASELINE.md)). What is left is an
 engine-scale comparison, which a kernel reference is explicitly not (ADR-0009)
 — nine pieces of arithmetic say nothing about allocation, cache behaviour at
-scale, or threading — and three stages the gate's documents name and nothing
-builds: player movement, one cross-language tool call, and the mod boundary.
-The last belongs to Phase 7, and the full language lock also asks for stable
-mod and editor boundaries (Phases 7 and 8), so part of the gate cannot close
-before the freeze it is meant to gate. Which part the freeze needs is a
-decision for an ADR, not code (`DEBT-0008`).
+scale, or threading — and one stage the gate's documents name and nothing
+builds: the mod boundary. Player movement (ADR-0035) and the cross-language
+tool call are measured now: a Python tool over IPC costs ~0.2 ms a round trip
+and ~40–230 ms run once, against ~1.2 ns for an FFI crossing
+([Appendix P](docs/benchmarks/PHASE-0-BASELINE.md)), which is why hot loops
+stay in one language. The mod boundary belongs to Phase 7, and the full
+language lock also asks for stable mod and editor boundaries (Phases 7 and 8),
+so part of the gate cannot close before the freeze it is meant to gate. Which
+part the freeze needs is a decision for an ADR, not code (`DEBT-0008`,
+proposed in ADR-0034).
 
 Measurement also opened `DEBT-0009` through `DEBT-0020`, each with a trigger
 point rather than a guess. Among them: the job system costs ~4,900× the work

@@ -1849,9 +1849,10 @@ pub fn player(budget: Budget) -> Result<Vec<Measurement>> {
 }
 
 /// Whether a timed route is the route a player walks: `ticks` of walking
-/// forward on terrain cover between 0.19 and 0.215 blocks a tick (a tick in
-/// the air covers less than one on the ground), and walking it again from the
-/// same spawn ended in the same state to the bit.
+/// forward on terrain cover between 0.19 and 0.215 blocks a tick — a band
+/// wide enough for ground friction and airborne ticks, which do not cover the
+/// same distance — and walking it again from the same spawn ended in the same
+/// state to the bit.
 fn verify_route(walked: f64, ticks: u32, rerun_identical: bool) -> Result<()> {
     use nexora_foundation::error::{Domain, Error, Recovery};
     let wrong = |message: &'static str| {
@@ -2564,9 +2565,15 @@ pub fn ffi(budget: Budget) -> Vec<Measurement> {
 
 /// The plan's slice stages this run actually measured. The RHI stage is one
 /// of them only when an adapter answered ([`crate::gpu::rhi`]), the window
-/// stage only when a window opened too ([`crate::window::window`]).
+/// stage only when a window opened too ([`crate::window::window`]), and the
+/// tool call only when a Python interpreter answered
+/// ([`crate::tool::tool_call`]).
 #[must_use]
-pub fn measured_stages(rhi_measured: bool, window_measured: bool) -> Vec<&'static str> {
+pub fn measured_stages(
+    rhi_measured: bool,
+    window_measured: bool,
+    tool_measured: bool,
+) -> Vec<&'static str> {
     let mut stages = vec![
         "camera",
         "16³ voxel chunk",
@@ -2584,6 +2591,9 @@ pub fn measured_stages(rhi_measured: bool, window_measured: bool) -> Vec<&'stati
     }
     if window_measured {
         stages.push("window");
+    }
+    if tool_measured {
+        stages.push("one cross-language tool call");
     }
     stages
 }
@@ -2609,11 +2619,14 @@ pub fn published_budgets() -> Result<Vec<Published>> {
 /// Listed rather than skipped: a benchmark table with silent gaps reads as a
 /// benchmark that covered everything. `rhi_gap` is why the RHI stage did not
 /// run, or `None` when it did ([`crate::gpu::RhiStage::gap`]); `window_gap`
-/// the same for the window stage ([`crate::window::WindowStage::gap`]).
+/// the same for the window stage ([`crate::window::WindowStage::gap`]), and
+/// `tool_gap` for the cross-language tool call
+/// ([`crate::tool::ToolStage::gap`]).
 #[must_use]
 pub fn unmeasured_stages(
     rhi_gap: Option<&'static str>,
     window_gap: Option<&'static str>,
+    tool_gap: Option<&'static str>,
 ) -> Vec<Unmeasured> {
     let mut stages = vec![
         Unmeasured {
@@ -2623,10 +2636,6 @@ pub fn unmeasured_stages(
         Unmeasured {
             name: "mod boundary",
             reason: "mod runtime not implemented; Phase 7",
-        },
-        Unmeasured {
-            name: "one cross-language tool call",
-            reason: "no tool written in another language is called across a language-neutral boundary as a timed stage yet (ADR-0034)",
         },
         Unmeasured {
             name: "incremental build",
@@ -2654,6 +2663,14 @@ pub fn unmeasured_stages(
     if let Some(reason) = window_gap {
         stages.push(Unmeasured {
             name: "window",
+            reason,
+        });
+    }
+
+    // The tool call (`crate::tool`) needs a Python interpreter to call.
+    if let Some(reason) = tool_gap {
+        stages.push(Unmeasured {
+            name: "one cross-language tool call",
             reason,
         });
     }
@@ -2758,18 +2775,38 @@ mod tests {
         // in the unmeasured list after the entity suite started measuring it:
         // the report claimed the stage was missing on the same page it printed
         // numbers for it.
-        for (measured, unmeasured) in [
-            (measured_stages(true, true), unmeasured_stages(None, None)),
-            (
-                measured_stages(true, false),
-                unmeasured_stages(None, Some(crate::window::NO_DISPLAY)),
-            ),
-            (
-                measured_stages(false, false),
-                unmeasured_stages(Some(crate::gpu::NO_ADAPTER), Some(crate::gpu::NO_ADAPTER)),
-            ),
+        // The tool call is measured only when an interpreter answered, and
+        // independently of the GPU stages: every combination is checked.
+        for tool_gap in [
+            None,
+            Some(crate::tool::NO_INTERPRETER),
+            Some(crate::tool::DECLARED_NO_PYTHON),
         ] {
-            stages_partition_the_plan(&measured, &unmeasured);
+            let tool_measured = tool_gap.is_none();
+            for (measured, unmeasured) in [
+                (
+                    measured_stages(true, true, tool_measured),
+                    unmeasured_stages(None, None, tool_gap),
+                ),
+                (
+                    measured_stages(true, false, tool_measured),
+                    unmeasured_stages(None, Some(crate::window::NO_DISPLAY), tool_gap),
+                ),
+                (
+                    measured_stages(false, false, tool_measured),
+                    unmeasured_stages(
+                        Some(crate::gpu::NO_ADAPTER),
+                        Some(crate::gpu::NO_ADAPTER),
+                        tool_gap,
+                    ),
+                ),
+            ] {
+                stages_partition_the_plan(&measured, &unmeasured);
+                let declared = unmeasured
+                    .iter()
+                    .find(|entry| entry.name == "one cross-language tool call");
+                assert_eq!(declared.map(|entry| entry.reason), tool_gap);
+            }
         }
     }
 

@@ -437,14 +437,40 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   antes de cronometrar (distância de vinte ticks de caminhada, e
   bit-idêntico ao repetir). Das três etapas sem construção, restam duas: a
   chamada de ferramenta entre linguagens e a *mod boundary*.
+- **PROGRESS (2026-10-04, chamada de ferramenta entre linguagens):** *one
+  cross-language tool call* está construída e medida. A ferramenta é
+  [`tools/catalog-digest`](tools/catalog-digest/README.md): Python, a
+  linguagem de pesquisa e automação do mapa, só com a biblioteca padrão. Ela
+  calcula as colunas de digest do `CATALOG.md` (FNV-1a 64 dos bytes do PNG,
+  tamanho e IHDR). O benchmark (`nexora_benchmark::tool`) a chama por
+  **IPC**: um contrato de linhas versionado (`nexora-tool/1`) no
+  stdin/stdout do processo filho, via `std::process`, sem crate novo e sem
+  `unsafe`. Antes de cronometrar, toda resposta é conferida com o digest que
+  o próprio Rust calcula, e um arquivo ausente precisa voltar como recusa
+  estruturada (`err unreadable`). Nesta máquina (Ryzen 5 5500, Windows 11):
+  - uma chamada a frio (subir o interpretador, uma requisição, sair) custa
+    **102–228 ms** com o Python 3.11.9 da Microsoft Store e **40–42 ms**
+    com o 3.14.6 instalado direto;
+  - um round trip com a ferramenta já rodando custa **199–243 µs**, dos
+    quais **~40 µs** são a fronteira e o resto é o trabalho da ferramenta;
+  - o mesmo trabalho em Rust, no processo, custa 77–110 µs, quase tudo
+    abrir o arquivo;
+  - a travessia FFI custa ~1,2 ns (Apêndice D).
+
+  É a evidência numérica da regra do mapa de linguagens: nenhum laço quente
+  atravessa uma fronteira dessas
+  ([Apêndice P](docs/benchmarks/PHASE-0-BASELINE.md), achado 34). Sem
+  interpretador Python 3.8+ (`python3`, depois `python`), a etapa fica "não
+  medida" com o motivo, como o RHI sem adaptador; `NEXORA_PYTHON=none`
+  declara isso. Das três etapas sem construção resta só a *mod boundary*.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS — a segunda linguagem está medida e toda etapa de GPU
-  do plano tem número, em CI e na GPU e no display do operador; faltam a
-  comparação em escala de motor (ADR-0009), três etapas que os documentos do
-  gate nomeiam e nada constrói (`player movement`,
-  `one cross-language tool call`, `mod boundary`), e uma decisão registrada
-  sobre a parte do gate que só pode fechar nas Phases 7 e 8 (proposta:
-  ADR-0034)
+- **STATUS:** IN PROGRESS — a segunda linguagem está medida, toda etapa de
+  GPU do plano tem número (em CI e na GPU e no display do operador), e as
+  duas etapas do §17 construíveis antes do freeze (`player movement` e
+  `one cross-language tool call`) estão medidas. Faltam a `mod boundary`
+  (Phase 7), a comparação em escala de motor (ADR-0009) e uma decisão
+  registrada sobre a parte do gate que só pode fechar nas Phases 7 e 8
+  (proposta: ADR-0034)
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 
@@ -1093,6 +1119,31 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro NPC ou caixote no quadro do cliente, ou o
   save/load do player (PLAYER-31) — o que vier primeiro.
 - **TARGET STAGE:** Phase 2/3
+- **STATUS:** OPEN
+
+### DEBT-0051 — A direção do player sai do `sin_cos` da libm da plataforma
+
+- **SYSTEM:** `engine/simulation::player` (`aim`)
+- **CLASS:** ARCHITECTURAL (determinismo entre plataformas)
+- **WHY CREATED:** revisão adversária do commit da ADR-0035 (2026-10-04).
+  Cada tick calcula a direção de caminhada com `yaw.sin_cos()`, que vai para
+  a libm da plataforma (UCRT no Windows, glibc no Linux, a da Apple no
+  macOS), e nenhuma garante arredondamento correto. A ADR-0035 faz da
+  intenção a unidade que replay e servidor vão carregar; com a direção
+  vinda de libms diferentes, a mesma sequência de intenções pode terminar
+  em posições que diferem no último bit entre máquinas. Na mesma máquina, o
+  determinismo vale, e os testes só provam isso.
+- **IMPACT:** nenhum hoje (não há replay nem servidor); um replay gravado no
+  Windows e reproduzido no Linux pode divergir.
+- **PROPOSED REMEDIATION:** escolher a unidade de replay e torná-la
+  determinística: seno/cosseno próprios, só com operações básicas; ou o yaw
+  como contagem inteira de passos de giro com a direção tabelada. Junto: a
+  busca de spawn assume terreno de mapa de altura (um bloco suspenso acima
+  de uma coluna baixa conta como parede sem conferir as células na altura
+  do corpo), o que só vale enquanto o gerador não fizer saliências.
+- **TRIGGER:** o primeiro replay ou o primeiro servidor; ou cavernas e
+  saliências no gerador, para a busca de spawn.
+- **TARGET STAGE:** Phase 3 (replay) / Phase 6 (servidor)
 - **STATUS:** OPEN
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk

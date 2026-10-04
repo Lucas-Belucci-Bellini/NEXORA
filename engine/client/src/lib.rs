@@ -68,7 +68,7 @@ use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
 use nexora_simulation::{
-    Controls, Eye, Intent, PhysicsModule, Player, PlayerState, WorldSurfaces, WorldVoxels,
+    Controls, Eye, Intent, PhysicsModule, Player, PlayerState, Walk, WorldSurfaces, WorldVoxels,
 };
 use nexora_window::input::InputCounts;
 use nexora_window::{run, Client, Flow, WindowFacts, WindowSpec};
@@ -317,6 +317,7 @@ fn run_in(
             FrameBudget::doubling_from(STEP),
         ),
         pending: InputFrame::new(),
+        jump_latched: false,
         limit: config.frames,
         timeout: config.timeout,
         live: None,
@@ -439,6 +440,22 @@ fn run_in(
     })
 }
 
+/// The walk a frame's ticks run with.
+///
+/// Input is sampled every frame and the player ticks only on frames that buy
+/// a step, and at ~100 Hz against a 20 Hz tick most frames buy none. A jump
+/// held on one of those frames — a tap is held for exactly one frame
+/// (ADR-0031) — would never reach the player. So a jump is latched until a
+/// frame with steps spends it. Walking, turning and looking are held states
+/// and need no latch: the next frame with steps reads them again.
+fn walk_for_ticks(latched: &mut bool, mut walk: Walk, steps: u32) -> Walk {
+    *latched |= walk.jump;
+    if steps > 0 {
+        walk.jump = std::mem::take(latched);
+    }
+    walk
+}
+
 /// The camera at the player's eye: made from it every frame, never read
 /// back (`CAMERA SYSTEM.md`: the camera owns no gameplay transform).
 ///
@@ -550,6 +567,9 @@ struct Presentation<'a> {
     origin: RenderOrigin,
     frame_loop: FrameLoop,
     pending: InputFrame,
+    /// A jump asked for on a frame that bought no tick, waiting for one
+    /// that does ([`walk_for_ticks`]).
+    jump_latched: bool,
     limit: Option<u64>,
     timeout: Option<Duration>,
     live: Option<Live>,
@@ -628,7 +648,7 @@ impl Client for Presentation<'_> {
         // Input: one sample; the player gets the walk and nothing else.
         let clock = Instant::now();
         let intent: Intent = self.controls.sample(&std::mem::take(&mut self.pending));
-        let walk = intent.walk();
+        let walk = walk_for_ticks(&mut self.jump_latched, intent.walk(), plan.steps);
         frame.record(FrameStage::Input, clock.elapsed())?;
 
         // Simulation: the steps real time bought, each one world tick.
@@ -978,6 +998,28 @@ mod tests {
     use nexora_runtime::input::{ButtonCode, DeviceId, DeviceKind, Signal};
     use nexora_simulation::player::{EYE_HEIGHT, MAX_PITCH};
     use nexora_simulation::{Walk, DEFAULT_KEYS};
+
+    /// Found in review: a jump tapped on a frame that buys no tick used to be
+    /// dropped. It is carried to the next frame that ticks, spent there once,
+    /// and not repeated.
+    #[test]
+    fn a_jump_on_a_frame_without_a_tick_reaches_the_next_tick_once() {
+        let jump = Walk {
+            jump: true,
+            ..Walk::default()
+        };
+        let mut latched = false;
+        let carried = walk_for_ticks(&mut latched, jump, 0);
+        assert!(latched, "held over a frame that bought no tick");
+        assert!(carried.jump, "the frame's own walk is unchanged");
+        let ticked = walk_for_ticks(&mut latched, Walk::default(), 1);
+        assert!(ticked.jump, "spent on the next frame that ticks");
+        assert!(!latched);
+        assert!(
+            !walk_for_ticks(&mut latched, Walk::default(), 1).jump,
+            "and only once"
+        );
+    }
 
     /// The default seed's world, its scene, and the player standing in it.
     fn the_default_scene() -> (World, Scene, Player) {

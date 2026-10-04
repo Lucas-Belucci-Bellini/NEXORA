@@ -2181,7 +2181,8 @@ fn along(facing: Cardinal, from: &PlayerState, to: &PlayerState) -> (f64, f64) {
 ///
 /// 1. **stands** for ten ticks with no key, unmoved to the bit;
 /// 2. **walks**: W for twelve ticks, 0.19 to 0.215 blocks a tick forward
-///    (slower in the air than on the ground) and no drift across;
+///    (ground friction and airborne ticks cover different distances) and no
+///    drift across;
 /// 3. **jumps**: Space tapped once, rising 1.10 to 1.35 blocks and landing
 ///    exactly where it took off;
 /// 4. **stops at a wall**: W until it stops making progress, which must be

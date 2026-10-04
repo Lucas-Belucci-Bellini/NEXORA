@@ -195,6 +195,22 @@ jobs:
           grep '^window.present_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^window.present_wait_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^window.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # The cross-language tool call (§17, ADR-0034): the Python tool in
+          # tools/catalog-digest, over its stdin/stdout contract, run once and
+          # kept running. Every answer equalled Rust's digest before it was
+          # timed. The runner has python3, so the stage must have run: it may
+          # not be declared missing. (`if grep`, not `! grep`: a negated
+          # command never fails a step under `bash -e`.)
+          grep '^tool interpreter: Python 3\.[0-9]*\.[0-9]* (cpython, via python3)$' \
+            "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.cold_call ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.warm_roundtrip ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.python_work ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.digest_in_rust ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          if grep -F 'one cross-language tool call' "${RUNNER_TEMP}/bench.txt"; then
+            echo "the tool-call stage was declared not measured on a runner with python3"
+            exit 1
+          fi
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and

@@ -2337,3 +2337,121 @@ rather than gating on them.
 - **Not the frame's parts.** The benchmark times record, submit and wait as
   one number; Finding 29's rule (one submission, one fence a frame) is what
   keeps that number near the fence.
+
+# Appendix P — one cross-language tool call (2026-10-04)
+
+The last stage of §17's minimum benchmark that can be built before the
+freeze (ADR-0034): *one tool, written in a language other than the core's,
+called across the boundary layer the language map gives tools, and timed*.
+The tool is [`tools/catalog-digest`](../../tools/catalog-digest/README.md),
+Python with the standard library only. It computes what
+`content/first-generation/CATALOG.md` records for an albedo: its size, the
+FNV-1a 64 of its bytes, and the IHDR that makes it 16×16 RGBA8. The benchmark
+(`nexora_benchmark::tool`) talks to it over **IPC**: a versioned line contract
+(`nexora-tool/1`) on the child's stdin and stdout, through `std::process`,
+with no crate and no `unsafe`. Before anything is timed, the tool's answer
+must equal the digest Rust computes from the bytes it wrote, and a missing
+file must come back as a structured refusal (`err unreadable`). Every timed
+answer is checked again.
+
+| | |
+| --- | --- |
+| machine | Windows 11 Pro, AMD Ryzen 5 5500 (the CPU of Appendix I's machine A), 12 logical CPUs, release profile, rustc 1.94.1 |
+| payload | one 16×16 RGBA8 PNG of 256 bytes, written by the engine's deflate (the catalog's albedos are 202–423 bytes) |
+| `python3` | CPython 3.11.9 from the Microsoft Store, behind its App Execution Alias. This is the interpreter the stage picks, because it tries `python3` first |
+| `python` | CPython 3.14.6, installed directly; chosen with `NEXORA_PYTHON=python` |
+| invocation | `<interpreter> -I -S -B catalog_digest.py`: isolated, no site-packages, no bytecode |
+
+These are five full runs of the same binary. Each sample is one cold call
+(after one warm-up), 100 round trips, or 200 Rust digests.
+
+| measurement (median) | run 1 | run 2 | run 3 | run 4 | run 5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| interpreter | 3.11.9 | 3.11.9 | 3.11.9 | 3.14.6 | 3.14.6 |
+| `tool.cold_call` | 103.26 ms | 227.92 ms | 102.51 ms | 39.79 ms | 41.63 ms |
+| `tool.warm_roundtrip` | 198.88 µs | 242.93 µs | 203.24 µs | 222.59 µs | 214.66 µs |
+| `tool.python_work` | 157.52 µs | 196.01 µs | 164.39 µs | 180.64 µs | 173.23 µs |
+| round trip − work: **the boundary** | 41.4 µs | 46.9 µs | 38.9 µs | 42.0 µs | 41.4 µs |
+| `tool.digest_in_rust` | 76.65 µs | 77.79 µs | 86.48 µs | 87.59 µs | 110.00 µs |
+| `ffi.scalar_opaque_rust` | 2.1 ns | 2.2 ns | 1.6 ns | 1.7 ns | 2.0 ns |
+
+Run 2 ran on a busy machine. In it `physics.thousand_bodies_step` was 162 µs
+against 82–86 µs in the other four runs, and `rhi.fence_roundtrip` was 294 µs
+against 119–199 µs. Its tool rows have a p95 of 624 ms (cold) and 4.07 ms
+(warm). Runs 1 and 3 to 5 have warm p95s of 212–250 µs.
+
+## Finding 34 — a tool over IPC costs five orders of magnitude more than an FFI call when it is running, and seven to eight when it is not
+
+Three rungs of one ladder. Appendix D measured the first, and this appendix
+measures the other two:
+
+| rung | cost | against the FFI floor (1.2 ns) |
+| --- | ---: | ---: |
+| a call in the process: an FFI crossing (Appendix D) or an un-inlined Rust call (`ffi.scalar_opaque_rust`, this run) | 1.2–2.2 ns | 1× |
+| one request to a tool that is already running: the boundary alone | 39–47 µs | ~35,000× |
+| the same, with the tool's work (`tool.warm_roundtrip`) | 199–243 µs | ~180,000× |
+| a tool run once (`tool.cold_call`) | 40–228 ms | 3×10⁷ to 2×10⁸ |
+
+**The boundary is about 40 µs a round trip, and the interpreter does not
+change it.** That covers two pipe transfers, two wake-ups and two line
+parses. It measured 38.9–46.9 µs under both interpreters, while the work on
+either side of it moved.
+
+**A cold call is the interpreter starting, and how it was installed decides
+the cost.** Starting the interpreter is all of a cold call except its 0.2 ms
+round trip. Through the Store's alias, Python 3.11.9 takes 102–228 ms; the
+directly installed 3.14.6 takes 40–42 ms. These runs do not separate how much
+of that difference is the alias and how much is the version. It is why the
+report prints the interpreter: a cold-call number without it means little.
+
+**The work is mostly the file system.** Rust's same digest costs 77–110 µs.
+Hashing 256 bytes is about 0.24 µs of that (`ffi.bulk_inlined` hashes 4 KiB
+in 3.86–3.95 µs, and 256 bytes is 1/16 of it). The rest is opening and reading
+a file on Windows. The tool's work exceeds Rust's by 63–118 µs, which is its
+interpreted FNV loop. Timed on its own with `timeit` (outside the harness),
+that loop costs 80 µs on 3.11.9 and 70 µs on 3.14.6 for the same 256 bytes.
+
+**What it means for the language map.** At 20 ticks a second a tick is
+50 ms, and at 60 Hz a frame is 16.7 ms. If 1,000 entities each crossed this
+boundary once, they would spend 0.2 s, four ticks or twelve frames. One cold
+call costs one to five ticks. The rule *"hot simulation loops must not cross
+FFI repeatedly"* holds at 1.2 ns for the reasons Finding 20 gave. Across IPC
+it is arithmetic: no per-tick, per-entity or per-frame call can afford a tool.
+The same numbers show the boundary is cheap where the language map puts it:
+digesting all 21 first-generation albedos is 21 round trips, about 4 ms on a
+running tool, or one cold start plus those, 45–230 ms. A build step cannot
+feel that. A batch request would amortise the 40 µs further, which is the map's
+*"Rust simulation → batch result → stable boundary → tools"*.
+
+This is also the condition ADR-0034 rests on. This tool meets the core through
+a language-neutral contract: lines of text, versioned, with structured errors.
+Rewriting it in another language changes no frozen contract.
+
+### What these numbers are not
+
+- **Not Linux's.** Creating a process and opening a file are expensive on
+  Windows, where the antivirus filter sits in the file path. CI's Ubuntu smoke
+  run executes the stage on `python3`. As everywhere, its times are not kept.
+- **Not a budget.** One machine, two interpreters, and one busy run of five.
+- **Not a verdict on Python or on Rust.** The work is one file read and a
+  256-byte hash. An interpreted loop costs what an interpreter costs, and that
+  says nothing about the core's language.
+- **Not a checked clock.** `tool.python_work` is the tool's own
+  `perf_counter_ns`. The harness checks only that it fits inside the round
+  trip. The round trip is the harness's own clock.
+- **Not the mod boundary.** A mod runtime is sandboxed scripting inside the
+  server, which belongs to Phase 7. This is a tool, over IPC.
+- **Not hidden when Python is absent.** With `PATH` cut to
+  `C:\Windows\System32;C:\Windows`, the same binary prints
+  `tool interpreter: none`. It lists `one cross-language tool call` under *not
+  measured*: "no Python 3.8+ interpreter answered: tried `python3`, then
+  `python`". `NEXORA_PYTHON=none` declares the same, and the run exits 0 with
+  no tool rows.
+
+### Gate progress
+
+`DEBT-0008`: this was the last §17 stage that can be built before the freeze.
+Three things remain. The **mod boundary** belongs to Phase 7. The
+**engine-scale comparison** (ADR-0009) is also open, and ADR-0034 proposes
+recording it as *not justified* unless the scorecard shows a core stage held
+back by its language. The third is the **ADR-0034 decision** itself.

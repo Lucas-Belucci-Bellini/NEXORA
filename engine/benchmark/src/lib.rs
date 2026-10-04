@@ -41,6 +41,7 @@ use nexora_runtime::frame::FrameBudget;
 pub mod conformance;
 pub mod gpu;
 pub mod suites;
+pub mod tool;
 pub mod window;
 
 /// What a measurement counts.
@@ -368,6 +369,11 @@ pub struct Environment {
     /// The GPU adapter the RHI stage ran on, as `name (backend, kind)`, or
     /// `None` when it did not run. A software adapter's numbers are the CPU's.
     pub gpu: Option<String>,
+    /// The interpreter the cross-language tool-call stage ran its tool on
+    /// ([`tool::Interpreter::describe`]), or `None` when it did not run. A
+    /// cold call is mostly that interpreter's startup, so it is part of the
+    /// number.
+    pub tool_interpreter: Option<String>,
 }
 
 impl Environment {
@@ -387,6 +393,7 @@ impl Environment {
             peak_resident_bytes: peak_resident_bytes(),
             executable_bytes: executable_size_bytes(),
             gpu: None,
+            tool_interpreter: None,
         }
     }
 }
@@ -497,6 +504,15 @@ pub fn format_text(report: &Report) -> String {
         out,
         "gpu adapter: {}",
         report.environment.gpu.as_deref().unwrap_or("none")
+    );
+    let _ = writeln!(
+        out,
+        "tool interpreter: {}",
+        report
+            .environment
+            .tool_interpreter
+            .as_deref()
+            .unwrap_or("none")
     );
     let _ = writeln!(out);
 
@@ -739,6 +755,8 @@ mod tests {
 
         let text = format_text(&report);
         assert!(text.contains("not measured (1)"), "{text}");
+        // An interpreter that did not run is said, not left out.
+        assert!(text.contains("\ntool interpreter: none\n"), "{text}");
     }
 
     #[test]
