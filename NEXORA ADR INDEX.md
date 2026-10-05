@@ -91,3 +91,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | O pass descarta faces de costas e divide seus quads em todo canto | ACCEPTED |
 | [0034](docs/adr/ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md) | O freeze trava a linguagem do núcleo, não a de toda fronteira — o que só as Phases 7 e 8 respondem vira extensão pós-freeze | **PROPOSED** (decisão do dono do projeto) |
 | [0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md) | O player é um corpo que a simulação conduz, e a câmera só segue o olho dele | ACCEPTED |
+| [0036](docs/adr/ADR-0036-the-players-hands-are-commands-the-authority-checks-against-its-body.md) | As mãos do player são comandos que a autoridade confere contra o corpo dele | ACCEPTED |

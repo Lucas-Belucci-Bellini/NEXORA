@@ -741,6 +741,7 @@ name = "nexora-client"
 version = "0.0.1"
 dependencies = [
  "nexora-camera",
+ "nexora-command",
  "nexora-foundation",
  "nexora-mesh",
  "nexora-persistence",

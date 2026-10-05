@@ -36,8 +36,10 @@ nexora-rhi-wgpu.workspace = true
 nexora-window.workspace = true
 nexora-simulation.workspace = true
 
-# The default keys are checked against the host's key translation.
+# The default keys are checked against the host's key translation, and a
+# refused click is counted from the command system's own reason.
 [dev-dependencies]
+nexora-command.workspace = true
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11"] }
 
 [lints]

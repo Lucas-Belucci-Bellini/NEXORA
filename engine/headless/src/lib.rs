@@ -12,6 +12,8 @@
 //!   -> mutate voxels
 //!   -> drop a character onto the terrain and simulate it
 //!   -> walk a player by scripted keys: walk, jump, stop at a wall, turn
+//!   -> give it hands by scripted clicks: break the block underfoot, be
+//!      refused one in its own body, stand on one placed under it mid-jump
 //!   -> walk an observer away and back, streaming chunks out and in
 //!   -> advance the world clock
 //!   -> save
@@ -76,11 +78,13 @@ use nexora_runtime::lifecycle::{Lifecycle, Phase, RuntimeMode};
 use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
+use nexora_simulation::player::MAX_PITCH;
 use nexora_simulation::queries::WORLD_QUERY_VERSION;
 use nexora_simulation::WorldQueries;
 use nexora_simulation::{
-    find_walkable_run, BlockContent, Cardinal, ColumnArea, Controls, PhysicsModule, Player,
-    PlayerState, RetainedChunks, WorldResidency, WorldSurfaces, WorldVoxels, UNMAPPED_SURFACE,
+    find_walkable_run, Action, Attempt, BlockContent, Cardinal, ColumnArea, Controls, Interaction,
+    PhysicsModule, Player, PlayerState, RetainedChunks, WorldResidency, WorldSurfaces, WorldVoxels,
+    UNMAPPED_SURFACE,
 };
 use nexora_streaming::budget::StreamingBudget;
 use nexora_streaming::interest::{InterestId, InterestSource, LodRadii};
@@ -180,6 +184,18 @@ pub struct SliceReport {
     pub player_walked_cm: i64,
     /// How high one tap of Space lifted the player's feet, in centimetres.
     pub player_rose_cm: i64,
+    /// Blocks the scripted player's hands broke (ADR-0036).
+    pub hands_broke: u32,
+    /// Blocks its hands placed.
+    pub hands_placed: u32,
+    /// Requests the authority refused its hands.
+    pub hands_refused: u32,
+    /// How far above the floor it jumped from its feet stood at the end, in
+    /// centimetres: on top of the block it placed under them.
+    pub hands_rose_cm: i64,
+    /// Cells the hands left changed, each carried as a probe through the
+    /// save, the reload, the region store and recovery.
+    pub hands_probes: usize,
     /// How far from the wall at the end of its run the player's centre — its
     /// eye — stopped, in centimetres: the body's half-width when its leading
     /// face is flush with the wall.
@@ -423,7 +439,7 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
 
     // --- mutation ----------------------------------------------------------
     let content_ids: Vec<Identifier> = content_blocks.iter().map(|(id, _)| id.clone()).collect();
-    let probes = apply_edits(&mut world, &coords, &content_ids)?;
+    let mut probes = apply_edits(&mut world, &coords, &content_ids)?;
     memory.world.record(world.storage_bytes() as u64);
     let content_surfaces = match &content {
         Some(content) => verify_content_surfaces(&world, content)?,
@@ -481,6 +497,25 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
     log(
         &diagnostics,
         "player walked, jumped, stopped at a wall and turned",
+    );
+
+    // --- the player's hands -------------------------------------------------
+    // ADR-0036: a player whose hands are driven by scripted clicks through
+    // the client's own button table, breaking and placing through the block
+    // commands, under the authority's reach and body checks. Unlike the
+    // stages before it this one changes the world on purpose, and its edits
+    // join the probes: streaming, the save, the reload, the region store and
+    // the journal's recovery below all have to carry them.
+    let (returned, hands) = interact_as_a_player(world, config.radius, &diagnostics)?;
+    world = returned;
+    let hands_probes = hands.probes.len();
+    probes.extend(hands.probes);
+    diagnostics
+        .counters()
+        .add("hands.edits", u64::from(hands.broke + hands.placed));
+    log(
+        &diagnostics,
+        "player broke and placed blocks, and was refused one in its own body",
     );
 
     // --- streaming ---------------------------------------------------------
@@ -695,6 +730,11 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         player_walked_cm: walked.walked_cm,
         player_rose_cm: walked.rose_cm,
         player_stop_cm: walked.stop_cm,
+        hands_broke: hands.broke,
+        hands_placed: hands.placed,
+        hands_refused: hands.refused,
+        hands_rose_cm: hands.rose_cm,
+        hands_probes,
         streaming_ticks: streaming.ticks,
         frames: streaming.frames,
         frame_steps: streaming.steps,
@@ -1403,6 +1443,13 @@ pub fn format_report(report: &SliceReport) -> String {
         report.player_rose_cm as f64 / 100.0,
         report.player_stop_cm as f64 / 100.0,
         report.player_ticks
+    ));
+    out.push_str(&format!(
+        "hands              broke {}, placed {}, refused {} in its own body, stood {:.2} higher on its own block\n",
+        report.hands_broke,
+        report.hands_placed,
+        report.hands_refused,
+        report.hands_rose_cm as f64 / 100.0
     ));
     out.push_str(&format!(
         "streaming ticks    {} ({} generated, {} evicted, {} restored)\n",
@@ -2194,24 +2241,7 @@ fn along(facing: Cardinal, from: &PlayerState, to: &PlayerState) -> (f64, f64) {
 /// buried, never inside terrain, never pushed out of it. It reads the world
 /// and nothing else: no pool, no clock, no write.
 fn walk_a_player(world: &World, radius: i64, diagnostics: &Diagnostics) -> Result<PlayerOutcome> {
-    let shape = world.descriptor().shape;
-    let (sx, sz) = (i64::from(shape.size_x()), i64::from(shape.size_z()));
-    let (min_x, max_x) = (-radius * sx, (radius + 1) * sx);
-    let (min_z, max_z) = (-radius * sz, (radius + 1) * sz);
-    let mut high = i64::MIN;
-    for x in min_x..max_x {
-        for z in min_z..max_z {
-            high = high.max(world.surface_height(x, z));
-        }
-    }
-    let area = ColumnArea {
-        min_x,
-        min_z,
-        max_x,
-        max_z,
-        floor_y: world.descriptor().bounds.min_y,
-        ceiling_y: high + PLAYER_CEILING_MARGIN,
-    };
+    let area = player_area(world, radius);
     let terrain = WorldVoxels::new(world);
     let run = find_walkable_run(&terrain, &area, PLAYER_RUN)?;
     let player = Player::spawn(
@@ -2364,6 +2394,300 @@ fn walk_a_player(world: &World, radius: i64, diagnostics: &Diagnostics) -> Resul
         rose_cm: centimetres(rose),
         stop_cm: centimetres(stop),
     })
+}
+
+/// The HID usages the scripted hands click: the mouse's primary and
+/// secondary buttons, on the Button page (the client's table).
+const BUTTON_PRIMARY: u16 = 1;
+const BUTTON_SECONDARY: u16 = 2;
+
+/// What the hands did.
+struct HandsOutcome {
+    broke: u32,
+    placed: u32,
+    refused: u32,
+    rose_cm: i64,
+    /// What the edits left, for the save, the reload and recovery to keep.
+    probes: Vec<Probe>,
+}
+
+/// A player driven one frame per world tick by scripted keys and clicks,
+/// through the client's own tables, whose hands act on the world through the
+/// block commands.
+struct ScriptedHands {
+    world: std::rc::Rc<std::cell::RefCell<World>>,
+    hands: Interaction,
+    player: Player,
+    controls: Controls,
+    attached: bool,
+    now: WorldTime,
+    attempts: Vec<Attempt>,
+}
+
+impl ScriptedHands {
+    /// One frame: `keys` and `buttons` go down (`true`) or up (`false`); the
+    /// hands do what the intent asks, at the tick boundary and so from the
+    /// stance the player is in; then the player ticks once.
+    fn frame(&mut self, keys: &[(u16, bool)], buttons: &[(u16, bool)]) -> Result<PlayerState> {
+        let keyboard = DeviceId::new(DeviceKind::Keyboard, 0);
+        let mouse = DeviceId::new(DeviceKind::Mouse, 0);
+        let mut signals = InputFrame::new();
+        if !self.attached {
+            // The host reports its devices before the player uses them.
+            signals.push(Signal::Attached(keyboard));
+            signals.push(Signal::Attached(mouse));
+            self.attached = true;
+        }
+        for &(usage, pressed) in keys {
+            signals.push(Signal::button(keyboard, ButtonCode(usage), pressed));
+        }
+        for &(usage, pressed) in buttons {
+            signals.push(Signal::button(mouse, ButtonCode(usage), pressed));
+        }
+        let intent = self.controls.sample(&signals);
+        if intent.break_block {
+            let attempt = self.hands.act(&self.player, Action::Break, self.now)?;
+            self.attempts.push(attempt);
+        }
+        if intent.place_block {
+            let attempt = self.hands.act(&self.player, Action::Place, self.now)?;
+            self.attempts.push(attempt);
+        }
+        let outcome = {
+            let world = self.world.borrow();
+            self.player.tick(&WorldVoxels::new(&world), intent.walk())?
+        };
+        if outcome.depenetrated > 0 {
+            return Err(player_failure(
+                "the player was pushed out of a block its own hands placed",
+            ));
+        }
+        Ok(self.player.state())
+    }
+
+    /// Press `button` for one frame and let it go on the next: one click,
+    /// which must be exactly one request.
+    fn click(&mut self, button: u16) -> Result<Attempt> {
+        let before = self.attempts.len();
+        self.frame(&[], &[(button, true)])?;
+        self.frame(&[], &[(button, false)])?;
+        match &self.attempts[before..] {
+            [attempt] => Ok(*attempt),
+            other => Err(player_failure("one click was not one request")
+                .with_context("requests", other.len().to_string())),
+        }
+    }
+
+    /// Frames with nothing pressed until the player is grounded and still to
+    /// the bit.
+    fn settle(&mut self) -> Result<PlayerState> {
+        let mut before = self.player.state();
+        for _ in 0..PLAYER_SETTLE_LIMIT {
+            let now = self.frame(&[], &[])?;
+            if now.grounded && now.is_bit_identical(&before) {
+                return Ok(now);
+            }
+            before = now;
+        }
+        Err(player_failure(
+            "the player did not come to rest after its hands acted",
+        ))
+    }
+}
+
+/// Give ADR-0035's player hands (ADR-0036) and use them, by scripted clicks,
+/// on the slice's generated terrain, looking straight down — the one aim no
+/// terrain can put out of reach, because a grounded player always has a
+/// block under its feet, 1.62 below the eye:
+///
+/// 1. **break**: the primary button breaks the block under the feet, and the
+///    player falls into the hole and comes to rest on whatever is below;
+/// 2. **refused**: the secondary button aims at the cell in front of the
+///    floor's top face, which is the one the feet now stand in, and the
+///    authority refuses a block there — nothing changes;
+/// 3. **under the feet**: Space, and once the feet have risen a block, the
+///    secondary button again: the block goes in under them, touching and not
+///    overlapping the body, and the player comes down standing on it, a
+///    block above the floor it jumped from.
+///
+/// Every tick must be clean: the body is never inside a block, because the
+/// authority never put one there. The world is taken and handed back, the
+/// shape the command stage uses, because the hands and the caller share it.
+fn interact_as_a_player(
+    world: World,
+    radius: i64,
+    diagnostics: &Diagnostics,
+) -> Result<(World, HandsOutcome)> {
+    let area = player_area(&world, radius);
+    let run = find_walkable_run(&WorldVoxels::new(&world), &area, PLAYER_RUN)?;
+    let player = Player::spawn(
+        &WorldVoxels::new(&world),
+        &run,
+        -MAX_PITCH,
+        world.clock().calendar().ticks_per_second(),
+    )?;
+    let stone = world.block_id(&Identifier::parse("nexora:block/stone")?)?;
+    let now = world.clock().now();
+    let shared = std::rc::Rc::new(std::cell::RefCell::new(world));
+    let mut scripted = ScriptedHands {
+        hands: Interaction::new(
+            std::rc::Rc::clone(&shared),
+            stone,
+            Actor::player(1),
+            Source::Local,
+        )?,
+        world: std::rc::Rc::clone(&shared),
+        player,
+        controls: Controls::new()?,
+        attached: false,
+        now,
+        attempts: Vec::new(),
+    };
+    let edited = |attempt: Attempt, what: &'static str| {
+        attempt.edit.ok_or_else(|| {
+            player_failure(what)
+                .with_context("target", format!("{:?}", attempt.target))
+                .with_context("refused", format!("{:?}", attempt.refused))
+        })
+    };
+
+    // 1. Break the block under the feet, and fall into the hole.
+    let broken = edited(
+        scripted.click(BUTTON_PRIMARY)?,
+        "the primary button did not break the block under the feet",
+    )?;
+    if broken.position != BlockPos::new(run.x, run.feet_y - 1, run.z)
+        || broken.after != nexora_world::voxel::AIR
+    {
+        return Err(
+            player_failure("the block under the feet was not the one broken")
+                .with_context("broken", describe(broken.position)),
+        );
+    }
+    let fallen = scripted.settle()?;
+    let floor = fallen.feet.y;
+    if floor >= run.feet_y as f64 {
+        return Err(
+            player_failure("the player did not fall into the hole it made")
+                .with_context("feet", format!("{:?}", fallen.feet)),
+        );
+    }
+    let feet = BlockPos::new(run.x, floor as i64, run.z);
+
+    // 2. A block in the feet's own cell is refused, and nothing changes.
+    let into_the_body = scripted.click(BUTTON_SECONDARY)?;
+    let aimed_at_feet = into_the_body.target.map(|target| target.in_front()) == Some(feet);
+    if !aimed_at_feet
+        || into_the_body.refused != Some(nexora_command::result::FailureReason::InvalidState)
+        || into_the_body.edit.is_some()
+    {
+        return Err(
+            player_failure("a block in the player's own cell was not refused")
+                .with_context("attempt", format!("{into_the_body:?}")),
+        );
+    }
+
+    // 3. Jump, and once the feet have risen a block, place under them.
+    let mut state = scripted.frame(&[(KEY_SPACE, true)], &[])?;
+    if state.feet.y < floor + 1.0 {
+        state = scripted.frame(&[(KEY_SPACE, false)], &[])?;
+    }
+    let mut airborne = 0;
+    while state.feet.y < floor + 1.0 {
+        airborne += 1;
+        if airborne > PLAYER_SETTLE_LIMIT || state.grounded {
+            return Err(player_failure("a jump did not lift the feet a block")
+                .with_context("feet", format!("{:?}", state.feet)));
+        }
+        state = scripted.frame(&[], &[])?;
+    }
+    let pillar = edited(
+        scripted.click(BUTTON_SECONDARY)?,
+        "a block under the feet in mid-jump was not placed",
+    )?;
+    if pillar.position != feet || pillar.after != stone {
+        return Err(player_failure("the block did not go under the feet")
+            .with_context("placed", describe(pillar.position)));
+    }
+    let landed = scripted.settle()?;
+    if landed.feet.y.to_bits() != (floor + 1.0).to_bits() {
+        return Err(
+            player_failure("the player did not come down standing on its block")
+                .with_context("feet", format!("{:?}", landed.feet)),
+        );
+    }
+
+    let (mut broke, mut placed, mut refused) = (0, 0, 0);
+    for attempt in &scripted.attempts {
+        match (attempt.action, attempt.edit, attempt.refused) {
+            (Action::Break, Some(_), _) => broke += 1,
+            (Action::Place, Some(_), _) => placed += 1,
+            (_, None, Some(_)) => refused += 1,
+            (_, None, None) => {
+                return Err(player_failure("a click met nothing within reach"));
+            }
+        }
+    }
+    diagnostics.log(
+        Level::Debug,
+        Category::World,
+        "slice/hands",
+        "the scripted player's hands broke and placed on generated terrain",
+    );
+    // What every edited cell holds at the end, the last edit to it winning:
+    // the probes the save, the reload and recovery must keep.
+    let mut last = std::collections::BTreeMap::new();
+    for edit in scripted.attempts.iter().filter_map(|attempt| attempt.edit) {
+        last.insert(edit.position, edit.after);
+    }
+    // The hands hold the world through their handlers; they go first.
+    drop(scripted);
+    let world = std::rc::Rc::try_unwrap(shared)
+        .map_err(|_| mismatch("the hands leaked a handle to the world"))?
+        .into_inner();
+    let probes = last
+        .into_iter()
+        .map(|(position, state)| {
+            let expected = world.block_identifier(state).ok_or_else(|| {
+                mismatch("an edit left a block state the world cannot name")
+                    .with_context("position", describe(position))
+            })?;
+            Ok(Probe { position, expected })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((
+        world,
+        HandsOutcome {
+            broke,
+            placed,
+            refused,
+            rose_cm: ((landed.feet.y - floor) * 100.0).round() as i64,
+            probes,
+        },
+    ))
+}
+
+/// The columns the slice's players search for a run: every generated
+/// column, read down from just above the highest surface.
+fn player_area(world: &World, radius: i64) -> ColumnArea {
+    let shape = world.descriptor().shape;
+    let (sx, sz) = (i64::from(shape.size_x()), i64::from(shape.size_z()));
+    let (min_x, max_x) = (-radius * sx, (radius + 1) * sx);
+    let (min_z, max_z) = (-radius * sz, (radius + 1) * sz);
+    let mut high = i64::MIN;
+    for x in min_x..max_x {
+        for z in min_z..max_z {
+            high = high.max(world.surface_height(x, z));
+        }
+    }
+    ColumnArea {
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+        floor_y: world.descriptor().bounds.min_y,
+        ceiling_y: high + PLAYER_CEILING_MARGIN,
+    }
 }
 
 fn player_failure(message: &'static str) -> Error {

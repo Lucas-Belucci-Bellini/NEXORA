@@ -118,7 +118,8 @@ jobs:
       # including presentation, the generated world is drawn in a window, and
       # its first frame, read back from the surface, holds against the ray
       # cast. W is held for a second through XTEST and must move the camera
-      # forward; Escape must end the loop.
+      # forward; the down arrow and two clicks use the player's hands;
+      # Escape must end the loop.
       - name: Smoke test the runtime in client mode
         run: |
           xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
@@ -132,6 +133,12 @@ jobs:
           # And it was the player that moved, by walking: the camera only
           # follows its eye (ADR-0035).
           grep '^player             walked [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
+          # A real click through the window became a command the authority
+          # applied, and the columns it changed were meshed and uploaded
+          # again; the second was refused, a block in the player's own cell
+          # (ADR-0036).
+          grep '^hands              broke 1, placed 0, refused 1, 0 clicks met nothing in reach; [1-9][0-9]* columns meshed again, [1-9][0-9]* uploaded$' \
+            "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
@@ -151,6 +158,12 @@ jobs:
           # A player walks, jumps, turns and stops at a wall, deterministically
           # (ADR-0035).
           grep '^player             walked [1-9]\.[0-9]* in 12 ticks, rose 1\.[0-9]*, stopped 0\.30 from a wall, [0-9]* ticks in all$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # Its hands, by scripted clicks through the block commands: break
+          # the block underfoot, be refused one in its own body, stand on one
+          # placed under it mid-jump; the cells it changed are probes the
+          # reload and the journal replay must keep (ADR-0036).
+          grep '^hands              broke 1, placed 1, refused 1 in its own body, stood 1\.00 higher on its own block$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones and five terrain materials must register, show its own surface in a mesh, and survive

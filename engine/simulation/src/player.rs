@@ -57,6 +57,8 @@ use nexora_physics::math::Vec3;
 use nexora_physics::voxel::VoxelSource;
 use nexora_physics::world::PhysicsWorld;
 
+use crate::commands::ActorPosition;
+use crate::interaction::Stance;
 use crate::spawn::Run;
 
 /// How far above the feet the eye is, in metres.
@@ -211,7 +213,8 @@ pub struct TickOutcome {
 /// The body lives in a physics world of its own (DEBT-0050): the first NPC or
 /// crate that shares the frame with the player will need one world for both,
 /// and the public surface — [`Player::spawn`], [`Player::tick`],
-/// [`Player::eye`], [`Player::state`] — is what stays when that happens.
+/// [`Player::eye`], [`Player::stance`], [`Player::state`] — is what stays
+/// when that happens.
 #[derive(Debug, Clone)]
 pub struct Player {
     physics: PhysicsWorld,
@@ -330,6 +333,26 @@ impl Player {
             ),
             yaw: self.yaw,
             pitch: self.pitch,
+        }
+    }
+
+    /// What the authority knows of the player when it acts: where the eye
+    /// is and the space the body fills (ADR-0036).
+    ///
+    /// Read from the body, never from a request: a command carries a target,
+    /// and the reach and occupancy it is checked against come from here.
+    #[must_use]
+    pub fn stance(&self) -> Stance {
+        let eye = self.eye().position;
+        let aabb = self.body().aabb();
+        Stance {
+            eye: ActorPosition {
+                x: eye.x,
+                y: eye.y,
+                z: eye.z,
+            },
+            body_min: [aabb.min.x, aabb.min.y, aabb.min.z],
+            body_max: [aabb.max.x, aabb.max.y, aabb.max.z],
         }
     }
 

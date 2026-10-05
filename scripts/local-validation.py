@@ -408,7 +408,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     probe = str(release / _exe("nexora-rhi-probe"))
     window_probe = str(release / _exe("nexora-window-probe"))
     client = str(release / _exe("nexora-client"))
-    slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
+    slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "hands ", "probes verified")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
     built = results[0]["status"] == "PASS"
@@ -465,7 +465,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     else:
         results.append(needs_build("client_mode", [client, "--frames", "120", "--timeout", "120"],
                                    _lines("adapter", "window", "first frame", "frames", "frame loop",
-                                          "frame wall", "frame work", "player", "result")))
+                                          "frame wall", "frame work", "player", "hands", "result")))
     # A real key through a real window (ADR-0031): the probe opens a window
     # and waits for W. A person has to press it, so the check runs only when
     # someone is at the terminal; --quick and a non-interactive run skip it,

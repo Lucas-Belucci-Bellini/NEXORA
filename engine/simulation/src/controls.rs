@@ -1,5 +1,5 @@
-//! What the keys mean to a player: the default bindings, and the intent one
-//! frame of signals folds into (ADR-0031, ADR-0035).
+//! What the keys and buttons mean to a player: the default bindings, and the
+//! intent one frame of signals folds into (ADR-0031, ADR-0035, ADR-0036).
 //!
 //! The bindings are data in the input system's own terms: an action, a
 //! context and a keyboard button numbered by its USB HID usage. Nothing here
@@ -44,6 +44,17 @@ pub const DEFAULT_KEYS: [(&str, u16); 10] = [
     ("action/exit", 0x29),         // Escape
 ];
 
+/// The actions bound to the mouse, and the button each is bound to by
+/// default, as a HID Button-page usage (page 0x09): 1 is the primary button,
+/// 2 the secondary (ADR-0031).
+///
+/// A separate table from [`DEFAULT_KEYS`] because the numbers are on another
+/// page: usage 1 is the left button here and a reserved code on the keyboard.
+pub const DEFAULT_BUTTONS: [(&str, u16); 2] = [
+    ("action/break_block", 1), // primary (left)
+    ("action/place_block", 2), // secondary (right)
+];
+
 /// What the player asked for this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Intent {
@@ -59,6 +70,10 @@ pub struct Intent {
     pub jump: bool,
     /// The exit action went down this frame.
     pub exit: bool,
+    /// The break action went down this frame: one press is one request.
+    pub break_block: bool,
+    /// The place action went down this frame.
+    pub place_block: bool,
     /// How many of the actions are held.
     pub held: u32,
 }
@@ -76,7 +91,9 @@ impl Intent {
     /// The part of this intent a player consumes.
     ///
     /// `exit` and `held` belong to whoever runs the frames, not to the
-    /// player, and do not cross.
+    /// player, and do not cross. Neither do `break_block` and `place_block`:
+    /// they are requests to the authority over the world, not movement, and
+    /// travel as commands (ADR-0036).
     #[must_use]
     pub const fn walk(&self) -> Walk {
         Walk {
@@ -97,7 +114,8 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// Register the actions in one context, bound to [`DEFAULT_KEYS`].
+    /// Register the actions in one context, bound to [`DEFAULT_KEYS`] and
+    /// [`DEFAULT_BUTTONS`].
     ///
     /// # Errors
     ///
@@ -106,14 +124,16 @@ impl Controls {
         let context = Identifier::nexora(CONTEXT)?;
         let mut system = InputSystem::new();
         system.set_context(context.clone(), 0);
-        let mut actions = Vec::with_capacity(DEFAULT_KEYS.len());
-        for (path, usage) in DEFAULT_KEYS {
+        let mut actions = Vec::with_capacity(DEFAULT_KEYS.len() + DEFAULT_BUTTONS.len());
+        let keys = DEFAULT_KEYS.map(|(path, usage)| (path, DeviceKind::Keyboard, usage));
+        let buttons = DEFAULT_BUTTONS.map(|(path, usage)| (path, DeviceKind::Mouse, usage));
+        for (path, device, usage) in keys.into_iter().chain(buttons) {
             let action = Identifier::nexora(path)?;
             system.register_action(ActionDefinition::new(action.clone(), ActionKind::Button))?;
             system.bind(Binding::new(
                 context.clone(),
                 action.clone(),
-                Source::button(DeviceKind::Keyboard, ButtonCode(usage)),
+                Source::button(device, ButtonCode(usage)),
             ))?;
             actions.push(action);
         }
@@ -134,6 +154,8 @@ impl Controls {
             look: axis(7, 8),
             jump: held(4),
             exit: snapshot.just_pressed(&self.actions[9]),
+            break_block: snapshot.just_pressed(&self.actions[10]),
+            place_block: snapshot.just_pressed(&self.actions[11]),
             held: (0..self.actions.len()).filter(|index| held(*index)).count() as u32,
         }
     }
@@ -205,6 +227,8 @@ mod tests {
             look: -1.0,
             jump: true,
             exit: true,
+            break_block: true,
+            place_block: true,
             held: 6,
         };
         assert_eq!(
@@ -223,13 +247,55 @@ mod tests {
             ..Intent::default()
         };
         assert_eq!(quiet.walk(), Walk::default(), "exit and held do not cross");
+        let clicks = Intent {
+            break_block: true,
+            place_block: true,
+            ..Intent::default()
+        };
+        assert_eq!(clicks.walk(), Walk::default(), "nor do the hands");
+        assert!(!clicks.moves());
+    }
+
+    const MOUSE: DeviceId = DeviceId::new(DeviceKind::Mouse, 0);
+
+    fn click(usage: u16) -> InputFrame {
+        InputFrame::new()
+            .with(Signal::Attached(MOUSE))
+            .with(Signal::button(MOUSE, ButtonCode(usage), true))
+    }
+
+    #[test]
+    fn the_primary_button_breaks_and_the_secondary_places_once_per_press() {
+        let mut controls = Controls::new().unwrap();
+        let intent = controls.sample(&click(1));
+        assert!(intent.break_block && !intent.place_block);
+        assert_eq!(intent.held, 1);
+        assert!(!intent.moves(), "a click is not movement");
+        // Still held on the next frame: the press is not repeated.
+        let held = controls.sample(&InputFrame::new());
+        assert!(!held.break_block, "one press, one request");
+        assert_eq!(held.held, 1);
+
+        let mut controls = Controls::new().unwrap();
+        let intent = controls.sample(&click(2));
+        assert!(intent.place_block && !intent.break_block);
+    }
+
+    #[test]
+    fn a_keyboard_usage_is_not_a_mouse_button() {
+        // Usage 1 on the keyboard page is a reserved code, not the primary
+        // button: the device is part of the binding.
+        let mut controls = Controls::new().unwrap();
+        assert_eq!(controls.sample(&press(1)), Intent::default());
     }
 
     #[test]
     fn every_action_has_its_own_key() {
-        let mut usages: Vec<u16> = DEFAULT_KEYS.iter().map(|(_, usage)| *usage).collect();
-        usages.sort_unstable();
-        usages.dedup();
-        assert_eq!(usages.len(), DEFAULT_KEYS.len());
+        for table in [&DEFAULT_KEYS[..], &DEFAULT_BUTTONS[..]] {
+            let mut usages: Vec<u16> = table.iter().map(|(_, usage)| *usage).collect();
+            usages.sort_unstable();
+            usages.dedup();
+            assert_eq!(usages.len(), table.len());
+        }
     }
 }

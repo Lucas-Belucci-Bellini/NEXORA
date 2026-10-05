@@ -16,12 +16,18 @@
 //!    [`Intent::walk`]; exit and the held count stay with the frame loop.
 //! 2. **Simulation**: the fixed steps the real time since the last frame
 //!    buys ([`FrameSchedule`]): the world clock advances one tick a step.
+//!    The player's hands (ADR-0036) act at the first of them: a click is
+//!    latched until a frame buys a tick, then becomes a block command the
+//!    authority validates against the player's stance and applies.
 //! 3. **Physics**: the player (ADR-0035) — a character body the simulation
 //!    steers — runs one tick for each of those steps, against one view of
-//!    the world built for the frame. Nothing edits the client's world, so a
-//!    tick that had to push the body out of terrain is a defect, not a fix.
-//! 4. **Render prep**: the camera is made from the player's eye, and never
-//!    the other way round; the render origin follows it (ADR-0029), it is
+//!    the world built for the frame. The authority never places a block
+//!    inside the body, so a tick that had to push it out of terrain is a
+//!    defect, not a fix.
+//! 4. **Render prep**: the columns an edit changed are meshed again and
+//!    uploaded with their neighbours in this frame's submission
+//!    ([`hands`]); the camera is made from the player's eye, and never the
+//!    other way round; the render origin follows it (ADR-0029), it is
 //!    sampled, and the frame is recorded by the first render pass
 //!    (ADR-0030).
 //! 5. **Render**: one submission, and the frame presented to the window. The
@@ -38,25 +44,39 @@
 //!
 //! The first frame shown — from the player's eye, before any step — is read
 //! back from the surface and, after the window closes, checked against the
-//! CPU ray cast (`nexora_render::reference`) over every drawn column: the
-//! client does not claim to draw the world unless the pixels say so.
+//! CPU ray cast (`nexora_render::reference`) over every drawn column, as the
+//! world was when it was drawn ([`hands::AsFirstShown`]): the client does
+//! not claim to draw the world unless the pixels say so.
+//!
+//! `--load` starts from a save instead of generating, and `--save` writes
+//! the world at shutdown, so what the hands changed is there the next time:
+//! world, player, interaction, change, save, reload, and the world goes on.
 //!
 //! Not built: streaming into the pass (the world is generated and meshed
-//! before the first frame), textures, pointer look, interpolation between
-//! ticks (DEBT-0049), the player as an entity or in the save (DEBT-0050),
-//! audio. The frame budget is the arithmetic [`FrameBudget::doubling_from`]
+//! before the first frame; an edit outside the drawn band is saved and not
+//! drawn), textures, pointer look, a crosshair or an outline on the targeted
+//! block (the hands act on the block under the centre of the view),
+//! interpolation between ticks (DEBT-0049), the player as an entity or in
+//! the save (DEBT-0050), audio. The frame budget is the arithmetic [`FrameBudget::doubling_from`]
 //! the step, not a measured one.
 
+pub mod hands;
 pub mod scene;
 
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use nexora_camera::{Camera, Projection, RenderOrigin};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
+use nexora_foundation::ident::Identifier;
+use nexora_foundation::spatial::BlockPos;
 use nexora_foundation::time::{CalendarConfig, TimeScale};
-use nexora_mesh::ChunkMesh;
+use nexora_mesh::{mesh_region, ChunkMesh, Extent};
+use nexora_persistence::SaveContainer;
 use nexora_render::reference::{check_frame, FrameCheck};
 use nexora_render::{ChunkPass, Corners, FrameStats, GpuChunk};
 use nexora_rhi::{CommandList, Rhi, TextureDesc, TextureFormat, TextureHandle, Usage};
@@ -68,13 +88,16 @@ use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
 use nexora_simulation::{
-    Controls, Eye, Intent, PhysicsModule, Player, PlayerState, Walk, WorldSurfaces, WorldVoxels,
+    Action, Attempt, Controls, Eye, Intent, Interaction, PhysicsModule, Player, PlayerState, Walk,
+    WorldSurfaces, WorldVoxels,
 };
 use nexora_window::input::InputCounts;
 use nexora_window::{run, Client, Flow, WindowFacts, WindowSpec};
 use nexora_world::persist;
+use nexora_world::voxel::BlockStateId;
 use nexora_world::world::{World, WorldDescriptor};
 
+use crate::hands::AsFirstShown;
 use crate::scene::Scene;
 
 /// The window's title.
@@ -105,6 +128,9 @@ pub struct ClientConfig {
     /// Where the world is flushed at shutdown; `None` encodes it but writes
     /// nothing.
     pub save: Option<PathBuf>,
+    /// A save to start from instead of generating: its seed, its clock and
+    /// every block anyone changed come back with it. `seed` is not used.
+    pub load: Option<PathBuf>,
     /// Log lifecycle progress to standard error.
     pub verbose: bool,
 }
@@ -119,6 +145,7 @@ impl Default for ClientConfig {
             frames: None,
             timeout: None,
             save: None,
+            load: None,
             verbose: false,
         }
     }
@@ -201,6 +228,11 @@ pub struct ClientReport {
     pub turned: f64,
     /// What the player's body did, read from the body rather than the camera.
     pub player: PlayerSummary,
+    /// What the player's hands did.
+    pub hands: HandsSummary,
+    /// The save the world started from, when it was loaded rather than
+    /// generated.
+    pub loaded: Option<PathBuf>,
     /// The flushed world's size, and where it was written.
     pub flushed: (usize, Option<PathBuf>),
 }
@@ -213,6 +245,23 @@ pub struct PlayerSummary {
     pub walked: [f64; 3],
     /// Whether the body ended the run standing on something.
     pub grounded: bool,
+}
+
+/// What the player's hands did over a run (ADR-0036).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HandsSummary {
+    /// Blocks broken.
+    pub broke: u64,
+    /// Blocks placed.
+    pub placed: u64,
+    /// Requests the authority refused.
+    pub refused: u64,
+    /// Clicks that met nothing within reach, so sent nothing.
+    pub missed: u64,
+    /// Column meshes rebuilt because of edits.
+    pub remeshed: u64,
+    /// Column uploads made because of edits, neighbours included.
+    pub uploaded: u64,
 }
 
 /// Start the runtime in client mode, run it until it ends, and shut it down.
@@ -270,8 +319,15 @@ fn run_in(
     log(diagnostics, "engine modules initialized");
 
     // --- world --------------------------------------------------------------
-    let descriptor = WorldDescriptor::new("nexora-client", config.seed)?;
-    let mut world = World::create(descriptor, CalendarConfig::earthlike())?;
+    // Generated from the seed, or what a save left: the same world it was,
+    // every edit included, and its clock where it stopped.
+    let mut world = match &config.load {
+        Some(path) => persist::load(&SaveContainer::read(path)?)?,
+        None => World::create(
+            WorldDescriptor::new("nexora-client", config.seed)?,
+            CalendarConfig::earthlike(),
+        )?,
+    };
     let ticks_per_second = world.clock().calendar().ticks_per_second();
     if ticks_per_second == 0 || STEP != Duration::from_secs(1) / ticks_per_second {
         return Err(Error::new(
@@ -301,13 +357,26 @@ fn run_in(
     let start = player.state();
     log(diagnostics, "player spawned and at rest");
 
+    // --- the player's hands ---------------------------------------------------
+    // They share the world with the frame loop: the handlers write it, the
+    // frames read it (ADR-0036). Stone is what they place.
+    let stone = world.block_id(&Identifier::parse("nexora:block/stone")?)?;
+    let world = Rc::new(RefCell::new(world));
+    let hands = Interaction::local_player(Rc::clone(&world), stone)?;
+
     // --- presentation -------------------------------------------------------
     let start_camera = camera_at(player.eye(), scene.projection)?;
     let mut presentation = Presentation {
-        world: &mut world,
+        world: Rc::clone(&world),
         lifecycle,
         scene: &scene,
         controls: Controls::new()?,
+        hands,
+        break_latched: false,
+        place_latched: false,
+        regions: scene.regions.iter().map(|(region, _)| *region).collect(),
+        meshes: scene.regions.iter().map(|(_, mesh)| mesh.clone()).collect(),
+        first_shown: BTreeMap::new(),
         player,
         projection: scene.projection,
         camera: start_camera,
@@ -336,8 +405,17 @@ fn run_in(
         projection,
         tally,
         adapter,
+        hands,
+        first_shown,
+        world: frames_world,
         ..
     } = presentation;
+    // The hands' handlers and the frame loop held the world with this
+    // function; they are gone, so it is this function's alone again.
+    drop((hands, frames_world));
+    let world = Rc::try_unwrap(world)
+        .map_err(|_| wrong("something still holds the world after the frames"))?
+        .into_inner();
     // The camera is derived from the eye and never written back; a run in
     // which they part ways drew something the player was not looking at.
     if camera != camera_at(player.eye(), projection)? {
@@ -356,7 +434,7 @@ fn run_in(
     // --- the first frame, judged now that the world is not borrowed ---------
     let first_frame = match &tally.captured {
         Some(captured) => {
-            let view = WorldSurfaces::untextured(&world);
+            let view = AsFirstShown::new(WorldSurfaces::untextured(&world), &first_shown);
             let check = check_frame(
                 &view,
                 scene.bounds,
@@ -436,6 +514,8 @@ fn run_in(
             walked: walked(&start, &now),
             grounded: now.grounded,
         },
+        hands: tally.hands,
+        loaded: config.load.clone(),
         flushed: (flushed, config.save.clone()),
     })
 }
@@ -538,6 +618,7 @@ struct Tally {
     active_frames: u64,
     captured: Option<Captured>,
     unreadable: bool,
+    hands: HandsSummary,
     ending: Option<Ending>,
     started: Option<Instant>,
     last: Option<Instant>,
@@ -555,10 +636,23 @@ struct Live {
 
 /// The client's side of the window host: the frame loop, living in a window.
 struct Presentation<'a> {
-    world: &'a mut World,
+    world: Rc<RefCell<World>>,
     lifecycle: &'a mut Lifecycle,
     scene: &'a Scene,
     controls: Controls,
+    /// The player's hands: block commands, validated against its stance.
+    hands: Interaction,
+    /// A break asked for on a frame that bought no tick, waiting for one
+    /// that does — the jump's latch, for the same reason.
+    break_latched: bool,
+    /// A placement waiting the same way.
+    place_latched: bool,
+    /// The drawn regions, in the order of the device's chunks.
+    regions: Vec<Extent>,
+    /// Their meshes as last uploaded: what the corners are taken from.
+    meshes: Vec<ChunkMesh>,
+    /// What each cell edited after the first frame was captured held then.
+    first_shown: BTreeMap<BlockPos, BlockStateId>,
     /// The player the keys steer, which owns where the view is.
     player: Player,
     projection: Projection,
@@ -636,7 +730,7 @@ impl Client for Presentation<'_> {
             // not draw again (ADR-0027).
             return Ok(Flow::Exit);
         }
-        let Some(live) = self.live.as_ref() else {
+        let Some(live) = self.live.as_mut() else {
             return Err(wrong("a frame before the window opened"));
         };
         let begun = Instant::now();
@@ -649,12 +743,43 @@ impl Client for Presentation<'_> {
         let clock = Instant::now();
         let intent: Intent = self.controls.sample(&std::mem::take(&mut self.pending));
         let walk = walk_for_ticks(&mut self.jump_latched, intent.walk(), plan.steps);
+        self.break_latched |= intent.break_block;
+        self.place_latched |= intent.place_block;
         frame.record(FrameStage::Input, clock.elapsed())?;
 
-        // Simulation: the steps real time bought, each one world tick.
+        // Simulation: the steps real time bought, each one world tick; the
+        // hands act at the first of them, from the stance the player is in
+        // before it moves.
         let clock = Instant::now();
-        for _ in 0..plan.steps {
-            self.world.clock_mut().advance_by(TimeScale::Tick, 1)?;
+        let mut changed = BTreeSet::new();
+        for step in 0..plan.steps {
+            self.world
+                .borrow_mut()
+                .clock_mut()
+                .advance_by(TimeScale::Tick, 1)?;
+            if step > 0 {
+                continue;
+            }
+            let now = self.world.borrow().clock().now();
+            for action in [Action::Break, Action::Place] {
+                let latched = match action {
+                    Action::Break => &mut self.break_latched,
+                    Action::Place => &mut self.place_latched,
+                };
+                if !std::mem::take(latched) {
+                    continue;
+                }
+                let attempt = self.hands.act(&self.player, action, now)?;
+                let first_captured = self.tally.captured.is_some();
+                if let Some(edit) = note(&mut self.tally.hands, &attempt) {
+                    // A cell edited before the first frame was captured is
+                    // drawn edited in it; one edited after is not.
+                    if first_captured {
+                        self.first_shown.entry(edit.0).or_insert(edit.1);
+                    }
+                    changed.extend(hands::touched(&self.regions, edit.0));
+                }
+            }
         }
         frame.record(FrameStage::Simulation, clock.elapsed())?;
 
@@ -663,14 +788,15 @@ impl Client for Presentation<'_> {
         // world mutably; the view borrows it).
         if plan.steps > 0 {
             let clock = Instant::now();
-            let terrain = WorldVoxels::new(&*self.world);
+            let world = self.world.borrow();
+            let terrain = WorldVoxels::new(&world);
             for _ in 0..plan.steps {
                 let outcome = self.player.tick(&terrain, walk)?;
                 if outcome.depenetrated > 0 {
                     return Err(Error::new(
                         Domain::Physics,
                         "client",
-                        "the player was pushed out of terrain that nothing edited",
+                        "the player was pushed out of terrain: nothing may put a block inside it",
                     )
                     .with_recovery(Recovery::Manual)
                     .with_context("substeps", outcome.depenetrated.to_string()));
@@ -679,13 +805,40 @@ impl Client for Presentation<'_> {
             frame.record(FrameStage::Physics, clock.elapsed())?;
         }
 
-        // Render prep: the camera is the player's eye, the origin follows
-        // it, the pass is recorded.
+        // Render prep: what the hands changed is meshed again and uploaded,
+        // riding in this frame's submission; the camera is the player's eye,
+        // the origin follows it, the pass is recorded.
         let clock = Instant::now();
+        let mut list = CommandList::new("client frame");
+        if !changed.is_empty() {
+            let changed: Vec<usize> = changed.into_iter().collect();
+            {
+                let world = self.world.borrow();
+                let view = WorldSurfaces::untextured(&world);
+                for &index in &changed {
+                    self.meshes[index] = mesh_region(&view, self.regions[index]).opaque;
+                }
+            }
+            let meshes: Vec<&ChunkMesh> = self.meshes.iter().collect();
+            let corners = Corners::of(&meshes);
+            let again = hands::with_neighbours(&self.regions, &changed);
+            for &index in &again {
+                let fresh = live.pass.upload(
+                    rhi,
+                    &mut list,
+                    &self.meshes[index],
+                    self.regions[index],
+                    &corners,
+                )?;
+                // Released once the last frame that drew it completes.
+                std::mem::replace(&mut live.chunks[index], fresh).destroy(rhi)?;
+            }
+            self.tally.hands.remeshed += changed.len() as u64;
+            self.tally.hands.uploaded += again.len() as u64;
+        }
         self.camera = camera_at(self.player.eye(), self.projection)?;
         self.origin = self.origin.follow(self.camera.position())?;
         let state = self.camera.sample(self.origin, live.width, live.height)?;
-        let mut list = CommandList::new("client frame");
         let drawn = live
             .pass
             .record(&mut list, &state, live.target, live.depth, &live.chunks)?;
@@ -774,6 +927,28 @@ impl Client for Presentation<'_> {
         rhi.destroy_texture(live.target)?;
         rhi.destroy_texture(live.depth)?;
         Ok(Flow::Exit)
+    }
+}
+
+/// Count what one action came to, and hand back the cell it changed and
+/// what that cell held before, when it changed one.
+fn note(summary: &mut HandsSummary, attempt: &Attempt) -> Option<(BlockPos, BlockStateId)> {
+    match (attempt.edit, attempt.refused) {
+        (Some(edit), _) => {
+            match attempt.action {
+                Action::Break => summary.broke += 1,
+                Action::Place => summary.placed += 1,
+            }
+            Some((edit.position, edit.before))
+        }
+        (None, Some(_)) => {
+            summary.refused += 1;
+            None
+        }
+        (None, None) => {
+            summary.missed += 1;
+            None
+        }
     }
 }
 
@@ -884,6 +1059,18 @@ pub fn format_report(report: &ClientReport) -> String {
             "airborne"
         }
     ));
+    out.push_str(&format!(
+        "hands              broke {}, placed {}, refused {}, {} clicks met nothing in reach; {} columns meshed again, {} uploaded\n",
+        report.hands.broke,
+        report.hands.placed,
+        report.hands.refused,
+        report.hands.missed,
+        report.hands.remeshed,
+        report.hands.uploaded
+    ));
+    if let Some(path) = &report.loaded {
+        out.push_str(&format!("world load         from {}\n", path.display()));
+    }
     match &report.flushed.1 {
         Some(path) => out.push_str(&format!(
             "world flush        {} bytes, written to {}\n",
@@ -996,6 +1183,7 @@ mod tests {
     use nexora_foundation::spatial::WorldPosition;
     use nexora_foundation::time::DEFAULT_TICKS_PER_SECOND;
     use nexora_runtime::input::{ButtonCode, DeviceId, DeviceKind, Signal};
+    use nexora_simulation::interaction::look_direction;
     use nexora_simulation::player::{EYE_HEIGHT, MAX_PITCH};
     use nexora_simulation::{Walk, DEFAULT_KEYS};
 
@@ -1292,5 +1480,131 @@ mod tests {
         .map(class_index)
         .collect();
         assert_eq!(slots, vec![0, 1, 2, 3]);
+    }
+
+    /// The hands act on the block under the centre of the view: the
+    /// interaction ray points where the camera looks, to the bit, at every
+    /// facing a player can have.
+    #[test]
+    fn the_interaction_ray_is_the_cameras_forward() {
+        let (_, scene, player) = the_default_scene();
+        // Every yaw a player can have is in (-π, π]: twenty-four of them,
+        // negative ones included, each at five pitches from the limits in.
+        for yaw_step in 0..24 {
+            for pitch in [-MAX_PITCH, -0.5, 0.0, 0.5, MAX_PITCH] {
+                let mut eye = player.eye();
+                eye.yaw = std::f64::consts::PI - f64::from(yaw_step) * std::f64::consts::PI / 12.0;
+                eye.pitch = pitch;
+                let camera = camera_at(eye, scene.projection).unwrap();
+                assert_eq!(
+                    camera.forward().map(f64::to_bits),
+                    look_direction(eye.yaw, eye.pitch).map(f64::to_bits),
+                    "yaw {} pitch {}",
+                    eye.yaw,
+                    eye.pitch
+                );
+            }
+        }
+    }
+
+    /// World, player, interaction, change, save, reload, without a window:
+    /// the client's own scene and player, its hands breaking the block under
+    /// the player's feet, the save it would write, read back the way
+    /// `--load` reads it — and the scene built again on the loaded world,
+    /// the edit still there.
+    #[test]
+    fn what_the_hands_change_is_in_the_save_the_next_run_loads() {
+        let (world, scene, mut player) = the_default_scene();
+        let feet = scene.spawn;
+        let under = BlockPos::new(feet.x, feet.feet_y - 1, feet.z);
+        let stone = world
+            .block_id(&Identifier::parse("nexora:block/stone").unwrap())
+            .unwrap();
+        let world = Rc::new(RefCell::new(world));
+        let mut hands = Interaction::local_player(Rc::clone(&world), stone).unwrap();
+
+        // Straight down, the ray meets the block under the feet.
+        for _ in 0..40 {
+            let world = world.borrow();
+            player
+                .tick(
+                    &WorldVoxels::new(&world),
+                    Walk {
+                        look: -1.0,
+                        ..Walk::default()
+                    },
+                )
+                .unwrap();
+        }
+        // The time is read first: the handlers borrow the world mutably.
+        let now = world.borrow().clock().now();
+        let attempt = hands.act(&player, Action::Break, now).unwrap();
+        let mut summary = HandsSummary::default();
+        let edit = note(&mut summary, &attempt).expect("the block broke");
+        assert_eq!(edit.0, under);
+        assert_eq!(summary.broke, 1);
+        let changed = hands::touched(
+            &scene
+                .regions
+                .iter()
+                .map(|(region, _)| *region)
+                .collect::<Vec<_>>(),
+            under,
+        );
+        assert!(!changed.is_empty(), "the edit is inside the drawn band");
+
+        drop(hands);
+        let world = Rc::try_unwrap(world).unwrap().into_inner();
+        let bytes = persist::save(&world).unwrap().encode();
+        let mut loaded = persist::load(&SaveContainer::decode(&bytes).unwrap()).unwrap();
+        loaded.bring_online().unwrap();
+        assert_eq!(loaded.get_block(under), Ok(nexora_world::voxel::AIR));
+        let again = scene::build(&mut loaded, ClientConfig::default().radius).unwrap();
+        assert_eq!(again.regions.len(), scene.regions.len());
+        assert_eq!(loaded.get_block(under), Ok(nexora_world::voxel::AIR));
+    }
+
+    #[test]
+    fn a_click_is_counted_once_by_what_it_came_to() {
+        let mut summary = HandsSummary::default();
+        let position = BlockPos::new(1, 2, 3);
+        let edit = nexora_simulation::Edit {
+            position,
+            before: BlockStateId(4),
+            after: nexora_world::voxel::AIR,
+        };
+        let broke = Attempt {
+            action: Action::Break,
+            target: None,
+            refused: None,
+            edit: Some(edit),
+        };
+        assert_eq!(
+            note(&mut summary, &broke),
+            Some((position, BlockStateId(4)))
+        );
+        let refused = Attempt {
+            action: Action::Place,
+            target: None,
+            refused: Some(nexora_command::result::FailureReason::InvalidState),
+            edit: None,
+        };
+        assert_eq!(note(&mut summary, &refused), None);
+        let missed = Attempt {
+            action: Action::Place,
+            target: None,
+            refused: None,
+            edit: None,
+        };
+        assert_eq!(note(&mut summary, &missed), None);
+        assert_eq!(
+            summary,
+            HandsSummary {
+                broke: 1,
+                refused: 1,
+                missed: 1,
+                ..HandsSummary::default()
+            }
+        );
     }
 }

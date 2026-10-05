@@ -19,10 +19,13 @@
 //! (ADR-0035) is input intent, physics and the world at once, and this is the
 //! one crate that sees all three. It hands out foundation types only, so the
 //! client, the slice and the benchmark drive it without naming a physics type.
+//! Its hands do too (ADR-0036): the interaction ray is a physics query and its
+//! result a world command, and both meet here.
 
 pub mod commands;
 pub mod content;
 pub mod controls;
+pub mod interaction;
 pub mod player;
 pub mod queries;
 pub mod residency;
@@ -32,7 +35,8 @@ pub mod terrain;
 
 pub use commands::{BreakBlockHandler, PlaceBlockHandler};
 pub use content::{BlockContent, ContentBlock};
-pub use controls::{Controls, Intent, DEFAULT_KEYS};
+pub use controls::{Controls, Intent, DEFAULT_BUTTONS, DEFAULT_KEYS};
+pub use interaction::{Action, Attempt, Edit, Interaction, Stance, Target};
 pub use player::{Eye, Player, PlayerState, TickOutcome, Walk};
 pub use queries::WorldQueries;
 pub use residency::{FlushReport, RetainedChunks, WorldResidency};

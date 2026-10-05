@@ -217,8 +217,13 @@ impl Camera {
         Ok(())
     }
 
-    /// Turn the camera. Yaw wraps into `(-π, π]`; pitch is clamped to
-    /// `±MAX_PITCH`.
+    /// Turn the camera. Yaw wraps into `(-π, π]`, and one already there is
+    /// kept to the bit; pitch is clamped to `±MAX_PITCH`.
+    ///
+    /// Wrapping a negative yaw that is already in range moves it by a unit in
+    /// the last place, and a camera made from a player's eye must look exactly
+    /// where the player's interaction ray does (ADR-0036): the block under
+    /// the centre of the view is the block the hands act on.
     ///
     /// # Errors
     ///
@@ -229,10 +234,16 @@ impl Camera {
                 .with_context("yaw", yaw.to_string())
                 .with_context("pitch", pitch.to_string()));
         }
-        let mut wrapped = yaw.rem_euclid(2.0 * PI);
-        if wrapped > PI {
-            wrapped -= 2.0 * PI;
-        }
+        let wrapped = if yaw > -PI && yaw <= PI {
+            yaw
+        } else {
+            let wrapped = yaw.rem_euclid(2.0 * PI);
+            if wrapped > PI {
+                wrapped - 2.0 * PI
+            } else {
+                wrapped
+            }
+        };
         self.yaw = wrapped;
         self.pitch = pitch.clamp(-MAX_PITCH, MAX_PITCH);
         Ok(())

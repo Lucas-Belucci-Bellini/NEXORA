@@ -2,9 +2,11 @@
 //!
 //! Opens a window on this machine and shows the generated world through the
 //! first render pass, from the eye of a player standing in it (ADR-0035).
-//! W, A, S, D walk; Space jumps; the arrow keys turn and look; Escape exits,
-//! as does closing the window. Prints what the run did, and exits non-zero at
-//! the first failure.
+//! W, A, S, D walk; Space jumps; the arrow keys turn and look; the primary
+//! mouse button breaks the block at the centre of the view and the secondary
+//! places stone against it (ADR-0036); Escape exits, as does closing the
+//! window. `--load` starts from a save, `--save` writes one at shutdown.
+//! Prints what the run did, and exits non-zero at the first failure.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,7 +15,7 @@ use std::time::Duration;
 use nexora_client::{format_report, run_client, ClientConfig};
 
 const USAGE: &str = "usage: nexora-client [--frames N] [--timeout S] [--radius R] [--seed N] \
-[--size WxH] [--save PATH] [--verbose]";
+[--size WxH] [--load PATH] [--save PATH] [--verbose]";
 
 fn main() -> ExitCode {
     let config = match parse(std::env::args().skip(1)) {
@@ -39,6 +41,7 @@ fn main() -> ExitCode {
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<ClientConfig, String> {
     let mut config = ClientConfig::default();
+    let mut seeded = false;
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or_else(|| format!("{flag} needs a value"));
         match arg.as_str() {
@@ -55,6 +58,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<ClientConfig, String>
                     .map_err(|_| "--radius needs a number".to_owned())?;
             }
             "--seed" => {
+                seeded = true;
                 config.seed = value("--seed")?
                     .parse()
                     .map_err(|_| "--seed needs a number".to_owned())?;
@@ -68,9 +72,13 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<ClientConfig, String>
                 config.height = positive(h, "--size")? as u32;
             }
             "--save" => config.save = Some(PathBuf::from(value("--save")?)),
+            "--load" => config.load = Some(PathBuf::from(value("--load")?)),
             "--verbose" => config.verbose = true,
             other => return Err(format!("unknown argument: {other}")),
         }
+    }
+    if config.load.is_some() && seeded {
+        return Err("--seed and --load conflict: a save carries its own seed".to_owned());
     }
     Ok(config)
 }

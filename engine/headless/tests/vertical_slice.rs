@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use nexora_foundation::memory::{MemoryClass, Pressure};
-use nexora_headless::{format_report, run_slice, SliceConfig};
+use nexora_headless::{format_report, run_slice, SliceConfig, SliceReport};
 
 /// A scratch directory that removes itself.
 struct Scratch(PathBuf);
@@ -36,6 +36,12 @@ impl Drop for Scratch {
     }
 }
 
+/// Every cell the run left changed and carries as a probe: the edit stage's,
+/// and the ones the player's hands changed (ADR-0036).
+fn edited_cells(report: &SliceReport) -> usize {
+    report.blocks_edited + report.hands_probes
+}
+
 fn config(scratch: &Scratch, name: &str) -> SliceConfig {
     SliceConfig {
         radius: 1,
@@ -56,7 +62,7 @@ fn the_slice_completes_and_verifies_itself() {
         report.chunks_generated, 9,
         "a radius of 1 covers a 3x3 area"
     );
-    assert_eq!(report.probes_verified, report.blocks_edited);
+    assert_eq!(report.probes_verified, edited_cells(&report));
     assert!(report.blocks_edited > 0);
     assert!(report.non_air_blocks > 0);
     assert!(report.save_bytes > 0);
@@ -221,7 +227,7 @@ fn the_streaming_stage_evicts_and_restores_without_losing_an_edit() {
         "walking back did not restore anything"
     );
     // And the payoff: every probe still reads correctly after the round trip.
-    assert_eq!(report.probes_verified, report.blocks_edited);
+    assert_eq!(report.probes_verified, edited_cells(&report));
 }
 
 #[test]
@@ -507,7 +513,7 @@ fn commands_do_not_change_what_the_save_contains() {
     let scratch = Scratch::new("commands-neutral");
     let report = run_slice(&config(&scratch, "commands-neutral")).expect("the slice runs");
 
-    assert_eq!(report.probes_verified, report.blocks_edited);
+    assert_eq!(report.probes_verified, edited_cells(&report));
     assert!(report.save_bytes > 0);
 }
 
@@ -549,15 +555,18 @@ fn the_slice_rebuilds_itself_from_checkpoint_plus_journal() {
 
 #[test]
 fn every_write_in_the_run_is_journalled_including_the_commands() {
-    // The command stage places a block and breaks it again. Those are two
-    // writes through the same `set_block` path as the edit stage, so they must
-    // appear in the journal without the command handlers knowing it exists.
+    // The command stage places a block and breaks it again, and the player's
+    // hands break and place. Those are writes through the same `set_block`
+    // path as the edit stage, so they must appear in the journal without the
+    // command handlers knowing it exists.
     let scratch = Scratch::new("journal-covers-commands");
     let report = run_slice(&config(&scratch, "journal-covers-commands")).expect("the slice runs");
 
+    // The player's hands write through the same path too (ADR-0036).
+    let hands = (report.hands_broke + report.hands_placed) as usize;
     assert_eq!(
         report.journal_edits as usize,
-        report.blocks_edited + report.commands_accepted,
+        report.blocks_edited + report.commands_accepted + hands,
         "the journal missed a write that changed the world"
     );
 }
@@ -682,6 +691,6 @@ fn the_first_generation_content_survives_every_stage() {
     let report = run_slice(&config).expect("the slice completes with content");
     assert_eq!(report.content_blocks, 21);
     assert_eq!(report.content_surfaces, 21);
-    assert_eq!(report.probes_verified, report.blocks_edited);
+    assert_eq!(report.probes_verified, edited_cells(&report));
     assert_eq!(report.recovered_probes, report.probes_verified);
 }

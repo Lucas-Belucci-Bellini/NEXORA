@@ -1146,6 +1146,54 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 3 (replay) / Phase 6 (servidor)
 - **STATUS:** OPEN
 
+### DEBT-0052 — Um player que andou pode repousar um ulp acima do plano inteiro
+
+- **SYSTEM:** `engine/physics` (resolução de contato) / `engine/headless`
+  (estágio do player)
+- **CLASS:** ARCHITECTURAL (determinismo do repouso)
+- **WHY CREATED:** varredura de 80 combinações de seed e raio do slice
+  (2026-10-05, ADR-0036). A seed 28 falha no estágio de caminhada, que a
+  ADR-0036 não tocou: depois de andar, o player fica parado, idêntico ao bit
+  de um tick para o outro, com os pés em `y = 63.00000000000001`; o pulo
+  pousa em `63.0` exato, e o slice recusa "não pousou onde decolou". Falha
+  igual no `main` (`2b1b451`), compilado à parte. A ADR-0035 diz que o
+  `spawn` põe os pés no plano inteiro e que um corpo em repouso é ponto fixo;
+  o que a seed 28 mostra é que um repouso alcançado andando pode ser ponto
+  fixo **fora** do plano, e que a aterrissagem de um pulo encaixa e a de uma
+  descida andando não.
+- **IMPACT:** nenhuma seed do CI; o slice falha na seed 28 (raios 1 e 2).
+  Um replay que compare posições ao bit depois de andar e pular pode
+  divergir do esperado sem bug no replay.
+- **PROPOSED REMEDIATION:** encontrar onde a descida andando deixa o corpo
+  em repouso sem `snap_to_plane` e encaixar igual à aterrissagem do pulo; ou,
+  se o ulp for legítimo, o estágio comparar com a tolerância de contato
+  (`CONTACT_EPSILON`) e documentar por quê. Reproduzir:
+  `nexora-headless --seed 28 --radius 1`.
+- **TRIGGER:** o próximo trabalho em física ou no player; ou um replay.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0053 — A autoridade confere alcance e ocupação, não linha de visão
+
+- **SYSTEM:** `engine/simulation::interaction` (`StanceValidator`)
+- **CLASS:** SECURITY (validação de comando do cliente)
+- **WHY CREATED:** ADR-0036. O raio do cliente para no primeiro bloco
+  sólido, então um cliente honesto nunca mira através de parede; mas a
+  autoridade só confere a distância do olho ao centro do alvo e se a célula
+  é o corpo. Um cliente que mande um alvo atrás de uma parede, dentro do
+  alcance, é obedecido. `Command System.md` §72 diz que comando de cliente é
+  não confiável; hoje só o mesmo processo manda comandos.
+- **IMPACT:** nenhum hoje (sem rede); no servidor, quebrar blocos através de
+  paredes e de chão.
+- **PROPOSED REMEDIATION:** a autoridade refaz o raio do olho até o alvo e
+  exige que a primeira célula sólida seja o alvo (quebrar) ou a vizinha da
+  face (colocar), com a mesma `raycast` do cliente; a tolerância para olho e
+  rede fora de sincronia vem do mesmo lugar que a do movimento.
+- **TRIGGER:** o primeiro comando de bloco que chegue pela rede (Phase 6),
+  ou antes, se um cliente separado do servidor existir.
+- **TARGET STAGE:** Phase 6
+- **STATUS:** OPEN
+
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
 - **SYSTEM:** `engine/simulation::terrain` (`WorldVoxels`)
