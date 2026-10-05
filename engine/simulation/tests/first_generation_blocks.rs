@@ -1,9 +1,11 @@
 //! The first visual generation, inside a world.
 //!
-//! `content/first-generation/blocks.json` adds the sixteen stones of issue #5
-//! and the five terrain materials of issues #7, #16 and #17 as blocks. This loads it the way any content would be loaded, builds a world
-//! with it, and checks that every stone reaches the mesher through its own
-//! surface — the `integration_status` the catalog records.
+//! `content/first-generation/blocks.json` adds the sixteen stones of issue #5,
+//! the ten terrain materials of issues #7, #16 and #17 and the five
+//! construction materials of issue #15 as blocks. This loads it the way any
+//! content would be loaded, builds a world with it, and checks that every
+//! block reaches the mesher through its own surface — the
+//! `integration_status` the catalog records.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -24,8 +26,8 @@ fn every_first_generation_stone_is_a_block_with_its_own_surface() {
     let content = BlockContent::load(&document()).expect("the document loads");
     assert_eq!(
         content.blocks().len(),
-        26,
-        "the sixteen stones of issue #5, the five terrain materials and the five construction materials"
+        31,
+        "the sixteen stones of issue #5, the ten terrain materials and the five construction materials"
     );
 
     // The policy the catalog promises, checked on the definitions the game
@@ -71,7 +73,7 @@ fn every_first_generation_stone_is_a_block_with_its_own_surface() {
         assert!(view.occludes(*at), "{block} is opaque");
         surfaces.insert(surface);
     }
-    assert_eq!(surfaces.len(), 26, "twenty-six blocks, twenty-six surfaces");
+    assert_eq!(surfaces.len(), 31, "thirty-one blocks, thirty-one surfaces");
 
     // A world holding them saves and loads with the content present, and a
     // build without it refuses the save by name rather than loading holes.

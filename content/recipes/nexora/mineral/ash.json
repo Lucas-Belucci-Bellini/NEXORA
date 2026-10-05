@@ -1,0 +1,29 @@
+{
+  "category": "mineral",
+  "contrast": 1.9,
+  "courses": null,
+  "id": "nexora:recipe/mineral/ash",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 6,
+    "cells_y": 6,
+    "cracks": 0.0,
+    "octaves": 4,
+    "strength": 0.7
+  },
+  "ramp": [
+    "#2b2a29",
+    "#383634",
+    "#45433f",
+    "#53504b",
+    "#635f59"
+  ],
+  "relief": 0.3,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.45,
+    "density": 0.12
+  },
+  "strips": null
+}

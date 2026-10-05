@@ -26,7 +26,12 @@
     "concrete/concrete.json",
     "stone/worked_stone.json",
     "ceramic/floor_tile.json",
-    "wood/plank_floor.json"
+    "wood/plank_floor.json",
+    "soil/moist_earth.json",
+    "soil/wet_mud.json",
+    "mineral/snow.json",
+    "mineral/ash.json",
+    "vegetation/moss.json"
   ],
   "blocks": [
     {
@@ -158,6 +163,31 @@
       "id": "nexora:block/wood/plank_floor",
       "solid": true,
       "surface": "nexora:material/wood/plank_floor"
+    },
+    {
+      "id": "nexora:block/soil/moist_earth",
+      "solid": true,
+      "surface": "nexora:material/soil/moist_earth"
+    },
+    {
+      "id": "nexora:block/soil/wet_mud",
+      "solid": true,
+      "surface": "nexora:material/soil/wet_mud"
+    },
+    {
+      "id": "nexora:block/mineral/snow",
+      "solid": true,
+      "surface": "nexora:material/mineral/snow"
+    },
+    {
+      "id": "nexora:block/mineral/ash",
+      "solid": true,
+      "surface": "nexora:material/mineral/ash"
+    },
+    {
+      "id": "nexora:block/vegetation/moss",
+      "solid": true,
+      "surface": "nexora:material/vegetation/moss"
     }
   ]
 }

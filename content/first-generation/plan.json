@@ -113,6 +113,26 @@
     {
       "definition": "wood/plank_floor.json",
       "seed": null
+    },
+    {
+      "definition": "soil/moist_earth.json",
+      "seed": null
+    },
+    {
+      "definition": "soil/wet_mud.json",
+      "seed": null
+    },
+    {
+      "definition": "mineral/snow.json",
+      "seed": null
+    },
+    {
+      "definition": "mineral/ash.json",
+      "seed": null
+    },
+    {
+      "definition": "vegetation/moss.json",
+      "seed": null
     }
   ]
 }

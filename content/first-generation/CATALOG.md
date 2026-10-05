@@ -1,10 +1,10 @@
 # First visual generation — catalog
 
 The **catalog mestre** of issue #27, for what exists so far: the sixteen stones
-of issue #5, five terrain materials — dry earth, clay and gravel from
-issue #17, pale quartz sand from issue #7, grass from issue #16 — and five
-construction materials from issue #15: brick, concrete, worked stone, floor
-tile and plank floor. Every row is a first-generation asset under the rule the operator
+of issue #5, ten terrain materials — dry earth, moist earth, wet mud, clay,
+gravel, snow and ash from issue #17, pale quartz sand from issue #7, grass and
+moss from issue #16 — and five construction materials from issue #15: brick,
+concrete, worked stone, floor tile and plank floor. Every row is a first-generation asset under the rule the operator
 set for 2026 — **16×16, albedo only** — and that rule is not a promise here: it
 is the `policy` of [`plan.json`](plan.json), and the forge refuses to
 generate anything from that build plan that breaks it.
@@ -90,11 +90,16 @@ failure `DEBT-0044` described — sixteen seeds of one stone share one palette.
 | `nexora:material/stone/worked_stone` | stone | Worked Stone | worked_stone | 16×16 | `nexora/stone/worked_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/worked_stone` | #15 prompt 04 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 332 B | `0xa2bb7e8ea959068c` |
 | `nexora:material/ceramic/floor_tile` | ceramic | Floor Tile | floor_tile | 16×16 | `nexora/ceramic/floor_tile/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ceramic/floor_tile` | #15 prompt 05 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 220 B | `0x4a91ba496e279034` |
 | `nexora:material/wood/plank_floor` | wood | Plank Floor | plank_floor | 16×16 | `nexora/wood/plank_floor/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/wood/plank_floor` | #15 prompt 13 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 260 B | `0x330385091b17ce4b` |
+| `nexora:material/soil/moist_earth` | soil | Moist Earth | moist_earth | 16×16 | `nexora/soil/moist_earth/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/soil/moist_earth` | #17 prompt 02 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 385 B | `0xb0fac740a0f9fca1` |
+| `nexora:material/soil/wet_mud` | soil | Wet Mud | wet_mud | 16×16 | `nexora/soil/wet_mud/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/soil/wet_mud` | #17 prompt 04 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 305 B | `0xcc614d552083ff29` |
+| `nexora:material/mineral/snow` | mineral | Snow | snow | 16×16 | `nexora/mineral/snow/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/mineral/snow` | #17 prompt 08 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 280 B | `0x5df026b1c0a47d7f` |
+| `nexora:material/mineral/ash` | mineral | Ash | ash | 16×16 | `nexora/mineral/ash/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/mineral/ash` | #17 prompt 12 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 395 B | `0x7b7781c3ce15d186` |
+| `nexora:material/vegetation/moss` | vegetation | Moss | moss | 16×16 | `nexora/vegetation/moss/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/vegetation/moss` | #16 prompt 07 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 424 B | `0x4efaa4d070e59442` |
 
 `version` is the material's revision as the forge writes it: authored at v1,
 generated at v2, through the pipeline at v3. `status` is the release status
 from the provenance record; nothing here has been reviewed for release, so
-all twenty-six are `draft` and `may ship` is false.
+all thirty-one are `draft` and `may ship` is false.
 
 ## The terrain set (2026-10-03)
 
@@ -114,6 +119,21 @@ are untextured engine blocks; these materials are drawn on the content blocks
 which the slice registers, places, meshes, saves, recovers and textures like
 every stone. Letting the generator's terrain use them is engine work —
 mapping built-in blocks to content surfaces — not an asset.
+
+## The second terrain set (2026-10-05)
+
+Five more surfaces for the ground, from issue #17 — moist earth (prompt 02),
+wet mud (04), snow (08), ash (12) — and moss from issue #16 (prompt 07): the
+materials a biome other than the first one needs underfoot. Snow and ash are
+`mineral`, the forge's category list having no frozen or burned ground. Made
+exactly as the first terrain set was — a material and a recipe, the prompt
+read as art direction, a ramp, a mottle and a speckle, no new forge code and
+no image model — and looked at enlarged and tiled 3×3 under their real
+identifiers before their hashes were taken
+([`docs/texture-forge/first-generation-terrain-set-2.png`](../../docs/texture-forge/first-generation-terrain-set-2.png),
+in this table's order). The moist earth is the dry earth's structure a step
+darker with almost no cracks; the mud is greyer and flatter still, with fewer
+flecks, so the two stay apart at 16×16 and in the palette test.
 
 ## The construction set (2026-10-05)
 

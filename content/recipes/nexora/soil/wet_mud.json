@@ -1,0 +1,29 @@
+{
+  "category": "soil",
+  "contrast": 1.8,
+  "courses": null,
+  "id": "nexora:recipe/soil/wet_mud",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 3,
+    "cells_y": 3,
+    "cracks": 0.0,
+    "octaves": 3,
+    "strength": 1.0
+  },
+  "ramp": [
+    "#221d18",
+    "#2f2821",
+    "#3d342b",
+    "#4c4236",
+    "#5d5243"
+  ],
+  "relief": 0.35,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.18,
+    "density": 0.1
+  },
+  "strips": null
+}
