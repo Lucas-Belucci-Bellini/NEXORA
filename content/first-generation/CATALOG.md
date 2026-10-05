@@ -3,8 +3,9 @@
 The **catalog mestre** of issue #27, for what exists so far: the sixteen stones
 of issue #5, ten terrain materials — dry earth, moist earth, wet mud, clay,
 gravel, snow and ash from issue #17, pale quartz sand from issue #7, grass and
-moss from issue #16 — and five construction materials from issue #15: brick,
-concrete, worked stone, floor tile and plank floor. Every row is a first-generation asset under the rule the operator
+moss from issue #16 —, five construction materials from issue #15 (brick,
+concrete, worked stone, floor tile and plank floor) and five ores from
+issue #6: iron, copper, tin, gold and cobalt. Every row is a first-generation asset under the rule the operator
 set for 2026 — **16×16, albedo only** — and that rule is not a promise here: it
 is the `policy` of [`plan.json`](plan.json), and the forge refuses to
 generate anything from that build plan that breaks it.
@@ -95,11 +96,16 @@ failure `DEBT-0044` described — sixteen seeds of one stone share one palette.
 | `nexora:material/mineral/snow` | mineral | Snow | snow | 16×16 | `nexora/mineral/snow/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/mineral/snow` | #17 prompt 08 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 280 B | `0x5df026b1c0a47d7f` |
 | `nexora:material/mineral/ash` | mineral | Ash | ash | 16×16 | `nexora/mineral/ash/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/mineral/ash` | #17 prompt 12 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 395 B | `0x7b7781c3ce15d186` |
 | `nexora:material/vegetation/moss` | vegetation | Moss | moss | 16×16 | `nexora/vegetation/moss/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/vegetation/moss` | #16 prompt 07 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 424 B | `0x4efaa4d070e59442` |
+| `nexora:material/ore/iron` | ore | Iron Ore | iron | 16×16 | `nexora/ore/iron/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/iron` | #6 prompt 01 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 381 B | `0xd0c80fd7de261a88` |
+| `nexora:material/ore/copper` | ore | Copper Ore | copper | 16×16 | `nexora/ore/copper/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/copper` | #6 prompt 02 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 377 B | `0xfff60759a3927a2f` |
+| `nexora:material/ore/tin` | ore | Tin Ore | tin | 16×16 | `nexora/ore/tin/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/tin` | #6 prompt 03 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 451 B | `0xead67d102f9f0c25` |
+| `nexora:material/ore/gold` | ore | Gold Ore | gold | 16×16 | `nexora/ore/gold/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/gold` | #6 prompt 12 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 406 B | `0xb20d56ae19f65223` |
+| `nexora:material/ore/cobalt` | ore | Cobalt Ore | cobalt | 16×16 | `nexora/ore/cobalt/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/cobalt` | #6 prompt 07 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 377 B | `0x1b346f4b721e89c5` |
 
 `version` is the material's revision as the forge writes it: authored at v1,
 generated at v2, through the pipeline at v3. `status` is the release status
 from the provenance record; nothing here has been reviewed for release, so
-all thirty-one are `draft` and `may ship` is false.
+all thirty-six are `draft` and `may ship` is false.
 
 ## The terrain set (2026-10-03)
 
@@ -134,6 +140,35 @@ identifiers before their hashes were taken
 in this table's order). The moist earth is the dry earth's structure a step
 darker with almost no cracks; the mud is greyer and flatter still, with fewer
 flecks, so the two stay apart at 16×16 and in the palette test.
+
+## The ore set (2026-10-05)
+
+Five ores from issue #6 — iron (prompt 01), copper (02), tin (03), cobalt
+(07) and gold (12) — chosen because the player mines now (ADR-0036) and the
+first generation had nothing to mine for: a common pair, a third metal, and
+two scarce ones that read apart by colour. Their category is `mineral`, the
+list having no ore. Made with no new forge code, from one rule read off the
+prompt's *host rock, ore colour, abundance*:
+
+- **The ramp is the host rock, then the ore.** Seven stops from the host's
+  dark to its light, and two ore stops at the top that the mottle alone never
+  reaches (a calm mottle, strength 0.6). Only a speckle pushed upward lands
+  there — 2×2-texel cells, so the ore comes in small clusters, not dust.
+- **Abundance is the speckle's density:** 0.34 for iron (*alta*), 0.26 for
+  copper and tin (*média*), 0.16 for gold and cobalt (*baixa*). Half the
+  flecks go down instead and read as darker grains of the host.
+
+Looked at enlarged and tiled 3×3 under their real identifiers
+([`docs/texture-forge/first-generation-ore-set.png`](../../docs/texture-forge/first-generation-ore-set.png),
+in this table's order), and the first two passes were thrown away: with the
+mottle at full strength its peaks reached the ore stops, so the gold got
+*more* gold at a *lower* density, the tin grew white blobs that read as snow,
+and the iron's black holes and streaks read as camouflage; and iron's first
+ore colour was copper's. The final iron is rust-red, the copper orange.
+
+What they are not yet: in the ground. They are content blocks the slice
+registers, places, meshes, saves, recovers and textures, and tiles in the
+client's atlas; no generator places ore (Phase 2 has no ore distribution).
 
 ## The construction set (2026-10-05)
 
@@ -202,8 +237,8 @@ where a judged frame shows it: the three the generated terrain is made of. A
 block no world places is never on a frame a ray cast checks.
 
 ## What this catalog does not yet cover
-- **The other families.** Ores (#6), sands (#7) and the families of #15–#26 are
-  not catalogued. Each is a directory of definitions plus a directory of
+- **The other families.** 43 of the 48 ores (#6), the other sands (#7) and the
+  families of #15–#26 are not catalogued. Each is a directory of definitions plus a directory of
   recipes, added to the build plan.
 - **Thin veins.** At 16×16 the renderer's crack layer draws broad veins, not
   hairlines — the two marbles show it. A dedicated vein layer is a renderer

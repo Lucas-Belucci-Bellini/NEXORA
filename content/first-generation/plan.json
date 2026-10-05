@@ -133,6 +133,26 @@
     {
       "definition": "vegetation/moss.json",
       "seed": null
+    },
+    {
+      "definition": "ore/iron.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/copper.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/tin.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/gold.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/cobalt.json",
+      "seed": null
     }
   ]
 }

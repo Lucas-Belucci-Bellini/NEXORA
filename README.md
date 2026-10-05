@@ -170,11 +170,11 @@ cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
 cargo run -p nexora-headless -- --content content/first-generation/blocks.json
 ```
 
-The second run adds the first visual generation — the thirty-one 16×16 materials of
+The second run adds the first visual generation — the thirty-six 16×16 materials of
 [`content/first-generation/`](content/first-generation/CATALOG.md) — as blocks,
 through the same content path a mod would use. Each one must show its own
 surface in a mesh and survive the save, the reload and the journal replay, or
-the run fails: `content blocks 31 (31 surfaces in the mesh)`, `probes verified 107`.
+the run fails: `content blocks 36 (36 surfaces in the mesh)`, `probes verified 112`.
 
 ### Prebuilt binaries
 

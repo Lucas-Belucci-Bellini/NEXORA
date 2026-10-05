@@ -31,7 +31,12 @@
     "soil/wet_mud.json",
     "mineral/snow.json",
     "mineral/ash.json",
-    "vegetation/moss.json"
+    "vegetation/moss.json",
+    "ore/iron.json",
+    "ore/copper.json",
+    "ore/tin.json",
+    "ore/gold.json",
+    "ore/cobalt.json"
   ],
   "blocks": [
     {
@@ -188,6 +193,31 @@
       "id": "nexora:block/vegetation/moss",
       "solid": true,
       "surface": "nexora:material/vegetation/moss"
+    },
+    {
+      "id": "nexora:block/ore/iron",
+      "solid": true,
+      "surface": "nexora:material/ore/iron"
+    },
+    {
+      "id": "nexora:block/ore/copper",
+      "solid": true,
+      "surface": "nexora:material/ore/copper"
+    },
+    {
+      "id": "nexora:block/ore/tin",
+      "solid": true,
+      "surface": "nexora:material/ore/tin"
+    },
+    {
+      "id": "nexora:block/ore/gold",
+      "solid": true,
+      "surface": "nexora:material/ore/gold"
+    },
+    {
+      "id": "nexora:block/ore/cobalt",
+      "solid": true,
+      "surface": "nexora:material/ore/cobalt"
     }
   ],
   "surfaces": [
