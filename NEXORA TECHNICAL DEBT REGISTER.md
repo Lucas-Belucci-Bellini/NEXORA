@@ -1171,7 +1171,24 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `nexora-headless --seed 28 --radius 1`.
 - **TRIGGER:** o próximo trabalho em física ou no player; ou um replay.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-10-05)
+- **RESOLUÇÃO:** a causa não era andar nem pular, era a velocidade de
+  chegada. O rastreio da seed 28 mostrou a "corrida" descendo cinco blocos
+  (a busca de spawn só exclui paredes, degraus para baixo valem) e o corpo
+  pousando a 9,8 m/s com os pés em `63 + 1 ulp`; o pulo seguinte, mais
+  lento, pousa em `63,0`. O solver move a caixa pela distância permitida
+  (`plano − face`, exata): a face que lidera cai exatamente no plano, mas a
+  face oposta é a antiga mais a mesma distância, e essa soma arredonda; o
+  centro, média das duas, saía um ulp fora conforme a velocidade. Agora
+  (`engine/physics::world::settled_center`), no eixo em que a face que lidera
+  parou exatamente sobre o plano de um contato, o centro é `plano ±
+  meia-extensão` — a mesma conta que põe um corpo de pé nesse plano. Um
+  corpo em repouso é um ponto fixo só, venha de onde vier. Fixado por
+  `a_body_rests_at_one_height_on_a_floor_whatever_it_fell_from` (quatro
+  pisos, seis alturas de queda; com o centro antigo falha já no piso 0,
+  queda 1: `0.8999999999999999` contra `0.9`), e a seed 28 entrou no CI. A
+  varredura de 80 seeds e raios passa inteira; os números do slice padrão
+  não mudaram.
 
 ### DEBT-0053 — A autoridade confere alcance e ocupação, não linha de visão
 

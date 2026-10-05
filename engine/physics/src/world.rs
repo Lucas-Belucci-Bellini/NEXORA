@@ -589,7 +589,7 @@ fn integrate_dynamic<S: VoxelSource + ?Sized>(
         _ => StartState::Unknown,
     };
     let resolution = resolve_with_step_up(source, body.aabb(), motion, body.step_height, start);
-    body.center = resolution.aabb.center();
+    body.center = settled_center(&resolution, body.half_extents);
     // Re-arm only from a check that actually ran and found nothing. A skipped
     // check proves nothing new, and a body that could not be freed is not
     // clear by any reading.
@@ -726,6 +726,39 @@ fn apply_ground_friction(
 /// The step-up is only accepted when it makes more horizontal progress *and*
 /// the body comes back down onto something. Without the second condition a
 /// character would climb into the air at the edge of a gap.
+/// Where a body's centre is after a resolution (DEBT-0052).
+///
+/// The box's centre, except on each axis where its leading face stopped
+/// flush against a plane: there it is the plane plus or minus the half
+/// extent — the arithmetic that places a body standing on that plane. The
+/// leading face lands on the plane exactly (the permitted distance is the
+/// plane less the face, and the face plus that is the plane), but the far
+/// face is the old far face moved by the same distance, and that sum rounds.
+/// Averaging the two put a body that landed from a fall one unit in the last
+/// place from the centre of a body placed on the same floor, so where a body
+/// came to rest depended on how fast it arrived. A resting body is one fixed
+/// point, whatever brought it there.
+fn settled_center(resolution: &Resolution, half_extents: Vec3) -> Vec3 {
+    let mut center = resolution.aabb.center();
+    for axis in Axis::ALL {
+        let Some(contact) = resolution.contact(axis) else {
+            continue;
+        };
+        let cell = [contact.cell.x, contact.cell.y, contact.cell.z][axis.index()];
+        let (plane, face, toward) = if contact.positive {
+            (cell as f64, resolution.aabb.max.axis(axis), -1.0)
+        } else {
+            ((cell + 1) as f64, resolution.aabb.min.axis(axis), 1.0)
+        };
+        // Only where the face really is on the plane: a body that was pushed
+        // out of terrain, or stopped by anything else, keeps its own centre.
+        if face == plane {
+            center = center.with_axis(axis, plane + toward * half_extents.axis(axis));
+        }
+    }
+    center
+}
+
 fn resolve_with_step_up<S: VoxelSource + ?Sized>(
     source: &S,
     aabb: Aabb,
@@ -1200,6 +1233,36 @@ mod tests {
             "resting at {}",
             body.center.y
         );
+    }
+
+    /// DEBT-0052, found by sweeping the slice's seeds: a character that fell
+    /// came to rest one unit in the last place above where a character placed
+    /// on the same floor rests, so one floor had two resting heights, and
+    /// which a body got depended on how fast it arrived.
+    #[test]
+    fn a_body_rests_at_one_height_on_a_floor_whatever_it_fell_from() {
+        let half = BodyDescriptor::character().half_extents.y;
+        for floor in [0i64, 63, 68, 1_000] {
+            let ground = FlatGround::at(floor);
+            let placed = floor as f64 + half;
+            for drop in [0.0, 0.25, 1.0, 4.999, 5.0, 17.3] {
+                let mut world = world();
+                let id = world
+                    .spawn(BodyDescriptor::character().at(Vec3::new(0.5, placed + drop, 0.5)))
+                    .expect("spawn");
+                for _ in 0..600 {
+                    world.step_once(&ground, 1.0 / 60.0);
+                }
+                let body = world.body(id).expect("live");
+                assert!(body.grounded, "floor {floor}, drop {drop}: never landed");
+                assert_eq!(
+                    body.center.y.to_bits(),
+                    placed.to_bits(),
+                    "floor {floor}, drop {drop}: rests at {} where a body placed there rests at {placed}",
+                    body.center.y
+                );
+            }
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@
   from a save)
 - **Informs:** the roadmap's Phase 2 (*interaction*), the vertical slice
   `WORLD → PLAYER → INTERACTION → STATE CHANGE → SAVE → RELOAD`
-- **Opens:** `DEBT-0052`, `DEBT-0053`
+- **Opens:** `DEBT-0053`; finds and closes `DEBT-0052`
 
 ## Context
 
@@ -106,9 +106,13 @@ blocks. `Build & Destruction Engine.md` BUILD-1: a placement is never a bare
 - The authority checks reach and occupancy, not line of sight: a client that
   sends a target behind a wall within reach is obeyed (`DEBT-0053`).
 - An 80-seed sweep of the slice found seed 28 failing in the walk stage, which
-  this decision did not touch: a walked player comes to rest one unit in the
-  last place above the integer plane, and a jump lands on it exactly
-  (`DEBT-0052`). It fails the same on `main`.
+  this decision did not touch: a body that landed from a fall rested one unit
+  in the last place above where a body placed on the same floor rests, and a
+  later jump landed on the plane exactly (`DEBT-0052`; it failed the same on
+  `main`). Closed with this work: where a body stops flush against a plane,
+  physics sets its centre to the plane plus or minus the half extent, as a
+  placed body's is, so a resting body is one fixed point whatever brought it
+  there.
 - There is no crosshair and no outline on the targeted block: the hands act on
   the block under the centre of the view. Placement is always stone; there is
   no inventory. An edit outside the client's drawn band is saved and not

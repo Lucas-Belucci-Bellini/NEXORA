@@ -165,6 +165,11 @@ jobs:
           # reload and the journal replay must keep (ADR-0036).
           grep '^hands              broke 1, placed 1, refused 1 in its own body, stood 1\.00 higher on its own block$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # Seed 28: its run drops five blocks, and a body that landed from a
+          # fall used to rest one unit in the last place off the floor a jump
+          # then landed on exactly (DEBT-0052). A field case, kept.
+          ./target/release/nexora-headless --quiet --seed 28 --radius 1 \
+            --save "${RUNNER_TEMP}/ci-seed28.nxsv" | grep '^result             OK$' > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones and five terrain materials must register, show its own surface in a mesh, and survive
           # the save, the reload and the journal replay as a probe.
