@@ -88,7 +88,7 @@ impl ClientResidency {
     /// # Errors
     ///
     /// A column failed to activate, evict or persist, or the manager did not
-    /// settle in [`SETTLE_TICKS`].
+    /// settle in eight ticks (`SETTLE_TICKS`).
     pub fn settle(&mut self, world: &mut World, centre: ChunkCoord) -> Result<()> {
         self.system
             .set_interest(InterestSource::new(PLAYER, centre).with_radii(self.radii))?;
