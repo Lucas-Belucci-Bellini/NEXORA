@@ -93,6 +93,26 @@
     {
       "definition": "vegetation/grass.json",
       "seed": null
+    },
+    {
+      "definition": "brick/nexora_brick.json",
+      "seed": null
+    },
+    {
+      "definition": "concrete/concrete.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/worked_stone.json",
+      "seed": null
+    },
+    {
+      "definition": "ceramic/floor_tile.json",
+      "seed": null
+    },
+    {
+      "definition": "wood/plank_floor.json",
+      "seed": null
     }
   ]
 }

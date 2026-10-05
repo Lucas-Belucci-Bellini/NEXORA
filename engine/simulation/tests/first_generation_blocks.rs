@@ -24,8 +24,8 @@ fn every_first_generation_stone_is_a_block_with_its_own_surface() {
     let content = BlockContent::load(&document()).expect("the document loads");
     assert_eq!(
         content.blocks().len(),
-        21,
-        "the sixteen stones of issue #5 and the five terrain materials"
+        26,
+        "the sixteen stones of issue #5, the five terrain materials and the five construction materials"
     );
 
     // The policy the catalog promises, checked on the definitions the game
@@ -71,7 +71,7 @@ fn every_first_generation_stone_is_a_block_with_its_own_surface() {
         assert!(view.occludes(*at), "{block} is opaque");
         surfaces.insert(surface);
     }
-    assert_eq!(surfaces.len(), 21, "twenty-one blocks, twenty-one surfaces");
+    assert_eq!(surfaces.len(), 26, "twenty-six blocks, twenty-six surfaces");
 
     // A world holding them saves and loads with the content present, and a
     // build without it refuses the save by name rather than loading holes.

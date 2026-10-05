@@ -1092,13 +1092,13 @@ fn verify_content_surfaces(world: &World, content: &BlockContent) -> Result<usiz
     Ok(expected.len())
 }
 
-/// The decoded-texture budget the slice runs with: twenty-one first-generation
-/// albedos are 21 KiB of pixels, so this holds them all without eviction and
+/// The decoded-texture budget the slice runs with: twenty-six first-generation
+/// albedos are 26 KiB of pixels, so this holds them all without eviction and
 /// leaves no room for anything larger to hide in.
 const TEXTURE_BUDGET: u64 = 64 * 1024;
 
 /// Device memory the null backend may hold: the textures above once widened
-/// to RGBA8 (21 KiB) or the conformance suite's largest moment
+/// to RGBA8 (26 KiB) or the conformance suite's largest moment
 /// (4 KiB, measured), with room to spare and none for anything the slice did
 /// not ask for.
 const GPU_BUDGET: u64 = 64 * 1024;

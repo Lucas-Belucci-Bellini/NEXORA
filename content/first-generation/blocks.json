@@ -21,7 +21,12 @@
     "soil/clay.json",
     "sand/gravel.json",
     "sand/quartz_sand.json",
-    "vegetation/grass.json"
+    "vegetation/grass.json",
+    "brick/nexora_brick.json",
+    "concrete/concrete.json",
+    "stone/worked_stone.json",
+    "ceramic/floor_tile.json",
+    "wood/plank_floor.json"
   ],
   "blocks": [
     {
@@ -128,6 +133,31 @@
       "id": "nexora:block/vegetation/grass",
       "solid": true,
       "surface": "nexora:material/vegetation/grass"
+    },
+    {
+      "id": "nexora:block/brick/nexora_brick",
+      "solid": true,
+      "surface": "nexora:material/brick/nexora_brick"
+    },
+    {
+      "id": "nexora:block/concrete/concrete",
+      "solid": true,
+      "surface": "nexora:material/concrete/concrete"
+    },
+    {
+      "id": "nexora:block/stone/worked_stone",
+      "solid": true,
+      "surface": "nexora:material/stone/worked_stone"
+    },
+    {
+      "id": "nexora:block/ceramic/floor_tile",
+      "solid": true,
+      "surface": "nexora:material/ceramic/floor_tile"
+    },
+    {
+      "id": "nexora:block/wood/plank_floor",
+      "solid": true,
+      "surface": "nexora:material/wood/plank_floor"
     }
   ]
 }

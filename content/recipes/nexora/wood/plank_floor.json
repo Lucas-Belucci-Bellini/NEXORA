@@ -1,0 +1,33 @@
+{
+  "category": "wood",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/wood/plank_floor",
+  "levels": 6,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 2,
+    "cracks": 0.0,
+    "octaves": 2,
+    "strength": 0.3
+  },
+  "ramp": [
+    "#4a3020",
+    "#5c3c27",
+    "#6e4a30",
+    "#80583a",
+    "#926745",
+    "#a57852"
+  ],
+  "relief": 0.6,
+  "schema": 1,
+  "speckle": null,
+  "strips": {
+    "count": 2,
+    "gap": 0.07,
+    "grain_across": 2,
+    "grain_along": 4,
+    "grain_strength": 0.7,
+    "jitter": 0.3
+  }
+}

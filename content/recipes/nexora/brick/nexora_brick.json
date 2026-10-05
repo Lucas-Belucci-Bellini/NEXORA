@@ -1,0 +1,36 @@
+{
+  "category": "brick",
+  "contrast": 2.8,
+  "courses": {
+    "columns": 1,
+    "jitter": 0.12,
+    "mortar": 0.07,
+    "rows": 2
+  },
+  "id": "nexora:recipe/brick/nexora_brick",
+  "levels": 7,
+  "mottle": {
+    "cells_x": 6,
+    "cells_y": 6,
+    "cracks": 0.04,
+    "octaves": 3,
+    "strength": 0.3
+  },
+  "ramp": [
+    "#4c2016",
+    "#62291c",
+    "#783223",
+    "#8e3d2b",
+    "#a34a34",
+    "#b45a40",
+    "#c8bca8"
+  ],
+  "relief": 0.8,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.06,
+    "density": 0.07
+  },
+  "strips": null
+}

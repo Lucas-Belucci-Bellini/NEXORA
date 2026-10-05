@@ -1,8 +1,10 @@
 # First visual generation — catalog
 
 The **catalog mestre** of issue #27, for what exists so far: the sixteen stones
-of issue #5, and five terrain materials — dry earth, clay and gravel from
-issue #17, pale quartz sand from issue #7, grass from issue #16. Every row is a first-generation asset under the rule the operator
+of issue #5, five terrain materials — dry earth, clay and gravel from
+issue #17, pale quartz sand from issue #7, grass from issue #16 — and five
+construction materials from issue #15: brick, concrete, worked stone, floor
+tile and plank floor. Every row is a first-generation asset under the rule the operator
 set for 2026 — **16×16, albedo only** — and that rule is not a promise here: it
 is the `policy` of [`plan.json`](plan.json), and the forge refuses to
 generate anything from that build plan that breaks it.
@@ -83,11 +85,16 @@ failure `DEBT-0044` described — sixteen seeds of one stone share one palette.
 | `nexora:material/sand/gravel` | sand | Gravel | gravel | 16×16 | `nexora/sand/gravel/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/sand/gravel` | #17 prompt 06 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 364 B | `0x961b635a407186d8` |
 | `nexora:material/sand/quartz_sand` | sand | Quartz Sand | quartz_sand | 16×16 | `nexora/sand/quartz_sand/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/sand/quartz_sand` | #7 prompt 01 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 397 B | `0xe5852d5b9984e9dc` |
 | `nexora:material/vegetation/grass` | vegetation | Grass | grass | 16×16 | `nexora/vegetation/grass/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/vegetation/grass` | #16 prompt 06 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 337 B | `0x8bd25abb9625597e` |
+| `nexora:material/brick/nexora_brick` | brick | NEXORA Brick | nexora_brick | 16×16 | `nexora/brick/nexora_brick/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/brick/nexora_brick` | #15 prompt 01 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 274 B | `0x736e720c8d8a6ebb` |
+| `nexora:material/concrete/concrete` | concrete | Concrete | concrete | 16×16 | `nexora/concrete/concrete/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/concrete/concrete` | #15 prompt 02 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 310 B | `0xe07a7fb010ce0140` |
+| `nexora:material/stone/worked_stone` | stone | Worked Stone | worked_stone | 16×16 | `nexora/stone/worked_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/worked_stone` | #15 prompt 04 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 332 B | `0xa2bb7e8ea959068c` |
+| `nexora:material/ceramic/floor_tile` | ceramic | Floor Tile | floor_tile | 16×16 | `nexora/ceramic/floor_tile/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ceramic/floor_tile` | #15 prompt 05 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 220 B | `0x4a91ba496e279034` |
+| `nexora:material/wood/plank_floor` | wood | Plank Floor | plank_floor | 16×16 | `nexora/wood/plank_floor/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/wood/plank_floor` | #15 prompt 13 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 260 B | `0x330385091b17ce4b` |
 
 `version` is the material's revision as the forge writes it: authored at v1,
 generated at v2, through the pipeline at v3. `status` is the release status
 from the provenance record; nothing here has been reviewed for release, so
-all twenty-one are `draft` and `may ship` is false.
+all twenty-six are `draft` and `may ship` is false.
 
 ## The terrain set (2026-10-03)
 
@@ -107,6 +114,45 @@ are untextured engine blocks; these materials are drawn on the content blocks
 which the slice registers, places, meshes, saves, recovers and textures like
 every stone. Letting the generator's terrain use them is engine work —
 mapping built-in blocks to content surfaces — not an asset.
+
+## The construction set (2026-10-05)
+
+Five materials from issue #15 (*Blocos e Construção*), chosen because the
+player can now build ([ADR-0036](../../docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md))
+and the first generation held no construction material: brick (prompt 01),
+concrete (02), worked stone (04), floor tile (05) and plank floor (13). Made
+as the stones were — a material under `brick/`, `concrete/`, `stone/`,
+`ceramic/` or `wood/` naming a recipe under `content/recipes/nexora/`, the
+prompt read as art direction — and with no new forge code: the brick, the
+worked stone and the floor tile use the recipe's `courses`, the floor its
+`strips`.
+
+Each was looked at enlarged and tiled 3×3 before its hash was taken
+([`docs/texture-forge/first-generation-construction-set.png`](../../docs/texture-forge/first-generation-construction-set.png),
+in this table's order), and four needed more than one recipe:
+
+- **Mortar at 16×16 is two texels.** The course layer measures each texel
+  centre's distance to the nearest joint, and a joint has a texel on each side,
+  so a joint is two texels wide whatever `mortar` says. Four courses of 4 texels
+  left 2-texel bricks; two courses with one unit each (14×6 bricks in a running
+  bond) read as brick.
+- **The joint is the top of the ramp.** Mortar is drawn pale and lands on the
+  last stops; with six even stops, bright bricks became mortar and the mortar
+  stayed orange. Seven stops with only the last one pale, less jitter and more
+  contrast keep the two apart — for the brick and for the worked stone.
+- **The noise follows the material's identifier**, so a recipe tried under a
+  test name is not the texture the plan draws; the worked stone and the floor
+  tile lost their joints and their grid under their real names and were
+  redrawn there (less mottle, more contrast).
+- **No roof tile.** Prompt 07 was tried with the course layer four ways —
+  inverted ramp, boards, small and large courses — and read as noise or as
+  planks every time; overlapping tiles need a layer the forge does not have.
+  The plank floor of prompt 13 took its place.
+
+What none of them is yet: drawn. The client draws faces in their direction's
+colour (ADR-0030), and the block the player builds is the generator's own
+stone (ADR-0036); the construction set reaches the game as content blocks
+through `blocks.json`, like every material here.
 
 ## In the game
 
