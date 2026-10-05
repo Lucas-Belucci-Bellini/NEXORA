@@ -1196,6 +1196,33 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
+### DEBT-0053 — Na borda de um quad, um pixel texturizado pode mostrar o texel do outro lado do tile
+
+- **SYSTEM:** `engine/render` (`textured_wgsl`, `reference::snapped_edge`)
+- **CLASS:** TEMPORARY
+- **WHY CREATED:** [ADR-0037](docs/adr/ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md).
+  O shader pega a fração da posição interpolada dentro do bloco. Quando o
+  rasterizador dá a um quad um pixel cujo centro fica *fora* dele — a regra
+  de cobertura na borda, ou a posição interpolada a partir de vértices
+  arredondados para a grade de sub-pixel —, a fração passa de 1 e volta a
+  0: o pixel mostra o texel da borda oposta do tile. A referência modela
+  isso (o quad vizinho lido no próprio plano; uma fronteira de texel a até
+  `TEXEL_SNAP` = 1/16 px) e conta esses pixels como `snapped`, em vez de
+  deixá-los passar sem nome.
+- **IMPACT:** medido: 479 pixels em 15.573.620 julgados, em quarenta
+  sementes a 768×512 (0,003 %), sempre um pixel isolado numa aresta. A
+  16×16 e sem filtro, o texel errado é o do outro lado do mesmo tile: um
+  ponto de cor de um bloco vizinho na emenda. Nenhum outro pixel é aceito
+  fora da regra.
+- **PROPOSED REMEDIATION:** prender a posição ao quad no shader — os limites
+  do quad num atributo `flat` e um `clamp` antes do `fract` —, ou desenhar
+  com o centro do texel recuado meio texel da borda. Qualquer dos dois faz
+  a referência perder as duas regras e voltar a julgar a borda exata.
+- **TRIGGER:** filtragem ou mipmaps no atlas (o mesmo vazamento vira sangria
+  de cor entre tiles), ou o primeiro relato de alguém vendo a costura.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
 - **SYSTEM:** `engine/simulation::terrain` (`WorldVoxels`)

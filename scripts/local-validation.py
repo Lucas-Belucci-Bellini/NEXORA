@@ -72,7 +72,8 @@ HARDWARE_GATED = [
                   "(benchmark_cpu's frame-time and window stages) and nine chunk columns of a "
                   "generated world in client mode (client_mode) -- every frame checked against a "
                   "CPU ray cast, culling back faces over quads split at every corner "
-                  "(ADR-0033); textures and streaming into the pass are not built"),
+                  "(ADR-0033), drawing the first generation's albedo from one atlas (ADR-0037, "
+                  "client_textures); streaming into the pass is not built"),
 ]
 
 
@@ -479,6 +480,19 @@ def run_checks(scratch: Path, quick: bool) -> list:
         results.append(skipped("client_resume", "the release build failed"))
     else:
         results.append(client_resume(client, scratch / "client-world.nxsv"))
+    # The textured pass (ADR-0037): the client draws the first generation's
+    # albedo from one atlas, sRGB-encoded on this machine's GPU, and the first
+    # frame must still hold texel for texel against the ray cast through the
+    # same atlas. Needs the forge's output from `forge_first_generation`.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("client_textures", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("client_textures", "NEXORA_GPU=none: nothing can present without a GPU"))
+    else:
+        results.append(needs_build("client_textures", [
+            client, "--frames", "60", "--timeout", "120",
+            "--content", "content/first-generation/blocks.json", "--resources", str(scratch / "fg")],
+            _lines("adapter", "textures", "first frame", "result")))
     # A real key through a real window (ADR-0031): the probe opens a window
     # and waits for W. A person has to press it, so the check runs only when
     # someone is at the terminal; --quick and a non-interactive run skip it,

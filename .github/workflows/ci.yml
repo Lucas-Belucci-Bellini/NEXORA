@@ -129,6 +129,8 @@ jobs:
             ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-world.nxsv" \
             | tee "${RUNNER_TEMP}/client.txt"
           grep '^start              a new world from seed [0-9]*$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          # Without content the faces are coloured by direction (ADR-0033).
+          grep '^textures           none: faces coloured by direction$' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^lifecycle          17 phases: .* -> simulation-running -> presentation-running -> .* -> process-exit$' \
             "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^modules            .*nexora:module/renderer$' "${RUNNER_TEMP}/client.txt" > /dev/null
@@ -384,6 +386,29 @@ jobs:
           grep '^rhi uploads        31 textures as RGBA8, 31744 bytes, one fence$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
 
+      # The client drawing what the forge wrote (ADR-0037): every block's
+      # albedo goes into one atlas, and the first frame and the first frame
+      # after an edit, read back from the surface, hold texel for texel
+      # against the ray cast through the same atlas. One tile more than the
+      # materials: tile 0 is the one a block without a surface would show,
+      # and no block may show it.
+      - name: Smoke test the client drawing the first generation's textures
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
+            ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-textured.nxsv" \
+            --content content/first-generation/blocks.json \
+            --resources "${RUNNER_TEMP}/first-generation" \
+            | tee "${RUNNER_TEMP}/client-textured.txt"
+          grep '^textures           32 tiles in a 256x32 atlas, 0 blocks without a surface$' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+
       # The bridge to a real machine (docs/validation/local/): its rules are
       # checked here, and a committed report must be well formed and must
       # have come from a machine, not a container or a runner like this one.
@@ -496,3 +521,6 @@ jobs:
           grep -q 'window.pixels_judged' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
           # And the runtime ran in client mode on it (ADR-0032).
           grep -q '^| `client_mode` | \*\*PASS\*\*' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          # And drew the first generation's textures there, sRGB-encoded on
+          # this platform's adapter, holding against the ray cast (ADR-0037).
+          grep -q '^| `client_textures` | \*\*PASS\*\*' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"

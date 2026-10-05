@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "materials": [
     "stone/granite_light.json",
     "stone/granite_dark.json",
@@ -188,6 +188,20 @@
       "id": "nexora:block/vegetation/moss",
       "solid": true,
       "surface": "nexora:material/vegetation/moss"
+    }
+  ],
+  "surfaces": [
+    {
+      "block": "nexora:block/stone",
+      "surface": "nexora:material/stone/mountain_stone"
+    },
+    {
+      "block": "nexora:block/dirt",
+      "surface": "nexora:material/soil/dry_earth"
+    },
+    {
+      "block": "nexora:block/grass",
+      "surface": "nexora:material/vegetation/grass"
     }
   ]
 }

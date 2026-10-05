@@ -40,9 +40,14 @@ it the next time. The first frame it shows, and the first after the world
 first changed, are read back from the window's surface and held against a CPU
 ray cast pixel by pixel; it does not claim to draw the world, or an edit,
 unless the pixels say so. It has run on the operator's AMD Radeon RX 6650 XT
-on Windows (local reports 6–12; the edits and the world file not yet). Not
-built yet: textures in the pass, streaming into it, a crosshair, choosing what
-to build, audio.
+on Windows (local reports 6–12; the edits and the world file not yet). Given
+the first generation's content and the forge's output, it draws the world
+**textured** — the generated stone, dirt and grass in the mountain stone, the
+dry earth and the grass, from one atlas — and still holds every judged frame
+against the ray cast, texel for texel
+([ADR-0037](docs/adr/ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md)).
+Not built yet: streaming into the pass, a light model, a crosshair, choosing
+what to build, audio.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
 increment built and did not.
 
@@ -157,6 +162,10 @@ of their saves.
 
 ```bash
 cargo run -p nexora-client -- --world my-world.nxsv   # a window: WASD, Space, arrows, mouse
+cargo run -p nexora-texture-forge -- build content/first-generation/plan.json \
+  --out target/first-generation --recipes content/recipes
+cargo run -p nexora-client -- --content content/first-generation/blocks.json \
+  --resources target/first-generation      # the same world, textured
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
 cargo run -p nexora-headless -- --content content/first-generation/blocks.json
 ```
@@ -290,7 +299,8 @@ engine/client        the runtime in client mode: the lifecycle, a generated
                      world drawn in a window, WASD and a real clock through
                      the frame loop (ADR-0032); mining and building, and a
                      world file the world and the player go on from
-                     (ADR-0036); `nexora-client`
+                     (ADR-0036); the first generation's textures from one
+                     atlas (ADR-0037); `nexora-client`
 engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,

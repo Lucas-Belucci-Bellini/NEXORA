@@ -78,13 +78,13 @@ failure `DEBT-0044` described — sixteen seeds of one stone share one palette.
 | `nexora:material/stone/limestone_aged` | stone | Aged Limestone | limestone_aged | 16×16 | `nexora/stone/limestone_aged/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/limestone_aged` | #5 prompt 12 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 271 B | `0xf98756ae7125f08a` |
 | `nexora:material/stone/mossy_stone` | stone | Mossy Stone | mossy_stone | 16×16 | `nexora/stone/mossy_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/mossy_stone` | #5 prompt 13 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 404 B | `0x0c1f29468123ad63` |
 | `nexora:material/stone/brittle_stone` | stone | Brittle Stone | brittle_stone | 16×16 | `nexora/stone/brittle_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/brittle_stone` | #5 prompt 14 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 215 B | `0x816f2570a18e0a0f` |
-| `nexora:material/stone/mountain_stone` | stone | Mountain Stone | mountain_stone | 16×16 | `nexora/stone/mountain_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/mountain_stone` | #5 prompt 15 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 334 B | `0xc9ba73cb4d6677c1` |
+| `nexora:material/stone/mountain_stone` | stone | Mountain Stone | mountain_stone | 16×16 | `nexora/stone/mountain_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/mountain_stone` | #5 prompt 15 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture · drawn | 334 B | `0xc9ba73cb4d6677c1` |
 | `nexora:material/stone/ancient_stone` | stone | Ancient Stone | ancient_stone | 16×16 | `nexora/stone/ancient_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/ancient_stone` | #5 prompt 16 | 2026-09-24 | v3 | draft | block · meshed · saved · recovered · texture | 231 B | `0x60fc4c441a97f7d8` |
-| `nexora:material/soil/dry_earth` | soil | Dry Earth | dry_earth | 16×16 | `nexora/soil/dry_earth/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/soil/dry_earth` | #17 prompt 01 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 361 B | `0x471d49ded5686c0b` |
+| `nexora:material/soil/dry_earth` | soil | Dry Earth | dry_earth | 16×16 | `nexora/soil/dry_earth/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/soil/dry_earth` | #17 prompt 01 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture · drawn | 361 B | `0x471d49ded5686c0b` |
 | `nexora:material/soil/clay` | soil | Clay | clay | 16×16 | `nexora/soil/clay/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/soil/clay` | #17 prompt 05 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 241 B | `0xc4e824f0107c8487` |
 | `nexora:material/sand/gravel` | sand | Gravel | gravel | 16×16 | `nexora/sand/gravel/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/sand/gravel` | #17 prompt 06 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 364 B | `0x961b635a407186d8` |
 | `nexora:material/sand/quartz_sand` | sand | Quartz Sand | quartz_sand | 16×16 | `nexora/sand/quartz_sand/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/sand/quartz_sand` | #7 prompt 01 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 397 B | `0xe5852d5b9984e9dc` |
-| `nexora:material/vegetation/grass` | vegetation | Grass | grass | 16×16 | `nexora/vegetation/grass/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/vegetation/grass` | #16 prompt 06 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture | 337 B | `0x8bd25abb9625597e` |
+| `nexora:material/vegetation/grass` | vegetation | Grass | grass | 16×16 | `nexora/vegetation/grass/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/vegetation/grass` | #16 prompt 06 | 2026-10-03 | v3 | draft | block · meshed · saved · recovered · texture · drawn | 337 B | `0x8bd25abb9625597e` |
 | `nexora:material/brick/nexora_brick` | brick | NEXORA Brick | nexora_brick | 16×16 | `nexora/brick/nexora_brick/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/brick/nexora_brick` | #15 prompt 01 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 274 B | `0x736e720c8d8a6ebb` |
 | `nexora:material/concrete/concrete` | concrete | Concrete | concrete | 16×16 | `nexora/concrete/concrete/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/concrete/concrete` | #15 prompt 02 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 310 B | `0xe07a7fb010ce0140` |
 | `nexora:material/stone/worked_stone` | stone | Worked Stone | worked_stone | 16×16 | `nexora/stone/worked_stone/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/stone/worked_stone` | #15 prompt 04 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 332 B | `0xa2bb7e8ea959068c` |
@@ -112,13 +112,13 @@ read as dark noise with pale flecks rather than separate stones, and the
 first grass tiled into regular vertical stripes. Both were redrawn with a
 lighter bed and shorter clusters before anything was catalogued.
 
-**What they are not yet:** the surface of the generated world. The world
-generator places its own `nexora:block/dirt` and `nexora:block/grass`, which
-are untextured engine blocks; these materials are drawn on the content blocks
-`nexora:block/soil/dry_earth`, `nexora:block/vegetation/grass` and the rest,
-which the slice registers, places, meshes, saves, recovers and textures like
-every stone. Letting the generator's terrain use them is engine work —
-mapping built-in blocks to content surfaces — not an asset.
+**The surface of the generated world, since ADR-0037.** The world generator
+places its own `nexora:block/stone`, `dirt` and `grass`; block content
+schema 2 lets `blocks.json` restyle them (`"surfaces"`), and it draws them in
+the mountain stone, the dry earth and the grass. Those three are the rows
+marked `drawn` below. The other materials reach the game as content blocks
+(`nexora:block/soil/dry_earth`, …), which the slice registers, places,
+meshes, saves, recovers and textures.
 
 ## The second terrain set (2026-10-05)
 
@@ -169,10 +169,10 @@ in this table's order), and four needed more than one recipe:
   planks every time; overlapping tiles need a layer the forge does not have.
   The plank floor of prompt 13 took its place.
 
-What none of them is yet: drawn. The client draws faces in their direction's
-colour (ADR-0030), and the block the player builds is the generator's own
-stone (ADR-0036); the construction set reaches the game as content blocks
-through `blocks.json`, like every material here.
+What none of them is yet: on screen. Each is a tile in the client's atlas
+(ADR-0037), but the block the player builds is the generator's own stone
+(ADR-0036), and no generated world places a construction block; choosing what
+to build is the inventory's (Phase 5).
 
 ## In the game
 
@@ -189,15 +189,17 @@ the engine's built-in set. `integration_status` records what has been
 | saved | it survives a save and a reload with the content present; without it, the save is refused by name |
 | recovered | it survives journal replay onto the pre-edit checkpoint |
 | texture | its albedo is resolved by identifier through the forge's `resources.json`, hash-checked and decoded to 16×16 by the runtime (ADR-0021, ADR-0022) |
+| drawn | the client shows it in a window, from its tile in the atlas, and the frame read back from the surface holds texel for texel against the ray cast through the same atlas (ADR-0037) |
 
 `engine/simulation/tests/first_generation_blocks.rs` checks the first three on
 every `cargo test`; the headless slice checks the next one when run with
 `--content content/first-generation/blocks.json`, and the texture stage when
-also given `--resources <forge output>`. CI runs both.
+also given `--resources <forge output>`. CI runs both, and runs the client
+with the same two arguments for the drawn stage.
 
-What is not checked, because it does not exist yet: that the texture is
-**drawn**. There is no renderer (ADR-0005), so "meshed" is as far into the game
-as a surface can go today.
+Every material is a tile in the client's atlas, but `drawn` is only claimed
+where a judged frame shows it: the three the generated terrain is made of. A
+block no world places is never on a frame a ray cast checks.
 
 ## What this catalog does not yet cover
 - **The other families.** Ores (#6), sands (#7) and the families of #15–#26 are

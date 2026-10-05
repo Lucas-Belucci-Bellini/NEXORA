@@ -66,16 +66,20 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use nexora_asset::texture::MapRole;
 use nexora_camera::{Camera, Projection, RenderOrigin};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
 use nexora_foundation::spatial::BlockPos;
 use nexora_foundation::time::{CalendarConfig, TimeScale};
-use nexora_mesh::Extent;
+use nexora_image::TextureLoader;
+use nexora_mesh::SurfaceId;
 use nexora_persistence::container::SaveContainer;
-use nexora_render::reference::{check_frame, FrameCheck};
+use nexora_render::atlas::{Atlas, TILE};
+use nexora_render::reference::{check_frame_shaded, FrameCheck, Shading};
 use nexora_render::{ChunkPass, FrameStats, GpuChunk};
+use nexora_resource::ResourceManager;
 use nexora_rhi::{CommandList, Rhi, TextureDesc, TextureFormat, TextureHandle, Usage};
 use nexora_rhi_wgpu::WgpuRhi;
 use nexora_runtime::frame::{BudgetClass, FrameBudget, FrameLoop, FrameSchedule, FrameStage};
@@ -85,8 +89,8 @@ use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
 use nexora_simulation::{
-    load_player, save_player, BlockEditor, BlockIntent, Controls, EditTally, Eye, Intent,
-    PhysicsModule, Player, PlayerState, Walk, WorldSurfaces, WorldVoxels,
+    load_player, save_player, BlockContent, BlockEditor, BlockIntent, Controls, EditTally, Eye,
+    Intent, PhysicsModule, Player, PlayerState, SurfaceTable, Walk, WorldVoxels,
 };
 use nexora_window::input::InputCounts;
 use nexora_window::{run, Client, Flow, WindowFacts, WindowSpec};
@@ -134,6 +138,18 @@ pub struct ClientConfig {
     /// (ADR-0036). Not given with [`ClientConfig::save`]: one place says
     /// where the world goes.
     pub world: Option<PathBuf>,
+    /// A block content document (`BlockContent`): its blocks are registered
+    /// and its surfaces drawn, the engine's own blocks among them when it
+    /// restyles them (ADR-0037).
+    pub content: Option<PathBuf>,
+    /// A resource root (with its `resources.json`) holding the content's
+    /// albedo maps. With it the world is drawn textured; without it, in its
+    /// faces' colours. Requires `content`.
+    pub resources: Option<PathBuf>,
+    /// Where the frames read back are written, as binary PPM: the first
+    /// frame at this path, the first after an edit beside it with `-edited`
+    /// before the extension. `None` writes nothing.
+    pub capture: Option<PathBuf>,
     /// Log lifecycle progress to standard error.
     pub verbose: bool,
 }
@@ -149,6 +165,9 @@ impl Default for ClientConfig {
             timeout: None,
             save: None,
             world: None,
+            content: None,
+            resources: None,
+            capture: None,
             verbose: false,
         }
     }
@@ -243,6 +262,11 @@ pub struct ClientReport {
     pub window: WindowFacts,
     /// How the world and the player began.
     pub start: Start,
+    /// What the frames drew with: tiles in the atlas and its size, or `None`
+    /// when faces were coloured by direction.
+    pub textures: Option<(u32, (u32, u32))>,
+    /// Blocks drawn with no surface of their own (`SurfaceTable::unmapped`).
+    pub unmapped: usize,
     /// Columns drawn, and generated (drawn plus a ring).
     pub columns: (usize, usize),
     /// The drawn band, bottom and top block.
@@ -375,11 +399,21 @@ fn run_in(
         Some(path) => Some((path.to_path_buf(), SaveContainer::read(path)?)),
         None => None,
     };
+    let content = config
+        .content
+        .as_deref()
+        .map(BlockContent::load)
+        .transpose()?;
+    let definitions = content
+        .as_ref()
+        .map(BlockContent::block_definitions)
+        .unwrap_or_default();
     let mut world = match &resumed {
-        Some((_, container)) => persist::load(container)?,
-        None => World::create(
+        Some((_, container)) => persist::load_with(container, &definitions)?,
+        None => World::create_with(
             WorldDescriptor::new("nexora-client", config.seed)?,
             CalendarConfig::earthlike(),
+            &definitions,
         )?,
     };
     let ticks_per_second = world.clock().calendar().ticks_per_second();
@@ -396,7 +430,9 @@ fn run_in(
     lifecycle.advance_to(Phase::WorldAttach)?;
     world.bring_online()?;
     lifecycle.advance_to(Phase::SimulationRunning)?;
-    let mut scene = scene::build(&mut world, config.radius)?;
+    let (table, atlas) = looks(&world, content.as_ref(), config.resources.as_deref())?;
+    let unmapped = table.unmapped().len();
+    let mut scene = scene::build(&mut world, config.radius, table, atlas)?;
     log(diagnostics, "world generated and meshed");
 
     // --- the player ---------------------------------------------------------
@@ -456,6 +492,7 @@ fn run_in(
         controls: Controls::new()?,
         editor,
         block_latched: BlockIntent::default(),
+        capture: config.capture.clone(),
         player,
         projection,
         camera: start_camera,
@@ -552,6 +589,11 @@ fn run_in(
         adapter,
         window: session.window,
         start: begun,
+        textures: scene
+            .atlas
+            .as_ref()
+            .map(|atlas| (atlas.tiles(), atlas.size())),
+        unmapped,
         columns: (scene.regions.len(), scene.generated),
         band: (
             scene.bounds.origin.y,
@@ -650,6 +692,66 @@ pub fn frame_holds(check: &FrameCheck) -> bool {
         && check.snapped * SNAPPED_PER_JUDGED <= check.judged
 }
 
+/// The decoded-texture budget the atlas is built under: 31 first-generation
+/// albedos are 31 KiB of pixels; this holds a few hundred more and nothing
+/// that is not a tile.
+const TEXTURE_BUDGET: u64 = 1024 * 1024;
+
+/// What the world looks like: the surface table, and the atlas of its
+/// albedos when there are resources to read them from (ADR-0037).
+///
+/// Every material of the content is resolved by identifier through the
+/// resource index, verified and decoded by the engine's own decoder
+/// (ADR-0021, ADR-0022), held to 16×16, and given the tile its surface — the
+/// material's runtime id — names.
+///
+/// # Errors
+///
+/// Resources without content; a surface the world does not have; a map the
+/// index does not provide, that does not verify or decode, or that is not
+/// one opaque 16×16 tile.
+fn looks(
+    world: &World,
+    content: Option<&BlockContent>,
+    resources: Option<&std::path::Path>,
+) -> Result<(SurfaceTable, Option<Atlas>)> {
+    let Some(content) = content else {
+        if resources.is_some() {
+            return Err(Error::new(
+                Domain::Content,
+                "client",
+                "a resource root was given without content to look up",
+            )
+            .with_recovery(Recovery::Reject));
+        }
+        return Ok((SurfaceTable::untextured(world), None));
+    };
+    let materials = content.material_registry()?;
+    let table = content.surface_table(world, &materials)?;
+    let Some(root) = resources else {
+        return Ok((table, None));
+    };
+    let mut resources = ResourceManager::open(root, TEXTURE_BUDGET)?;
+    // Before any load: every map the content needs, named at once.
+    resources.manifest().provides(content.materials())?;
+    let loader = TextureLoader::new(MapRole::Albedo).at_most(TILE);
+    let mut atlas = Atlas::new();
+    for material in content.materials() {
+        let id = material.map_asset_id(MapRole::Albedo)?;
+        let handle = resources.resolve(&id, &loader)?;
+        let map = resources.load(&handle, &loader)?;
+        let surface = materials.runtime_id_of(material.id()).ok_or_else(|| {
+            Error::new(Domain::Content, "client", "a material has no runtime id")
+                .with_recovery(Recovery::Manual)
+                .with_context("material", material.id().to_string())
+        })?;
+        atlas
+            .add(SurfaceId(surface.0), &nexora_image::rgba8(&map)?)
+            .map_err(|error| error.with_context("texture", id.to_string()))?;
+    }
+    Ok((table, Some(atlas)))
+}
+
 /// Judge a frame read back from the surface against the ray cast of the
 /// world it showed, over `bounds`.
 ///
@@ -659,17 +761,25 @@ pub fn frame_holds(check: &FrameCheck) -> bool {
 /// ([`frame_holds`]); `which` names the frame in the error.
 fn judge(
     world: &World,
-    bounds: Extent,
+    scene: &Scene,
     captured: &Captured,
     which: &'static str,
 ) -> Result<FrameCheck> {
-    let view = WorldSurfaces::untextured(world);
-    let check = check_frame(
+    let view = scene.view(world);
+    let shading = match &scene.atlas {
+        Some(atlas) => Shading::Albedo {
+            atlas,
+            encoded: captured.encoded,
+        },
+        None => Shading::Faces,
+    };
+    let check = check_frame_shaded(
         &view,
-        bounds,
+        scene.bounds,
         &captured.camera,
         (captured.width, captured.height),
         &captured.rgba,
+        shading,
     )?;
     if !frame_holds(&check) {
         return Err(
@@ -710,8 +820,34 @@ fn in_frame(yaw: f64, d: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// Write a read-back frame as a binary PPM (`P6`): the simplest image a
+/// viewer opens, and written before it is judged, so a frame that fails is
+/// on disk to be looked at.
+///
+/// # Errors
+///
+/// The file could not be written.
+fn write_ppm(path: &std::path::Path, captured: &Captured) -> Result<()> {
+    let mut bytes = format!("P6\n{} {}\n255\n", captured.width, captured.height).into_bytes();
+    for texel in captured.rgba.chunks_exact(4) {
+        bytes.extend_from_slice(&texel[..3]);
+    }
+    std::fs::write(path, bytes).map_err(|cause| {
+        Error::new(
+            Domain::Render,
+            "client",
+            "a captured frame could not be written",
+        )
+        .with_recovery(Recovery::Manual)
+        .with_context("path", path.display().to_string())
+        .with_context("cause", cause.to_string())
+    })
+}
+
 /// The first shown frame, as read back from the surface.
 struct Captured {
+    /// Whether the surface kept the target's sRGB encoding.
+    encoded: bool,
     camera: Camera,
     width: u32,
     height: u32,
@@ -750,6 +886,8 @@ struct Tally {
 /// What exists on the device while the window is open.
 struct Live {
     pass: ChunkPass,
+    /// The albedo atlas the textured pass reads.
+    atlas: Option<TextureHandle>,
     chunks: Vec<GpuChunk>,
     target: TextureHandle,
     depth: TextureHandle,
@@ -768,6 +906,8 @@ struct Presentation<'a> {
     /// An edit asked for on a frame that bought no tick, waiting for one
     /// that does ([`block_for_ticks`]).
     block_latched: BlockIntent,
+    /// Where judged frames are written ([`ClientConfig::capture`]).
+    capture: Option<PathBuf>,
     /// The player the keys steer, which owns where the view is.
     player: Player,
     projection: Projection,
@@ -798,18 +938,27 @@ impl Client for Presentation<'_> {
             format,
             usage,
         };
-        let target = rhi.create_texture(&texture(
-            "client frame",
-            TextureFormat::Rgba8Unorm,
-            Usage::RENDER_TARGET,
-        ))?;
+        // Textured, the frame is sRGB: the albedo is, and light is added in
+        // linear space between the decode and the encode (ADR-0037).
+        let format = if self.scene.atlas.is_some() {
+            TextureFormat::Rgba8UnormSrgb
+        } else {
+            TextureFormat::Rgba8Unorm
+        };
+        let target = rhi.create_texture(&texture("client frame", format, Usage::RENDER_TARGET))?;
         let depth = rhi.create_texture(&texture(
             "client depth",
             TextureFormat::Depth32Float,
             Usage::RENDER_TARGET,
         ))?;
-        let pass = ChunkPass::new(rhi, TextureFormat::Rgba8Unorm)?;
         let mut upload = CommandList::new("client upload");
+        let (pass, atlas) = match &self.scene.atlas {
+            Some(atlas) => {
+                let texture = atlas.upload(rhi, &mut upload)?;
+                (ChunkPass::textured(rhi, format, texture)?, Some(texture))
+            }
+            None => (ChunkPass::new(rhi, format)?, None),
+        };
         // Each column split at its neighbours' corners too, so the seams
         // between columns are split (DEBT-0047): the same path an edit's
         // upload takes.
@@ -822,6 +971,7 @@ impl Client for Presentation<'_> {
         rhi.wait(fence)?;
         self.live = Some(Live {
             pass,
+            atlas,
             chunks,
             target,
             depth,
@@ -954,6 +1104,7 @@ impl Client for Presentation<'_> {
                             .with_context("frame", format!("{}x{}", live.width, live.height)));
                     }
                     captured = Some(Captured {
+                        encoded: image.format.ends_with("Srgb"),
                         camera: self.camera,
                         width: live.width,
                         height: live.height,
@@ -986,12 +1137,21 @@ impl Client for Presentation<'_> {
         // time is not the next frame's: the clock the loop reads moves past it.
         if let Some(captured) = captured {
             let judging = Instant::now();
-            let bounds = self.scene.bounds;
             if self.tally.first_frame.is_none() {
-                let check = judge(&self.world.borrow(), bounds, &captured, "first")?;
+                if let Some(path) = &self.capture {
+                    write_ppm(path, &captured)?;
+                }
+                let check = judge(&self.world.borrow(), self.scene, &captured, "first")?;
                 self.tally.first_frame = Some(check);
             } else {
-                let check = judge(&self.world.borrow(), bounds, &captured, "edited")?;
+                if let Some(path) = &self.capture {
+                    let stem = path
+                        .file_stem()
+                        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+                    let edited = path.with_file_name(format!("{stem}-edited.ppm"));
+                    write_ppm(&edited, &captured)?;
+                }
+                let check = judge(&self.world.borrow(), self.scene, &captured, "edited")?;
                 self.tally.edited_frame = Some(check);
                 self.tally.show_edit = false;
             }
@@ -1041,6 +1201,9 @@ impl Client for Presentation<'_> {
             chunk.destroy(rhi)?;
         }
         live.pass.destroy(rhi)?;
+        if let Some(atlas) = live.atlas {
+            rhi.destroy_texture(atlas)?;
+        }
         rhi.destroy_texture(live.target)?;
         rhi.destroy_texture(live.depth)?;
         Ok(Flow::Exit)
@@ -1102,6 +1265,13 @@ pub fn format_report(report: &ClientReport) -> String {
             path.display(),
             player.as_str()
         )),
+    }
+    match report.textures {
+        Some((tiles, (width, height))) => out.push_str(&format!(
+            "textures           {} tiles in a {width}x{height} atlas, {} blocks without a surface\n",
+            tiles, report.unmapped
+        )),
+        None => out.push_str("textures           none: faces coloured by direction\n"),
     }
     out.push_str(&format!(
         "world              {} columns drawn of {} generated, blocks {}..{} high\n",
@@ -1330,7 +1500,8 @@ mod tests {
         )
         .unwrap();
         world.bring_online().unwrap();
-        let scene = scene::build(&mut world, ClientConfig::default().radius).unwrap();
+        let table = SurfaceTable::untextured(&world);
+        let scene = scene::build(&mut world, ClientConfig::default().radius, table, None).unwrap();
         let player = Player::spawn(
             &WorldVoxels::new(&world),
             &scene.spawn,

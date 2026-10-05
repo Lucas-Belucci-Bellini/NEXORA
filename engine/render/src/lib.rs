@@ -34,6 +34,7 @@
 //! splitting quads at every corner at +52% vertices, a frame still faster
 //! on lavapipe because back faces are culled.
 
+pub mod atlas;
 pub mod reference;
 
 use nexora_camera::{CameraState, EXACT_OFFSET};
@@ -81,6 +82,83 @@ fn fs_chunk(in: Shaded) -> @location(0) vec4<f32> {
     return in.color;
 }
 ";
+
+/// The textured pass's shaders, in WGSL (ADR-0037): the rule of
+/// [`atlas::texel_of`], [`atlas::FACE_SHADE`] and [`atlas::shade_texel`],
+/// transcribed.
+///
+/// Built from the constants it transcribes, so the factors and the tile
+/// geometry cannot drift from the reference. Slots 0 and 1 are the camera and
+/// the chunk, as in [`CHUNK_WGSL`]; slot 2 is the atlas, read by
+/// `textureLoad` at integer coordinates, with no sampler.
+#[must_use]
+pub fn textured_wgsl() -> String {
+    let shade = atlas::FACE_SHADE
+        .iter()
+        .map(|value| format!("{value:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tile = atlas::TILE;
+    let columns = atlas::ATLAS_COLUMNS;
+    format!(
+        r"
+struct Camera {{
+    view_projection: mat4x4<f32>,
+}};
+
+struct Chunk {{
+    offset: vec4<f32>,
+}};
+
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<uniform> chunk: Chunk;
+@group(0) @binding(2) var atlas: texture_2d<f32>;
+
+struct Shaded {{
+    @builtin(position) position: vec4<f32>,
+    @location(0) local: vec3<f32>,
+    @location(1) @interpolate(flat) packed: u32,
+}};
+
+@vertex
+fn vs_textured(@location(0) position: vec3<f32>, @location(1) packed: u32) -> Shaded {{
+    var out: Shaded;
+    out.position = camera.view_projection * vec4<f32>(position + chunk.offset.xyz, 1.0);
+    out.local = position;
+    out.packed = packed;
+    return out;
+}}
+
+fn texel(value: f32) -> u32 {{
+    return min(u32(floor(fract(value) * {tile}.0)), {last}u);
+}}
+
+@fragment
+fn fs_textured(in: Shaded) -> @location(0) vec4<f32> {{
+    let tile = in.packed & 0xffffu;
+    let face = (in.packed >> 16u) & 0xffu;
+    let axis = face / 2u;
+    var s = in.local.x;
+    var t = in.local.y;
+    if (axis == 0u) {{
+        s = in.local.z;
+    }} else if (axis == 1u) {{
+        t = in.local.z;
+    }}
+    let x = texel(s);
+    var y = texel(t);
+    if (axis != 1u) {{
+        y = {last}u - y;
+    }}
+    let origin = vec2<u32>((tile % {columns}u) * {tile}u, (tile / {columns}u) * {tile}u);
+    let albedo = textureLoad(atlas, vec2<i32>(origin + vec2<u32>(x, y)), 0);
+    var shade = array<f32, 6>({shade});
+    return vec4<f32>(albedo.rgb * shade[face], 1.0);
+}}
+",
+        last = tile - 1,
+    )
+}
 
 /// Bytes per vertex: a position of three `f32`, then a colour of four `u8`.
 pub const VERTEX_STRIDE: u32 = 16;
@@ -292,6 +370,46 @@ pub fn chunk_vertices(
     region_min: BlockPos,
     corners: &Corners,
 ) -> Result<Vec<u8>> {
+    chunk_vertices_with(mesh, region_min, corners, &|quad| {
+        face_color(quad.axis, quad.facing)
+    })
+}
+
+/// The word a textured vertex carries in place of a colour: the quad's tile
+/// in `atlas` in the low 16 bits and its face index (`atlas::face_index`) in
+/// the next 8, little-endian — what [`textured_wgsl`] reads as one `u32`.
+#[must_use]
+pub fn textured_word(quad: &nexora_mesh::Quad, atlas: &atlas::Atlas) -> [u8; 4] {
+    let tile = atlas.tile_of(quad.surface).min(0xFFFF);
+    let face = atlas::face_index(quad.axis, quad.facing);
+    (tile | (face << 16)).to_le_bytes()
+}
+
+/// [`chunk_vertices`] for the textured pass: every vertex carries its quad's
+/// [`textured_word`] instead of its face's colour. The geometry is the same
+/// bytes, vertex for vertex.
+///
+/// # Errors
+///
+/// See [`chunk_vertices`].
+pub fn textured_vertices(
+    mesh: &ChunkMesh,
+    region_min: BlockPos,
+    corners: &Corners,
+    atlas: &atlas::Atlas,
+) -> Result<Vec<u8>> {
+    chunk_vertices_with(mesh, region_min, corners, &|quad| {
+        textured_word(quad, atlas)
+    })
+}
+
+/// The vertices of a mesh, each carrying `word(quad)` after its position.
+fn chunk_vertices_with(
+    mesh: &ChunkMesh,
+    region_min: BlockPos,
+    corners: &Corners,
+    word: &dyn Fn(&nexora_mesh::Quad) -> [u8; 4],
+) -> Result<Vec<u8>> {
     let base = [region_min.x, region_min.y, region_min.z];
     let mut out = Vec::with_capacity(mesh.len() * (VERTICES_PER_QUAD * VERTEX_STRIDE) as usize);
     for quad in &mesh.quads {
@@ -304,7 +422,7 @@ pub fn chunk_vertices(
                 .with_context("origin", format!("{:?}", quad.origin))
                 .with_context("region_min", format!("{region_min:?}")));
         }
-        let color = face_color(quad.axis, quad.facing);
+        let color = word(quad);
         let flip = !winds_outward(quad.axis, quad.facing);
         let mut pushed = 0usize;
         let mut triangle = [[0.0f64; 3]; 3];
@@ -417,11 +535,15 @@ pub struct FrameStats {
     pub vertices: u64,
 }
 
-/// The pass: one pipeline, one camera uniform.
+/// The pass: one pipeline, one camera uniform, and the atlas when it draws
+/// albedo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkPass {
     pipeline: PipelineHandle,
     camera: BufferHandle,
+    /// The albedo atlas the textured pass reads; `None` for the pass that
+    /// colours faces by direction.
+    atlas: Option<TextureHandle>,
 }
 
 impl ChunkPass {
@@ -432,14 +554,70 @@ impl ChunkPass {
     ///
     /// The backend refused the pipeline or the buffer.
     pub fn new<R: Rhi + ?Sized>(rhi: &mut R, target: TextureFormat) -> Result<Self> {
+        Self::build(rhi, target, None)
+    }
+
+    /// The textured pass (ADR-0037): the same geometry, drawing each face's
+    /// albedo from `atlas` — an [`atlas::Atlas`] uploaded by
+    /// [`atlas::Atlas::upload`] — lit by [`atlas::FACE_SHADE`]. Its chunks
+    /// carry [`textured_vertices`], and `target` should be
+    /// [`TextureFormat::Rgba8UnormSrgb`] for the colours the reference
+    /// expects.
+    ///
+    /// # Errors
+    ///
+    /// The backend refused the pipeline or the buffer.
+    pub fn textured<R: Rhi + ?Sized>(
+        rhi: &mut R,
+        target: TextureFormat,
+        atlas: TextureHandle,
+    ) -> Result<Self> {
+        Self::build(rhi, target, Some(atlas))
+    }
+
+    /// Whether this pass draws albedo.
+    #[must_use]
+    pub const fn is_textured(&self) -> bool {
+        self.atlas.is_some()
+    }
+
+    fn build<R: Rhi + ?Sized>(
+        rhi: &mut R,
+        target: TextureFormat,
+        atlas: Option<TextureHandle>,
+    ) -> Result<Self> {
+        let (code, vertex, fragment, word, bindings) = match atlas {
+            None => (
+                CHUNK_WGSL.to_owned(),
+                "vs_chunk",
+                "fs_chunk",
+                VertexFormat::Unorm8x4,
+                vec![BindingKind::Uniform, BindingKind::Uniform],
+            ),
+            Some(_) => (
+                textured_wgsl(),
+                "vs_textured",
+                "fs_textured",
+                VertexFormat::Uint32,
+                vec![
+                    BindingKind::Uniform,
+                    BindingKind::Uniform,
+                    BindingKind::Texture,
+                ],
+            ),
+        };
         let stage = |entry: &str| ShaderStage {
             entry: entry.into(),
-            code: CHUNK_WGSL.as_bytes().to_vec(),
+            code: code.as_bytes().to_vec(),
         };
         let pipeline = rhi.create_pipeline(&PipelineDesc {
-            label: "chunk pass".into(),
-            vertex: stage("vs_chunk"),
-            fragment: stage("fs_chunk"),
+            label: if atlas.is_some() {
+                "textured chunk pass".into()
+            } else {
+                "chunk pass".into()
+            },
+            vertex: stage(vertex),
+            fragment: stage(fragment),
             vertex_stride: VERTEX_STRIDE,
             attributes: vec![
                 VertexAttribute {
@@ -449,11 +627,11 @@ impl ChunkPass {
                 },
                 VertexAttribute {
                     location: 1,
-                    format: VertexFormat::Unorm8x4,
+                    format: word,
                     offset: 12,
                 },
             ],
-            bindings: vec![BindingKind::Uniform, BindingKind::Uniform],
+            bindings,
             depth: Some(DepthState {
                 compare: Compare::Greater,
                 write: true,
@@ -473,7 +651,11 @@ impl ChunkPass {
                 return Err(error);
             }
         };
-        Ok(Self { pipeline, camera })
+        Ok(Self {
+            pipeline,
+            camera,
+            atlas,
+        })
     }
 
     /// Create a chunk's buffers, and append the write of its vertices to
@@ -607,10 +789,17 @@ impl ChunkPass {
                 buffer: vertices,
                 target,
                 depth: Some(depth),
-                bindings: vec![
-                    Binding::Uniform(self.camera),
-                    Binding::Uniform(chunk.offset),
-                ],
+                bindings: match self.atlas {
+                    None => vec![
+                        Binding::Uniform(self.camera),
+                        Binding::Uniform(chunk.offset),
+                    ],
+                    Some(atlas) => vec![
+                        Binding::Uniform(self.camera),
+                        Binding::Uniform(chunk.offset),
+                        Binding::Texture(atlas),
+                    ],
+                },
                 vertices: chunk.vertex_count,
             });
             stats.drawn += 1;

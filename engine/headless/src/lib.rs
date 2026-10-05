@@ -1288,26 +1288,8 @@ fn load_content_textures(
 /// No backend guarantees a three-channel format, so RGB is widened here,
 /// once, rather than by each backend differently (ADR-0025).
 fn gpu_texels(map: &nexora_asset::texture::TextureMap) -> Result<(TextureFormat, Vec<u8>)> {
-    use nexora_asset::texture::{ChannelLayout, ColorSpace};
-    if map.format().bits_per_channel != 8 {
-        return Err(mismatch(
-            "only 8-bit maps have an upload path; the first generation has no other",
-        )
-        .with_context("bits", map.format().bits_per_channel.to_string()));
-    }
-    let pixels = map.pixels();
-    let texels = match map.format().channels {
-        ChannelLayout::Rgba => pixels.to_vec(),
-        ChannelLayout::Rgb => pixels
-            .chunks_exact(3)
-            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], u8::MAX])
-            .collect(),
-        ChannelLayout::GreyAlpha => pixels
-            .chunks_exact(2)
-            .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
-            .collect(),
-        ChannelLayout::Grey => pixels.iter().flat_map(|g| [*g, *g, *g, u8::MAX]).collect(),
-    };
+    use nexora_asset::texture::ColorSpace;
+    let texels = nexora_image::rgba8(map)?;
     let format = match map.color_space() {
         ColorSpace::Srgb => TextureFormat::Rgba8UnormSrgb,
         ColorSpace::Linear => TextureFormat::Rgba8Unorm,

@@ -16,8 +16,11 @@ use nexora_camera::Projection;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::spatial::{BlockPos, ChunkCoord};
 use nexora_mesh::{mesh_region, ChunkMesh, DenseSnapshot, Extent};
-use nexora_render::{chunk_vertices, corners_in, Corners};
-use nexora_simulation::{find_walkable_run, ColumnArea, EditArea, Run, WorldSurfaces, WorldVoxels};
+use nexora_render::atlas::Atlas;
+use nexora_render::{chunk_vertices, corners_in, textured_vertices, Corners};
+use nexora_simulation::{
+    find_walkable_run, ColumnArea, EditArea, Run, SurfaceTable, WorldSurfaces, WorldVoxels,
+};
 use nexora_world::world::World;
 
 /// Blocks of margin above the highest surface and below the lowest in the
@@ -54,6 +57,12 @@ pub struct Scene {
     pub spawn: Run,
     /// How the view projects: 70° high, near 0.1, far 512.
     pub projection: Projection,
+    /// What each block shows: its material's surface when content gives it
+    /// one, its own state id otherwise (`SurfaceTable::untextured`).
+    pub table: SurfaceTable,
+    /// The albedo of those surfaces, when the client draws textures
+    /// (ADR-0037); `None` draws faces in their direction's colour.
+    pub atlas: Option<Atlas>,
 }
 
 impl Scene {
@@ -95,7 +104,7 @@ impl Scene {
                 }
             }
         }
-        let view = WorldSurfaces::untextured(world);
+        let view = self.view(world);
         let mut remeshed = Vec::with_capacity(touched.len());
         for index in touched {
             let region = self.regions[index].0;
@@ -147,7 +156,18 @@ impl Scene {
             .into_iter()
             .map(|near| &self.regions[near].1)
             .collect();
-        chunk_vertices(mesh, region.origin, &Corners::touching(&meshes, *region))
+        let corners = Corners::touching(&meshes, *region);
+        match &self.atlas {
+            Some(atlas) => textured_vertices(mesh, region.origin, &corners, atlas),
+            None => chunk_vertices(mesh, region.origin, &corners),
+        }
+    }
+
+    /// The world as this scene's surfaces: what is meshed, and what the
+    /// reference ray cast reads.
+    #[must_use]
+    pub fn view<'a>(&self, world: &'a World) -> WorldSurfaces<'a> {
+        WorldSurfaces::new(world, self.table.clone())
     }
 
     /// The regions within one column of any of `indices`, themselves
@@ -203,7 +223,12 @@ fn holds(region: &Extent, cell: BlockPos) -> bool {
 ///
 /// `radius` is negative, generation failed, a region is larger than the
 /// mesher accepts, or no run that long exists in the drawn columns.
-pub fn build(world: &mut World, radius: i64) -> Result<Scene> {
+pub fn build(
+    world: &mut World,
+    radius: i64,
+    table: SurfaceTable,
+    atlas: Option<Atlas>,
+) -> Result<Scene> {
     if !(0..=8).contains(&radius) {
         return Err(Error::new(
             Domain::World,
@@ -237,7 +262,7 @@ pub fn build(world: &mut World, radius: i64) -> Result<Scene> {
     let height = u32::try_from(high + BAND_MARGIN - bottom)
         .map_err(|_| Error::new(Domain::World, "client-scene", "the band has no height"))?;
 
-    let view = WorldSurfaces::untextured(world);
+    let view = WorldSurfaces::new(world, table.clone());
     let mut regions = Vec::new();
     for cx in -radius..=radius {
         for cz in -radius..=radius {
@@ -274,6 +299,8 @@ pub fn build(world: &mut World, radius: i64) -> Result<Scene> {
         generated,
         spawn,
         projection: Projection::perspective(70f64.to_radians(), 0.1, 512.0)?,
+        table,
+        atlas,
     })
 }
 
@@ -293,10 +320,17 @@ mod tests {
         world
     }
 
+    /// A scene with no content: every block its own surface, faces by
+    /// direction.
+    fn build_plain(world: &mut World, radius: i64) -> Result<Scene> {
+        let table = SurfaceTable::untextured(world);
+        build(world, radius, table, None)
+    }
+
     #[test]
     fn radius_one_draws_nine_columns_generated_with_a_ring() {
         let mut world = world();
-        let scene = build(&mut world, 1).unwrap();
+        let scene = build_plain(&mut world, 1).unwrap();
         assert_eq!(scene.regions.len(), 9);
         assert_eq!(scene.generated, 25);
         assert_eq!(world.chunk_count(), 25);
@@ -310,7 +344,7 @@ mod tests {
     #[test]
     fn the_regions_tile_the_bounds() {
         let mut world = world();
-        let scene = build(&mut world, 1).unwrap();
+        let scene = build_plain(&mut world, 1).unwrap();
         let cells: u64 = scene.regions.iter().map(|(region, _)| region.cells()).sum();
         assert_eq!(cells, scene.bounds.cells());
         for (region, _) in &scene.regions {
@@ -328,7 +362,7 @@ mod tests {
     fn the_spawn_is_inside_the_drawn_columns_with_a_clear_run() {
         use nexora_simulation::player::EYE_HEIGHT;
         let mut world = world();
-        let scene = build(&mut world, 1).unwrap();
+        let scene = build_plain(&mut world, 1).unwrap();
         let bounds = scene.bounds;
         let (min_x, min_z) = (bounds.origin.x, bounds.origin.z);
         let (max_x, max_z) = (
@@ -380,7 +414,7 @@ mod tests {
         };
 
         let mut world = world();
-        let mut scene = build(&mut world, 2).unwrap();
+        let mut scene = build_plain(&mut world, 2).unwrap();
         let mut drawn: Vec<Vec<u8>> = (0..scene.regions.len())
             .map(|index| scene.vertices(index).unwrap())
             .collect();
@@ -418,7 +452,7 @@ mod tests {
                 regions: scene.regions.clone(),
                 ..scene_shape(&scene)
             };
-            let view = WorldSurfaces::untextured(&world);
+            let view = scene.view(&world);
             for (region, mesh) in &mut fresh.regions {
                 let snapshot = DenseSnapshot::read(&view, *region).unwrap();
                 *mesh = mesh_region(&snapshot, *region).opaque;
@@ -447,13 +481,15 @@ mod tests {
             generated: scene.generated,
             spawn: scene.spawn,
             projection: scene.projection,
+            table: scene.table.clone(),
+            atlas: scene.atlas.clone(),
         }
     }
 
     #[test]
     fn the_edit_area_is_what_is_drawn() {
         let mut world = world();
-        let scene = build(&mut world, 1).unwrap();
+        let scene = build_plain(&mut world, 1).unwrap();
         let area = scene.edit_area();
         let bounds = scene.bounds;
         assert_eq!(area.min, bounds.origin);
@@ -469,7 +505,7 @@ mod tests {
     #[test]
     fn a_radius_out_of_range_is_refused() {
         let mut world = world();
-        assert!(build(&mut world, -1).is_err());
-        assert!(build(&mut world, 9).is_err());
+        assert!(build_plain(&mut world, -1).is_err());
+        assert!(build_plain(&mut world, 9).is_err());
     }
 }

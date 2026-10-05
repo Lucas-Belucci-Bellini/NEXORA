@@ -740,11 +740,14 @@ dependencies = [
 name = "nexora-client"
 version = "0.0.1"
 dependencies = [
+ "nexora-asset",
  "nexora-camera",
  "nexora-foundation",
+ "nexora-image",
  "nexora-mesh",
  "nexora-persistence",
  "nexora-render",
+ "nexora-resource",
  "nexora-rhi",
  "nexora-rhi-wgpu",
  "nexora-runtime",
