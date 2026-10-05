@@ -18,7 +18,12 @@ name: release
 # `docs/RELEASING.md`. `workflow_dispatch` runs everything except the publish,
 # so the pipeline can be exercised without creating a tag — but only once this
 # file is on the default branch, because that is the only place GitHub looks for
-# dispatchable workflows. Until then this has never run; see `docs/RELEASING.md`.
+# dispatchable workflows. Its first run was exactly that dry run, from `main`
+# after the merge (36075825860): Linux and macOS passed end to end, and Windows
+# built, ran and staged everything and then failed at the checksum line below.
+# A dispatch runs the copy of this file on the ref it is dispatched on, so a
+# change here can be proved before it merges, and the fix for that line was
+# (36077804637: all three platforms green, publish skipped).
 
 on:
   push:
@@ -122,8 +127,29 @@ jobs:
             archive="${NEXORA_STEM}.tar.gz"
             tar -czf "${archive}" "${NEXORA_STEM}"
           fi
-          # shasum is present on every runner; sha256sum is not (macOS).
-          shasum -a 256 "${archive}" > "${archive}.sha256"
+          # No one SHA-256 tool is on every runner. Git Bash on the Windows
+          # runner has no `shasum` — the first dry run (36075825860) died on
+          # exactly that line after building, running and staging everything —
+          # and `sha256sum` is not something to assume on macOS. So take
+          # whichever exists, keep only the digest, and write the line here:
+          # the tools do not promise one line format (GNU marks binary-mode
+          # input with `*`), and SHA256SUMS must not depend on which platform
+          # produced which entry.
+          if command -v sha256sum > /dev/null 2>&1; then
+            digest="$(sha256sum "${archive}" | cut -d ' ' -f 1)"
+          elif command -v shasum > /dev/null 2>&1; then
+            digest="$(shasum -a 256 "${archive}" | cut -d ' ' -f 1)"
+          else
+            echo "no SHA-256 tool on this runner (tried sha256sum, shasum)" >&2
+            exit 1
+          fi
+          # A checksum file holding anything but a digest is worse than none:
+          # it would be published, and fail every download that checks it.
+          if [ "${#digest}" -ne 64 ] || [ -n "${digest//[0-9a-f]/}" ]; then
+            echo "not a SHA-256 digest: '${digest}'" >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "${digest}" "${archive}" > "${archive}.sha256"
           cat "${archive}.sha256"
 
       - uses: actions/upload-artifact@v4
