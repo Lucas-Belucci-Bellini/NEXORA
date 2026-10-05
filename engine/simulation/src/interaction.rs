@@ -388,6 +388,18 @@ impl BlockEditor {
         self
     }
 
+    /// Move the area edits are limited to: the client's drawn region follows
+    /// the player (ADR-0038), and so does what the player may edit.
+    pub const fn set_area(&mut self, area: EditArea) {
+        self.area = Some(area);
+    }
+
+    /// The area edits are limited to, if any.
+    #[must_use]
+    pub const fn area(&self) -> Option<EditArea> {
+        self.area
+    }
+
     /// What this editor has done so far.
     #[must_use]
     pub const fn tally(&self) -> EditTally {

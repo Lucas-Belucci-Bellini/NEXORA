@@ -142,6 +142,12 @@ jobs:
           grep '^player             walked [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
+          # The drawn square follows the player through the engine's streaming
+          # (ADR-0038). On this terrain a session does not cross a column
+          # (DEBT-0054); a move is drawn and judged in `cargo test`.
+          grep '^streaming          [0-9]* moves of the drawn square, .* columns made resident' \
+            "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^moved frame        ' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
           xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
             ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-world.nxsv" \
@@ -513,9 +519,13 @@ jobs:
         shell: bash
         run: |
           ${{ matrix.python }} scripts/local-validation.py self-test
+          # The report is printed whatever the run says: a failing check's
+          # output tail is in it, and on a runner it is the only copy.
+          status=0
           ${{ matrix.python }} scripts/local-validation.py run --quick \
-            --out "${RUNNER_TEMP}/local-validation"
+            --out "${RUNNER_TEMP}/local-validation" || status=$?
           cat "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          test "${status}" -eq 0
           # The benchmark's window stage ran on this platform's window system
           # (Win32, AppKit) and its frame matched the ray cast.
           grep -q 'window.pixels_judged' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"

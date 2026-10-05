@@ -1174,27 +1174,28 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 3 (replay) / Phase 6 (servidor)
 - **STATUS:** OPEN
 
-### DEBT-0052 — O cliente só edita o que desenha, e o que desenha é fixado na partida
+### DEBT-0052 — O cliente só edita na faixa vertical que desenha ~~, e o que desenha é fixado na partida~~
 
-- **SYSTEM:** `engine/client` (`Scene::edit_area`, `BlockEditor::within`)
+- **SYSTEM:** `engine/client` (`scene::band`, `Scene::edit_area`, `BlockEditor::within`)
 - **CLASS:** TEMPORARY
 - **WHY CREATED:** [ADR-0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md).
-  O cliente gera e malha as colunas antes do primeiro quadro, numa faixa
-  vertical de 8 blocos acima da superfície mais alta e abaixo da mais baixa
-  (o streaming para dentro do pass não existe). Uma edição fora dessa caixa
-  não apareceria, e uma torre construída acima dela sumiria do quadro; então o
-  editor do player é limitado à caixa desenhada e diz `outside_area` sem
-  enviar comando. Um jogador que cava até o fundo da faixa, ou constrói até o
-  teto, para ali.
-- **IMPACT:** o mundo pequeno do slice tem um teto e um piso de edição que o
-  jogo não tem; um mundo salvo com um raio maior e reaberto com um menor tem
-  edições que o cliente não desenha (e o player salvo fora das colunas
-  desenhadas renasce pela busca, e o relatório diz isso).
-- **PROPOSED REMEDIATION:** streaming para dentro do pass: as colunas e a
-  faixa seguem o player, e a caixa editável é a residência, não a partida.
-- **TRIGGER:** o streaming no pass do cliente (Phase 2).
+  O cliente desenha uma faixa vertical de 8 blocos acima da superfície mais
+  alta e abaixo da mais baixa. Uma edição fora dela não apareceria, e uma
+  torre construída acima sumiria do quadro; então o editor do player é
+  limitado à caixa desenhada e diz `outside_area` sem enviar comando.
+- **PARCIALMENTE RESOLVIDO** pela [ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md):
+  a metade horizontal acabou. O quadrado desenhado, a residência e a área
+  editável seguem a coluna do player, pelo `StreamingSystem` e pelo
+  `WorldResidency`; um player salvo é sempre retomado dentro do que é
+  desenhado. A faixa passou a ser a do **gerador** (`World::surface_range`),
+  igual em qualquer lugar, e não mais a das colunas onde a partida começou.
+- **IMPACT:** quem cava até o fundo da faixa, ou constrói até o teto, para ali.
+- **PROPOSED REMEDIATION:** regiões verticais (seções de 16 em vez de uma
+  faixa) que entram no pass conforme o player sobe ou desce, com a mesma
+  regra de `Shift` da ADR-0038 no eixo Y.
+- **TRIGGER:** cavernas, ou construção acima da faixa, chegarem ao jogo.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** OPEN (metade horizontal resolvida)
 
 ### DEBT-0053 — Na borda de um quad, um pixel texturizado pode mostrar o texel do outro lado do tile
 
@@ -1220,6 +1221,32 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   a referência perder as duas regras e voltar a julgar a borda exata.
 - **TRIGGER:** filtragem ou mipmaps no atlas (o mesmo vazamento vira sangria
   de cor entre tiles), ou o primeiro relato de alguém vendo a costura.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0054 — O terreno gerado é um campo de pilares que o player não atravessa a pé
+
+- **SYSTEM:** `engine/world` (`World::surface_height`), e quem o reproduz:
+  `benchmarks/cpp` (`nexora::surface_height`, o digest `world.surface_height`)
+- **CLASS:** CONTENT
+- **WHY CREATED:** a geração de terreno da Phase 0 sorteia a altura de **cada
+  coluna de blocos** independentemente (64 ± 12, semente posicional). Bastava
+  para provar determinismo, chunks e persistência; não produz relevo.
+  Encontrado ao fazer o quadrado desenhado seguir o player
+  ([ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)):
+  numa janela, o player não chega à coluna vizinha (32 blocos), porque
+  vizinhos diferem até 24 blocos e um pulo sobe 1,2. O cliente encontra o
+  ponto de partida procurando uma sequência de 5 colunas andáveis
+  (`find_walkable_run`) justamente por isso.
+- **IMPACT:** o *mundo pequeno navegável* do critério de saída da Phase 2 não
+  é navegável a pé. O streaming do cliente está provado por teste (bytes e
+  pixels), mas nenhuma sessão real passa de uma coluna para outra.
+- **PROPOSED REMEDIATION:** altura por ruído contínuo (value noise ou similar
+  em inteiros/ponto fixo, para continuar idêntico entre plataformas e entre
+  Rust e C++), com declive limitado. Muda o digest `world.surface_height` dos
+  dois lados e todo número que dependa do terreno: precisa de ADR e de um
+  ciclo próprio.
+- **TRIGGER:** o critério de saída da Phase 2 — é o próximo bloqueio dele.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 

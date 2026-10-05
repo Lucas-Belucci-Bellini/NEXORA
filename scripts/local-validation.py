@@ -467,7 +467,7 @@ def run_checks(scratch: Path, quick: bool) -> list:
     else:
         results.append(needs_build("client_mode", [client, "--frames", "120", "--timeout", "120"],
                                    _lines("adapter", "window", "first frame", "frames", "frame loop",
-                                          "frame wall", "frame work", "player", "result")))
+                                          "frame wall", "frame work", "player", "streaming", "result")))
     # The world file (ADR-0036): the client opens it twice. The first run
     # creates the world and writes it, with the player, through the atomic
     # save -- the rename Windows can refuse for a moment (DEBT-0048) -- and
@@ -625,6 +625,14 @@ def render_markdown(report: dict) -> str:
         lines += ["#" + line if line.startswith("#") else line for line in report["benchmark_output"]]
     elif report.get("benchmark_tail"):
         lines += ["", "## CPU benchmark (tail)", "", "```text", *report["benchmark_tail"], "```"]
+    # A failed check's own words, scrubbed like every tail: the summary of a
+    # failure is only its exit code, and the reason is what someone reading
+    # the report from another machine needs first.
+    failed = [c for c in report["checks"] if c["status"] == "FAIL" and c.get("tail")]
+    if failed:
+        lines += ["", "## Failure output (last lines)", ""]
+        for c in failed:
+            lines += [f"### `{c['id']}`", "", "```text", *c["tail"], "```", ""]
     failures = report["verdict"]["failures"]
     lines += ["", "## Verdict", "", "Every executed check passed." if not failures
               else "Failed: " + ", ".join(f"`{f}`" for f in failures) + "."]

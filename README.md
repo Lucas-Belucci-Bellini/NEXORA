@@ -46,8 +46,13 @@ the first generation's content and the forge's output, it draws the world
 dry earth and the grass, from one atlas — and still holds every judged frame
 against the ray cast, texel for texel
 ([ADR-0037](docs/adr/ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md)).
-Not built yet: streaming into the pass, a light model, a crosshair, choosing
-what to build, audio.
+The square of columns it draws follows the player: the engine's streaming
+makes the columns around it resident and evicts what falls behind — an edited
+column is kept and comes back with its edit — and every move is checked
+against a fresh build and against the ray cast
+([ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)). Not
+built yet: terrain a body can walk across (today a field of pillars,
+DEBT-0054), a light model, a crosshair, choosing what to build, audio.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
 increment built and did not.
 

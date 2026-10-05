@@ -59,6 +59,7 @@
 //! (DEBT-0050), audio. The frame budget is the arithmetic
 //! [`FrameBudget::doubling_from`] the step, not a measured one.
 
+pub mod residency;
 pub mod scene;
 
 use std::cell::RefCell;
@@ -71,7 +72,7 @@ use nexora_camera::{Camera, Projection, RenderOrigin};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
-use nexora_foundation::spatial::BlockPos;
+use nexora_foundation::spatial::ChunkCoord;
 use nexora_foundation::time::{CalendarConfig, TimeScale};
 use nexora_image::TextureLoader;
 use nexora_mesh::SurfaceId;
@@ -97,7 +98,8 @@ use nexora_window::{run, Client, Flow, WindowFacts, WindowSpec};
 use nexora_world::persist;
 use nexora_world::world::{World, WorldDescriptor};
 
-use crate::scene::Scene;
+use crate::residency::{ClientResidency, ResidencyTally};
+use crate::scene::{Scene, Shift};
 
 /// The window's title.
 pub const TITLE: &str = "NEXORA";
@@ -200,9 +202,6 @@ pub enum Placed {
     Saved,
     /// From the spawn search, because the save holds no player.
     NoneSaved,
-    /// From the spawn search, because the saved player is outside the drawn
-    /// columns: the run's radius is smaller than the one it was saved from.
-    OutsideDrawn,
     /// From the spawn search, because the save's player would be inside
     /// terrain, or is not a state a player can be in.
     Refused,
@@ -215,9 +214,6 @@ impl Placed {
         match self {
             Self::Saved => "the player where it was saved",
             Self::NoneSaved => "no player saved, spawned by search",
-            Self::OutsideDrawn => {
-                "the saved player is outside the drawn columns, spawned by search"
-            }
             Self::Refused => "the saved player was refused, spawned by search",
         }
     }
@@ -267,8 +263,9 @@ pub struct ClientReport {
     pub textures: Option<(u32, (u32, u32))>,
     /// Blocks drawn with no surface of their own (`SurfaceTable::unmapped`).
     pub unmapped: usize,
-    /// Columns drawn, and generated (drawn plus a ring).
-    pub columns: (usize, usize),
+    /// Columns drawn, and resident at the end (drawn, a ring, and what the
+    /// hysteresis has not let go of yet).
+    pub columns: (usize, u32),
     /// The drawn band, bottom and top block.
     pub band: (i64, i64),
     /// The first frame shown against the ray cast, or `None` when the
@@ -318,8 +315,33 @@ pub struct ClientReport {
     /// The slowest frame's meshing and recording of uploads after its edits:
     /// what an edit costs the frame it lands in, before the GPU sees it.
     pub slowest_remesh: Duration,
+    /// How the drawn square followed the player (ADR-0038).
+    pub streaming: StreamingSummary,
+    /// The first frame shown after the drawn square first moved, against the
+    /// ray cast of the square it moved to; `None` when it never moved, or
+    /// when the surface cannot be read back.
+    pub moved_frame: Option<FrameCheck>,
     /// The flushed world's size, and where it was written.
     pub flushed: (usize, Option<PathBuf>),
+}
+
+/// How the drawn square followed the player over a run (ADR-0038).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamingSummary {
+    /// Times the square moved.
+    pub moves: u64,
+    /// Columns meshed as they entered it.
+    pub meshed: u64,
+    /// Regions uploaded because of a move: the columns that entered, and the
+    /// kept ones whose neighbours changed.
+    pub uploaded: u64,
+    /// The slowest move: residency, meshing and recording the uploads.
+    pub slowest: Duration,
+    /// What residency did meanwhile.
+    pub residency: ResidencyTally,
+    /// Edited columns held out of the world at the end, before the flush
+    /// put them back for the save.
+    pub retained: usize,
 }
 
 /// What the player's body did over a run.
@@ -432,32 +454,36 @@ fn run_in(
     lifecycle.advance_to(Phase::SimulationRunning)?;
     let (table, atlas) = looks(&world, content.as_ref(), config.resources.as_deref())?;
     let unmapped = table.unmapped().len();
-    let mut scene = scene::build(&mut world, config.radius, table, atlas)?;
-    log(diagnostics, "world generated and meshed");
 
-    // --- the player ---------------------------------------------------------
-    // A resumed world's player goes on from where it was saved, if it can;
-    // otherwise on the first column of a run the scene found, at rest before
-    // the first frame, so that frame shows - and is judged from - the eye it
-    // starts at.
+    // A resumed world's player goes on from where it was saved, so the drawn
+    // square is centred on its column (ADR-0038); a new world's on the
+    // origin's.
     let saved = match &resumed {
         Some((_, container)) => load_player(container)?,
         None => None,
     };
+    scene::check_radius(config.radius)?;
+    let centre = saved.as_ref().map_or(ChunkCoord::new(0, 0), |state| {
+        scene::column_in(&world, state.feet.x, state.feet.z)
+    });
+    let mut residency = ClientResidency::new(config.radius)?;
+    residency.settle(&mut world, centre)?;
+    let mut scene = scene::build(&world, centre, config.radius, table, atlas)?;
+    log(diagnostics, "world generated and meshed");
+
+    // --- the player ---------------------------------------------------------
+    // A resumed world's player goes on from where it was saved, if it can;
+    // otherwise on the first column of a run the scene finds, at rest before
+    // the first frame, so that frame shows - and is judged from - the eye it
+    // starts at.
     let (player, placed) = {
         let terrain = WorldVoxels::new(&world);
-        let spawn = || Player::spawn(&terrain, &scene.spawn, scene::SPAWN_PITCH, ticks_per_second);
+        let spawn = || -> Result<Player> {
+            let run = scene.spawn_run(&world)?;
+            Player::spawn(&terrain, &run, scene::SPAWN_PITCH, ticks_per_second)
+        };
         match saved {
             None => (spawn()?, Placed::NoneSaved),
-            Some(state)
-                if !scene.edit_area().contains(BlockPos::new(
-                    state.feet.x.floor() as i64,
-                    scene.bounds.origin.y,
-                    state.feet.z.floor() as i64,
-                )) =>
-            {
-                (spawn()?, Placed::OutsideDrawn)
-            }
             Some(state) => match Player::resume(&terrain, &state, ticks_per_second) {
                 Ok(player) => (player, Placed::Saved),
                 Err(error) if error.recovery() == Recovery::Reject => (spawn()?, Placed::Refused),
@@ -491,6 +517,7 @@ fn run_in(
         scene: &mut scene,
         controls: Controls::new()?,
         editor,
+        residency,
         block_latched: BlockIntent::default(),
         capture: config.capture.clone(),
         player,
@@ -522,6 +549,7 @@ fn run_in(
         tally,
         adapter,
         editor,
+        mut residency,
         ..
     } = presentation;
     let edits = editor.tally();
@@ -553,10 +581,20 @@ fn run_in(
             "the world was edited and no frame showing it was read back",
         ));
     }
+    if tally.show_move && !tally.unreadable {
+        return Err(wrong(
+            "the drawn square moved and no frame showing it was read back",
+        ));
+    }
 
     // --- shutdown -----------------------------------------------------------
     lifecycle.advance_to(Phase::ShutdownRequested)?;
     lifecycle.advance_to(Phase::SimulationStop)?;
+    // Evicted edited columns go back into the world first: the save writes
+    // the world, and they are not in it (`RetainedChunks::flush_into`).
+    let retained = residency.retained();
+    let resident = residency.resident();
+    residency.flush_into(&mut world.borrow_mut())?;
     let mut container = persist::save(&world.borrow())?;
     save_player(&mut container, &player)?;
     let flushed = container.encode().len();
@@ -594,7 +632,7 @@ fn run_in(
             .as_ref()
             .map(|atlas| (atlas.tiles(), atlas.size())),
         unmapped,
-        columns: (scene.regions.len(), scene.generated),
+        columns: (scene.regions.len(), resident),
         band: (
             scene.bounds.origin.y,
             scene.bounds.origin.y + i64::from(scene.bounds.size[1]),
@@ -622,8 +660,52 @@ fn run_in(
         edited_frame: tally.edited_frame,
         remeshed: (tally.remeshed, tally.uploaded),
         slowest_remesh: tally.slowest_remesh,
+        streaming: StreamingSummary {
+            moves: tally.moves,
+            meshed: tally.meshed_in,
+            uploaded: tally.uploaded_in,
+            slowest: tally.slowest_move,
+            residency: residency.tally(),
+            retained,
+        },
+        moved_frame: tally.moved_frame,
         flushed: (flushed, target.cloned()),
     })
+}
+
+/// The device chunks after the drawn square moved: a region kept with the
+/// vertices it had keeps its chunk, every other region is uploaded in
+/// `list`, and the chunks of regions that left — or were uploaded again —
+/// are released once the last frame that drew them is done.
+fn restream(
+    rhi: &mut WgpuRhi,
+    pass: &ChunkPass,
+    list: &mut CommandList,
+    old: Vec<GpuChunk>,
+    scene: &Scene,
+    shift: &Shift,
+) -> Result<Vec<GpuChunk>> {
+    let mut old: Vec<Option<GpuChunk>> = old.into_iter().map(Some).collect();
+    let mut chunks = Vec::with_capacity(scene.regions.len());
+    for (index, from) in shift.from.iter().enumerate() {
+        let kept = match from {
+            Some(before) if shift.reupload.binary_search(&index).is_err() => {
+                old.get_mut(*before).and_then(Option::take)
+            }
+            _ => None,
+        };
+        match kept {
+            Some(chunk) => chunks.push(chunk),
+            None => {
+                let bytes = scene.vertices(index)?;
+                chunks.push(pass.upload_vertices(rhi, list, bytes, scene.regions[index].0)?);
+            }
+        }
+    }
+    for chunk in old.into_iter().flatten() {
+        chunk.destroy(rhi)?;
+    }
+    Ok(chunks)
 }
 
 /// The walk a frame's ticks run with.
@@ -877,6 +959,15 @@ struct Tally {
     remeshed: u64,
     uploaded: u64,
     slowest_remesh: Duration,
+    /// The first frame shown after the drawn square first moved, judged.
+    moved_frame: Option<FrameCheck>,
+    /// The square has moved and no frame showing it has been read back.
+    show_move: bool,
+    /// Moves of the square, columns meshed into it, regions uploaded for it.
+    moves: u64,
+    meshed_in: u64,
+    uploaded_in: u64,
+    slowest_move: Duration,
     unreadable: bool,
     ending: Option<Ending>,
     started: Option<Instant>,
@@ -903,6 +994,8 @@ struct Presentation<'a> {
     controls: Controls,
     /// The authority the player's block edits go through (ADR-0036).
     editor: BlockEditor,
+    /// What of the world is resident, following the player (ADR-0038).
+    residency: ClientResidency,
     /// An edit asked for on a frame that bought no tick, waiting for one
     /// that does ([`block_for_ticks`]).
     block_latched: BlockIntent,
@@ -1032,6 +1125,24 @@ impl Client for Presentation<'_> {
         }
         frame.record(FrameStage::Simulation, clock.elapsed())?;
 
+        // World: residency follows the player, and when its column is no
+        // longer the square's centre the square moves to it (ADR-0038). The
+        // player's column is the one it ended the last frame in: a column is
+        // wider than a frame's walk, and its neighbours are resident.
+        let feet = self.player.state().feet;
+        let column = self.scene.column_of(feet.x, feet.z);
+        let mut shift = None;
+        if column != self.scene.centre {
+            let clock = Instant::now();
+            self.residency
+                .settle(&mut self.world.borrow_mut(), column)?;
+            let moved = self.scene.recentre(&self.world.borrow(), column)?;
+            self.editor.set_area(self.scene.edit_area());
+            let spent = clock.elapsed();
+            frame.record(FrameStage::World, spent)?;
+            shift = Some((moved, spent));
+        }
+
         // Physics: the player, one tick for each step, against one view of
         // the world built after the clock has moved and the edits landed.
         if plan.steps > 0 {
@@ -1062,6 +1173,18 @@ impl Client for Presentation<'_> {
             .live
             .as_mut()
             .ok_or_else(|| wrong("a frame before the window opened"))?;
+        if let Some((moved, spent)) = shift {
+            let uploading = Instant::now();
+            let chunks = std::mem::take(&mut live.chunks);
+            live.chunks = restream(rhi, &live.pass, &mut list, chunks, self.scene, &moved)?;
+            self.tally.moves += 1;
+            self.tally.meshed_in += moved.meshed as u64;
+            self.tally.uploaded_in += moved.reupload.len() as u64;
+            self.tally.slowest_move = self.tally.slowest_move.max(spent + uploading.elapsed());
+            if self.tally.moved_frame.is_none() {
+                self.tally.show_move = true;
+            }
+        }
         if !changed.is_empty() {
             let remeshing = Instant::now();
             let remeshed = self.scene.remesh(&self.world.borrow(), &changed)?;
@@ -1092,8 +1215,8 @@ impl Client for Presentation<'_> {
         // first after the world changed, are read back to be judged.
         let clock = Instant::now();
         rhi.submit(list)?;
-        let wanted =
-            !self.tally.unreadable && (self.tally.first_frame.is_none() || self.tally.show_edit);
+        let wanted = !self.tally.unreadable
+            && (self.tally.first_frame.is_none() || self.tally.show_edit || self.tally.show_move);
         let mut captured = None;
         let shown = if wanted {
             match rhi.present_and_capture(live.target) {
@@ -1144,16 +1267,29 @@ impl Client for Presentation<'_> {
                 let check = judge(&self.world.borrow(), self.scene, &captured, "first")?;
                 self.tally.first_frame = Some(check);
             } else {
+                // One frame can show both an edit and a move; it is judged
+                // once, against the world and the square it showed.
+                let which = if self.tally.show_edit {
+                    "edited"
+                } else {
+                    "moved"
+                };
                 if let Some(path) = &self.capture {
                     let stem = path
                         .file_stem()
                         .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-                    let edited = path.with_file_name(format!("{stem}-edited.ppm"));
-                    write_ppm(&edited, &captured)?;
+                    write_ppm(
+                        &path.with_file_name(format!("{stem}-{which}.ppm")),
+                        &captured,
+                    )?;
                 }
-                let check = judge(&self.world.borrow(), self.scene, &captured, "edited")?;
-                self.tally.edited_frame = Some(check);
-                self.tally.show_edit = false;
+                let check = judge(&self.world.borrow(), self.scene, &captured, which)?;
+                if std::mem::take(&mut self.tally.show_edit) {
+                    self.tally.edited_frame = Some(check);
+                }
+                if std::mem::take(&mut self.tally.show_move) {
+                    self.tally.moved_frame = Some(check);
+                }
             }
             if let Some(last) = self.tally.last.as_mut() {
                 *last += judging.elapsed();
@@ -1274,7 +1410,7 @@ pub fn format_report(report: &ClientReport) -> String {
         None => out.push_str("textures           none: faces coloured by direction\n"),
     }
     out.push_str(&format!(
-        "world              {} columns drawn of {} generated, blocks {}..{} high\n",
+        "world              {} columns drawn of {} resident, blocks {}..{} high\n",
         report.columns.0, report.columns.1, report.band.0, report.band.1
     ));
     match report.first_frame {
@@ -1354,6 +1490,27 @@ pub fn format_report(report: &ClientReport) -> String {
         )),
         (None, 0) => out.push_str("edited frame       none: nothing was edited\n"),
         (None, _) => out.push_str("edited frame       not readable on this surface\n"),
+    }
+    let streaming = report.streaming;
+    out.push_str(&format!(
+        "streaming          {} moves of the drawn square, {} columns meshed in, {} uploaded, slowest {}; {} columns made resident, {} evicted, {} edited ones retained\n",
+        streaming.moves,
+        streaming.meshed,
+        streaming.uploaded,
+        ms(streaming.slowest),
+        streaming.residency.activated,
+        streaming.residency.evicted,
+        streaming.retained
+    ));
+    match report.moved_frame {
+        Some(check) => out.push_str(&format!(
+            "moved frame        {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} back faces, the first frame after the square moved\n",
+            check.judged, check.pixels, check.matching, check.snapped, check.backfacing
+        )),
+        None if streaming.moves == 0 => {
+            out.push_str("moved frame        none: the player stayed in its column\n");
+        }
+        None => out.push_str("moved frame        not readable on this surface\n"),
     }
     match &report.flushed.1 {
         Some(path) => out.push_str(&format!(
@@ -1501,10 +1658,16 @@ mod tests {
         .unwrap();
         world.bring_online().unwrap();
         let table = SurfaceTable::untextured(&world);
-        let scene = scene::build(&mut world, ClientConfig::default().radius, table, None).unwrap();
+        let radius = ClientConfig::default().radius;
+        let centre = ChunkCoord::new(0, 0);
+        ClientResidency::new(radius)
+            .unwrap()
+            .settle(&mut world, centre)
+            .unwrap();
+        let scene = scene::build(&world, centre, radius, table, None).unwrap();
         let player = Player::spawn(
             &WorldVoxels::new(&world),
-            &scene.spawn,
+            &scene.spawn_run(&world).unwrap(),
             scene::SPAWN_PITCH,
             DEFAULT_TICKS_PER_SECOND,
         )
@@ -1840,5 +2003,144 @@ mod tests {
         .map(class_index)
         .collect();
         assert_eq!(slots, vec![0, 1, 2, 3]);
+    }
+
+    /// A device for the GPU tests, or a skip where the machine declares it
+    /// has none (`NEXORA_GPU=none`).
+    fn backend() -> Option<WgpuRhi> {
+        match WgpuRhi::new() {
+            Ok(rhi) => Some(rhi),
+            Err(error) if std::env::var("NEXORA_GPU").as_deref() == Ok("none") => {
+                eprintln!("not run: NEXORA_GPU=none ({error})");
+                None
+            }
+            Err(error) => panic!(
+                "no GPU adapter: {error}\n\
+                 install a Vulkan driver (Linux: mesa-vulkan-drivers) or set NEXORA_GPU=none"
+            ),
+        }
+    }
+
+    /// The drawn square followed through a walk — one column, diagonally,
+    /// and back — with the device chunks updated by the frame loop's own
+    /// [`restream`], at radius 2 so the inner columns keep their chunks: after every move the frame drawn from
+    /// them, read back, holds against the ray cast of the square it moved to
+    /// ([`judge`], the client's own check). The live client cannot be walked
+    /// across a column yet — the terrain is a field of pillars — so this is
+    /// where a move is drawn and judged.
+    #[test]
+    fn every_move_of_the_square_is_drawn_as_the_ray_cast_says() {
+        const SIZE: (u32, u32) = (192, 144);
+        let Some(mut rhi) = backend() else { return };
+        let mut world = World::create(
+            WorldDescriptor::new("nexora-client", ClientConfig::default().seed).unwrap(),
+            CalendarConfig::earthlike(),
+        )
+        .unwrap();
+        world.bring_online().unwrap();
+        let radius = 2;
+        let mut residency = ClientResidency::new(radius).unwrap();
+        residency.settle(&mut world, ChunkCoord::new(0, 0)).unwrap();
+        let table = SurfaceTable::untextured(&world);
+        let mut scene = scene::build(&world, ChunkCoord::new(0, 0), radius, table, None).unwrap();
+
+        let texture = |rhi: &mut WgpuRhi, format, usage| {
+            rhi.create_texture(&TextureDesc {
+                label: "client move test".into(),
+                width: SIZE.0,
+                height: SIZE.1,
+                format,
+                usage,
+            })
+            .unwrap()
+        };
+        let target = texture(
+            &mut rhi,
+            TextureFormat::Rgba8Unorm,
+            Usage::RENDER_TARGET | Usage::COPY_SRC,
+        );
+        let depth = texture(&mut rhi, TextureFormat::Depth32Float, Usage::RENDER_TARGET);
+        let pass = ChunkPass::new(&mut rhi, TextureFormat::Rgba8Unorm).unwrap();
+        let mut list = CommandList::new("client move test upload");
+        let mut chunks = Vec::new();
+        for (index, (region, _)) in scene.regions.iter().enumerate() {
+            let bytes = scene.vertices(index).unwrap();
+            chunks.push(
+                pass.upload_vertices(&mut rhi, &mut list, bytes, *region)
+                    .unwrap(),
+            );
+        }
+        let fence = rhi.submit(list).unwrap();
+        rhi.wait(fence).unwrap();
+
+        let (_, high) = World::surface_range();
+        let mut judged = 0;
+        let mut kept = 0;
+        for (cx, cz) in [(1, 0), (2, 1), (0, 0)] {
+            let centre = ChunkCoord::new(cx, cz);
+            residency.settle(&mut world, centre).unwrap();
+            let shift = scene.recentre(&world, centre).unwrap();
+            kept += (0..shift.from.len())
+                .filter(|index| shift.from[*index].is_some() && !shift.reupload.contains(index))
+                .count();
+            let mut list = CommandList::new("client move test frame");
+            chunks = restream(&mut rhi, &pass, &mut list, chunks, &scene, &shift).unwrap();
+
+            // From above the square's middle, looking out and down over it:
+            // every drawn column, the edges where columns entered and left
+            // among them.
+            let middle = |c: i64, size: u32| (c as f64 + 0.5) * f64::from(size) / 5.0;
+            let [sx, _, sz] = scene.bounds.size;
+            let eye = WorldPosition::new(
+                scene.bounds.origin.x as f64 + middle(0, sx),
+                (high + 30) as f64,
+                scene.bounds.origin.z as f64 + middle(0, sz),
+            );
+            let mut camera = Camera::new(eye, scene.projection).unwrap();
+            camera
+                .look_at(WorldPosition::new(
+                    scene.bounds.origin.x as f64 + middle(3, sx),
+                    (high - 12) as f64,
+                    scene.bounds.origin.z as f64 + middle(3, sz),
+                ))
+                .unwrap();
+            let origin = RenderOrigin::containing(eye).unwrap();
+            let state = camera.sample(origin, SIZE.0, SIZE.1).unwrap();
+            let stats = pass
+                .record(&mut list, &state, target, depth, &chunks)
+                .unwrap();
+            assert_eq!(stats.drawn + stats.culled + stats.empty, 25);
+            assert!(
+                stats.drawn >= 9,
+                "({cx},{cz}): {} columns drawn",
+                stats.drawn
+            );
+            let fence = rhi.submit(list).unwrap();
+            rhi.wait(fence).unwrap();
+            let captured = Captured {
+                encoded: false,
+                camera,
+                width: SIZE.0,
+                height: SIZE.1,
+                rgba: rhi.read_texture(target).unwrap(),
+            };
+            let check = judge(&world, &scene, &captured, "moved")
+                .unwrap_or_else(|error| panic!("({cx},{cz}): {error}"));
+            assert!(
+                check.judged * 2 >= check.pixels,
+                "({cx},{cz}): only {} of {} pixels judged",
+                check.judged,
+                check.pixels
+            );
+            judged += check.judged;
+        }
+        assert!(judged > 0);
+        assert!(kept > 0, "some regions kept their device chunks");
+        for chunk in chunks {
+            chunk.destroy(&mut rhi).unwrap();
+        }
+        pass.destroy(&mut rhi).unwrap();
+        rhi.destroy_texture(target).unwrap();
+        rhi.destroy_texture(depth).unwrap();
     }
 }

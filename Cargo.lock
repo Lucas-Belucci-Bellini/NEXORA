@@ -752,6 +752,7 @@ dependencies = [
  "nexora-rhi-wgpu",
  "nexora-runtime",
  "nexora-simulation",
+ "nexora-streaming",
  "nexora-window",
  "nexora-world",
  "winit",
