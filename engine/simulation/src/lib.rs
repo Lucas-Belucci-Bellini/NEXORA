@@ -7,24 +7,35 @@
 //!
 //! ```text
 //! nexora-world  ──┐
-//!                 ├──► nexora-simulation ──► the slice, the benchmark, the server
+//!                 ├──► nexora-simulation ──► the slice, the client, the benchmark, the server
 //! nexora-physics ─┘
 //! ```
 //!
 //! `nexora-physics` does not depend on `nexora-world`, and `nexora-world` does
 //! not depend on `nexora-physics`. Neither can, because the dependency is not
 //! declared — Cargo enforces the layering rather than a reviewer noticing it.
+//!
+//! The player lives here for the same reason: a body the simulation steers
+//! (ADR-0035) is input intent, physics and the world at once, and this is the
+//! one crate that sees all three. It hands out foundation types only, so the
+//! client, the slice and the benchmark drive it without naming a physics type.
 
 pub mod commands;
 pub mod content;
+pub mod controls;
+pub mod player;
 pub mod queries;
 pub mod residency;
+pub mod spawn;
 pub mod surfaces;
 pub mod terrain;
 
 pub use commands::{BreakBlockHandler, PlaceBlockHandler};
 pub use content::{BlockContent, ContentBlock};
+pub use controls::{Controls, Intent, DEFAULT_KEYS};
+pub use player::{Eye, Player, PlayerState, TickOutcome, Walk};
 pub use queries::WorldQueries;
 pub use residency::{FlushReport, RetainedChunks, WorldResidency};
+pub use spawn::{find_walkable_run, Cardinal, ColumnArea, Run};
 pub use surfaces::{SurfaceTable, SurfaceTableBuilder, WorldSurfaces, UNMAPPED_SURFACE};
 pub use terrain::{PhysicsModule, WorldVoxels};

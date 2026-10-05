@@ -40,12 +40,11 @@ fn main() -> ExitCode {
     if !phases.contains(&"presentation-running") || phases.last() != Some(&"process-exit") {
         failures.push(format!("lifecycle: {}", phases.join(" -> ")));
     }
-    if !report
-        .modules
-        .iter()
-        .any(|module| module == "nexora:module/renderer")
-    {
-        failures.push(format!("modules: {}", report.modules.join(", ")));
+    // The renderer, and physics: the player runs inside the frame.
+    for wanted in ["nexora:module/renderer", "nexora:module/physics"] {
+        if !report.modules.iter().any(|module| module == wanted) {
+            failures.push(format!("modules: {}", report.modules.join(", ")));
+        }
     }
     if report.frames != 12 || report.ending != Ending::FrameLimit {
         failures.push(format!(
@@ -60,9 +59,28 @@ fn main() -> ExitCode {
             report.columns, report.drawn
         ));
     }
-    // No key was pressed: the camera must not have moved.
+    // No key was pressed: the camera must not have moved. It is the
+    // player's eye now, under gravity, so this is also the claim that a
+    // resting player is a fixed point of the solver, to the bit.
     if report.moved != [0.0; 3] || report.active_frames != 0 {
         failures.push(format!("moved {:?} with no key", report.moved));
+    }
+    if report.player.walked != [0.0; 3] || !report.player.grounded {
+        failures.push(format!(
+            "the player walked {:?} with no key, grounded {}",
+            report.player.walked, report.player.grounded
+        ));
+    }
+    // Work is each frame's wall time less its wait on presentation, so no
+    // order statistic of the work can exceed the wall's, and no wait can
+    // outlast the longest frame.
+    if (0..3).any(|k| report.work[k] > report.wall[k])
+        || report.presentation_wait[2] > report.wall[2]
+    {
+        failures.push(format!(
+            "work {:?} against wall {:?}, presentation wait {:?}",
+            report.work, report.wall, report.presentation_wait
+        ));
     }
     if let Some(check) = report.first_frame {
         if !frame_holds(&check) {

@@ -88,8 +88,8 @@ fn input(timeout: Duration) -> ExitCode {
                 report.usage, report.action, report.pressed_after, report.held_for
             );
             println!(
-                "signals            {} delivered, {} keys without a HID usage, {} repeats dropped",
-                report.counts.delivered, report.counts.unnumbered, report.counts.repeats
+                "signals            {} delivered, {} keys without a HID usage, {} repeats dropped, focus gained {} times",
+                report.counts.delivered, report.counts.unnumbered, report.counts.repeats, report.counts.focused
             );
             println!("result             OK");
             ExitCode::SUCCESS

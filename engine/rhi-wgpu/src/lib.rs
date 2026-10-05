@@ -35,7 +35,7 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::memory::MemoryPool;
@@ -153,6 +153,11 @@ pub struct SurfaceInfo {
     pub readable: bool,
     /// Frames shown so far.
     pub presented: u64,
+    /// How long the last presentation waited for the window system
+    /// ([`WgpuRhi::last_present_wait`]).
+    pub last_wait: Duration,
+    /// How long every presentation so far waited, in all.
+    pub waited: Duration,
 }
 
 /// A surface image as it was shown, read back from the GPU.
@@ -291,6 +296,8 @@ impl WgpuRhi {
                     config,
                     blit,
                     presented: 0,
+                    last_wait: Duration::ZERO,
+                    waited: Duration::ZERO,
                 })
             }
             None => None,
@@ -334,7 +341,28 @@ impl WgpuRhi {
             present_mode: format!("{:?}", presenter.config.present_mode),
             readable: readable_surface(presenter),
             presented: presenter.presented,
+            last_wait: presenter.last_wait,
+            waited: presenter.waited,
         })
+    }
+
+    /// How long the last [`Rhi::present`] was blocked on the window system:
+    /// acquiring a surface image, and handing the frame to the queue. An
+    /// image comes free when the display releases it (with FIFO, at its next
+    /// refresh) and the GPU has finished the frame drawn into it, so on a
+    /// real display this is mostly the monitor's pacing, and on a software
+    /// driver it can be an earlier frame's rasterisation. A frame loop
+    /// declares it as presentation, not work (`runtime::frame`,
+    /// `FrameRun::waited_for_presentation`). Zero before the first
+    /// presentation and with no surface.
+    ///
+    /// The backend measures it because only the backend can see where the
+    /// wait falls: blitting and submitting in between are work.
+    #[must_use]
+    pub fn last_present_wait(&self) -> Duration {
+        self.presenter
+            .as_ref()
+            .map_or(Duration::ZERO, |presenter| presenter.last_wait)
     }
 
     /// The window changed size: reconfigure the surface to `width` × `height`.
@@ -460,7 +488,13 @@ impl WgpuRhi {
         let Some(presenter) = self.presenter.as_mut() else {
             return Err(no_surface(self.caps.backend));
         };
-        let (frame, suboptimal) = surface::acquire(presenter, &self.device)?;
+        // The two calls that wait on the window system are timed; a refused
+        // acquire still waited, and says so.
+        let acquiring = Instant::now();
+        let acquired = surface::acquire(presenter, &self.device);
+        presenter.last_wait = acquiring.elapsed();
+        presenter.waited = presenter.waited.saturating_add(presenter.last_wait);
+        let (frame, suboptimal) = acquired?;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -539,7 +573,11 @@ impl WgpuRhi {
             .with_context("label", &live.desc.label)
             .with_context("cause", error.to_string()));
         }
+        let presenting = Instant::now();
         self.queue.present(frame);
+        let handed = presenting.elapsed();
+        presenter.last_wait = presenter.last_wait.saturating_add(handed);
+        presenter.waited = presenter.waited.saturating_add(handed);
         presenter.presented += 1;
         if suboptimal {
             presenter.surface.configure(&self.device, &presenter.config);

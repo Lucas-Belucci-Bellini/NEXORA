@@ -1,0 +1,29 @@
+{
+  "category": "soil",
+  "contrast": 1.8,
+  "courses": null,
+  "id": "nexora:recipe/soil/clay",
+  "levels": 4,
+  "mottle": {
+    "cells_x": 3,
+    "cells_y": 3,
+    "cracks": 0.05,
+    "octaves": 3,
+    "strength": 0.8
+  },
+  "ramp": [
+    "#7a3f2c",
+    "#8f4d35",
+    "#a35d40",
+    "#b56f4e",
+    "#c4825f"
+  ],
+  "relief": 0.3,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.1,
+    "density": 0.1
+  },
+  "strips": null
+}

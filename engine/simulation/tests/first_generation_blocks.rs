@@ -1,7 +1,7 @@
 //! The first visual generation, inside a world.
 //!
 //! `content/first-generation/blocks.json` adds the sixteen stones of issue #5
-//! as blocks. This loads it the way any content would be loaded, builds a world
+//! and the five terrain materials of issues #7, #16 and #17 as blocks. This loads it the way any content would be loaded, builds a world
 //! with it, and checks that every stone reaches the mesher through its own
 //! surface — the `integration_status` the catalog records.
 
@@ -22,7 +22,11 @@ fn document() -> std::path::PathBuf {
 #[test]
 fn every_first_generation_stone_is_a_block_with_its_own_surface() {
     let content = BlockContent::load(&document()).expect("the document loads");
-    assert_eq!(content.blocks().len(), 16, "the sixteen stones of issue #5");
+    assert_eq!(
+        content.blocks().len(),
+        21,
+        "the sixteen stones of issue #5 and the five terrain materials"
+    );
 
     // The policy the catalog promises, checked on the definitions the game
     // actually registers rather than only on the files the forge wrote.
@@ -49,24 +53,25 @@ fn every_first_generation_stone_is_a_block_with_its_own_surface() {
         .surface_table(&world, &materials)
         .expect("every block resolves");
 
-    // Place every stone in a row above the terrain, and read it back through
-    // the view the mesher uses.
+    // Place every block above the terrain, sixteen to a row, and read it back
+    // through the view the mesher uses. One row held sixteen; past that the
+    // index wrapped and the later blocks overwrote the first ones.
     let mut placed = Vec::new();
     for (index, block) in content.blocks().iter().enumerate() {
         let state = world.block_id(&block.id).unwrap();
-        let at = BlockPos::new(index as i64 % 16, 200, 0);
+        let at = BlockPos::new(index as i64 % 16, 200, index as i64 / 16);
         world.set_block(at, state).unwrap();
         placed.push((block.id.clone(), at));
     }
     let view = WorldSurfaces::new(&world, table);
     let mut surfaces = BTreeSet::new();
     for (block, at) in &placed {
-        let surface = view.surface_at(*at).expect("a stone shows something");
+        let surface = view.surface_at(*at).expect("a block shows something");
         assert_ne!(surface, UNMAPPED_SURFACE, "{block} has no material");
-        assert!(view.occludes(*at), "{block} is opaque stone");
+        assert!(view.occludes(*at), "{block} is opaque");
         surfaces.insert(surface);
     }
-    assert_eq!(surfaces.len(), 16, "sixteen stones, sixteen surfaces");
+    assert_eq!(surfaces.len(), 21, "twenty-one blocks, twenty-one surfaces");
 
     // A world holding them saves and loads with the content present, and a
     // build without it refuses the save by name rather than loading holes.

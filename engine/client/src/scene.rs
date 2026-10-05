@@ -1,21 +1,40 @@
 //! The world the client shows: generated around the origin before the frame
-//! loop starts, meshed once, one region per chunk column.
+//! loop starts, meshed once, one region per chunk column — and where in it
+//! the player starts.
 //!
 //! Generation and meshing happen before the first frame, on purpose. Both
 //! still run on the calling thread (DEBT-0018, DEBT-0027), and a frame loop
 //! that generated while it ran would measure them rather than itself
-//! (DEBT-0041). Streaming into the pass is not built.
+//! (DEBT-0041). Streaming into the pass is not built, so the player can walk
+//! off the drawn columns onto the generated ring, which is not drawn, and is
+//! stopped where generation ends — an unloaded column is solid to physics.
 
-use nexora_camera::{Camera, Projection};
+use std::f64::consts::PI;
+
+use nexora_camera::Projection;
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
-use nexora_foundation::spatial::{BlockPos, ChunkCoord, WorldPosition};
+use nexora_foundation::spatial::{BlockPos, ChunkCoord};
 use nexora_mesh::{mesh_region, ChunkMesh, Extent};
-use nexora_simulation::WorldSurfaces;
+use nexora_simulation::{find_walkable_run, ColumnArea, Run, WorldSurfaces, WorldVoxels};
 use nexora_world::world::World;
 
 /// Blocks of margin above the highest surface and below the lowest in the
 /// drawn band.
 pub const BAND_MARGIN: i64 = 8;
+
+/// The shortest run of drawn columns the player may start on.
+///
+/// Five, so the first second of W — about 4.2 blocks at 20 ticks — never
+/// reaches the end of the columns known to be walkable: from the centre of
+/// the first column the body's leading face has 4.2 blocks of run ahead.
+pub const CLIENT_RUN: u32 = 5;
+
+/// How far the player starts looking down, in radians: 15°.
+///
+/// The one tunable of the first frame, which is judged from the eye: level
+/// would put the horizon mid-screen over a field of pillars, and a little
+/// down puts the run being walked in view.
+pub const SPAWN_PITCH: f64 = -15.0 * PI / 180.0;
 
 /// What the client draws: one meshed region per chunk column, and the region
 /// that holds them all.
@@ -28,18 +47,22 @@ pub struct Scene {
     /// Columns generated: the drawn ones and a ring around them, so the
     /// drawn edge is meshed against real neighbours.
     pub generated: usize,
-    /// Where the camera starts.
-    pub camera: Camera,
+    /// Where the player starts: a run of at least [`CLIENT_RUN`] drawn
+    /// columns, found in the terrain rather than invented.
+    pub spawn: Run,
+    /// How the view projects: 70° high, near 0.1, far 512.
+    pub projection: Projection,
 }
 
 /// Generate columns `-radius..=radius` on both axes and one ring more, mesh
-/// the inner ones in a vertical band around the surface, and place a camera
-/// above one corner looking at the centre.
+/// the inner ones in a vertical band around the surface, and find where the
+/// player starts: the first run of [`CLIENT_RUN`] walkable drawn columns,
+/// searched from the centre outward.
 ///
 /// # Errors
 ///
-/// `radius` is negative, generation failed, or a region is larger than the
-/// mesher accepts.
+/// `radius` is negative, generation failed, a region is larger than the
+/// mesher accepts, or no run that long exists in the drawn columns.
 pub fn build(world: &mut World, radius: i64) -> Result<Scene> {
     if !(0..=8).contains(&radius) {
         return Err(Error::new(
@@ -94,23 +117,23 @@ pub fn build(world: &mut World, radius: i64) -> Result<Scene> {
         ],
     )?;
 
-    // Above the band, outside one corner, looking at the middle.
-    let top = (bottom + i64::from(height)) as f64;
-    let mut camera = Camera::new(
-        WorldPosition::new(min_x as f64 - 6.5, top + 18.0, min_z as f64 - 5.5),
-        Projection::perspective(70f64.to_radians(), 0.1, 512.0)?,
-    )?;
-    let centre = WorldPosition::new(
-        (min_x + max_x) as f64 / 2.0,
-        (low + high) as f64 / 2.0,
-        (min_z + max_z) as f64 / 2.0,
-    );
-    camera.look_at(centre)?;
+    // The player starts inside what is drawn, read in the drawn band: every
+    // cell between a column's top and the band's ceiling is known empty.
+    let drawn = ColumnArea {
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+        floor_y: bottom,
+        ceiling_y: bottom + i64::from(height) - 1,
+    };
+    let spawn = find_walkable_run(&WorldVoxels::new(world), &drawn, CLIENT_RUN)?;
     Ok(Scene {
         regions,
         bounds,
         generated,
-        camera,
+        spawn,
+        projection: Projection::perspective(70f64.to_radians(), 0.1, 512.0)?,
     })
 }
 
@@ -159,16 +182,41 @@ mod tests {
         }
     }
 
-    /// The camera starts above the band, so the first frame looks at the
-    /// ground from outside what it draws.
+    /// The player starts inside what is drawn, on a run long enough for a
+    /// second of W, with its eye inside the band the ray cast walks.
     #[test]
-    fn the_camera_starts_above_the_band_looking_down() {
+    fn the_spawn_is_inside_the_drawn_columns_with_a_clear_run() {
+        use nexora_simulation::player::EYE_HEIGHT;
         let mut world = world();
         let scene = build(&mut world, 1).unwrap();
-        let top = scene.bounds.origin.y + i64::from(scene.bounds.size[1]);
-        assert!(scene.camera.position().y > top as f64);
-        assert!(scene.camera.pitch() < 0.0);
+        let bounds = scene.bounds;
+        let (min_x, min_z) = (bounds.origin.x, bounds.origin.z);
+        let (max_x, max_z) = (
+            min_x + i64::from(bounds.size[0]),
+            min_z + i64::from(bounds.size[2]),
+        );
+        let run = scene.spawn;
+        assert!(run.length >= CLIENT_RUN);
+        for (x, z) in run.columns() {
+            assert!(
+                (min_x..max_x).contains(&x) && (min_z..max_z).contains(&z),
+                "({x}, {z}) is not drawn"
+            );
+        }
+        let eye = run.feet_y as f64 + EYE_HEIGHT;
+        let (bottom, top) = (
+            bounds.origin.y as f64,
+            (bounds.origin.y + i64::from(bounds.size[1])) as f64,
+        );
+        assert!(
+            eye > bottom && eye < top,
+            "eye {eye} outside {bottom}..{top}"
+        );
     }
+
+    // The spawn looks a little down, never up and never steeply: checked
+    // when the crate compiles, not when a test runs.
+    const _: () = assert!(SPAWN_PITCH < 0.0 && SPAWN_PITCH > -std::f64::consts::FRAC_PI_4);
 
     #[test]
     fn a_radius_out_of_range_is_refused() {

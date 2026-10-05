@@ -11,6 +11,8 @@
 //! surface from, so the window host (`nexora-window`, over `winit`) stays out
 //! of this crate's dependencies.
 
+use std::time::Duration;
+
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 
 /// A surface the backend presents to.
@@ -21,6 +23,10 @@ pub(crate) struct Presenter {
     pub(crate) blit: Blit,
     /// Frames shown since the surface was opened.
     pub(crate) presented: u64,
+    /// How long the last presentation waited on the window system.
+    pub(crate) last_wait: Duration,
+    /// How long every presentation waited, in all.
+    pub(crate) waited: Duration,
 }
 
 /// What drawing a texture onto the surface needs, per device.

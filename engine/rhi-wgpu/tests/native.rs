@@ -260,6 +260,11 @@ fn without_a_window_the_backend_says_it_cannot_present_and_does_not() {
     let error = rhi.present(target).expect_err("no surface");
     assert_eq!(error.recovery(), Recovery::DisableSubsystem);
     assert!(rhi.present_and_capture(target).is_err());
+    assert_eq!(
+        rhi.last_present_wait(),
+        std::time::Duration::ZERO,
+        "nothing was presented, so nothing waited"
+    );
     assert!(rhi.resize(64, 64).is_err(), "nothing to resize");
     rhi.destroy_texture(target).unwrap();
     assert_eq!(rhi.allocated_bytes(), 0);

@@ -1,9 +1,10 @@
 //! `nexora-client`: the runtime in client mode (ADR-0032).
 //!
 //! Opens a window on this machine and shows the generated world through the
-//! first render pass. W, A, S, D move; Space and Left Shift go up and down;
-//! the arrow keys turn and look; Escape exits, as does closing the window.
-//! Prints what the run did, and exits non-zero at the first failure.
+//! first render pass, from the eye of a player standing in it (ADR-0035).
+//! W, A, S, D walk; Space jumps; the arrow keys turn and look; Escape exits,
+//! as does closing the window. Prints what the run did, and exits non-zero at
+//! the first failure.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

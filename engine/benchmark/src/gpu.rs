@@ -490,7 +490,7 @@ pub fn frame_time(budget: Budget) -> Result<Vec<Measurement>> {
     }
     out.push(record_quantity(
         "frame.chunk_16_vertices",
-        "Vertices the frame draws: six per merged rectangle of the region",
+        "Vertices the frame draws: two triangles per merged rectangle of the region, more where a neighbouring corner splits an edge (ADR-0033)",
         u64::from(chunk.vertex_count),
     ));
     out.push(record_quantity(

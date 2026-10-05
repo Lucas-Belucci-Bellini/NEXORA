@@ -15,3 +15,8 @@ Cargo.lock.orig
 
 # Python bytecode from running the scripts/ tools.
 __pycache__/
+
+# Machine-local state of the coding assistant's tools: plugin databases and the
+# worktrees it checks out inside the repository. Neither is project content.
+/.claude/data/
+/.claude/worktrees/

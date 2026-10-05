@@ -1750,6 +1750,131 @@ pub fn physics(budget: Budget) -> Result<Vec<Measurement>> {
     Ok(out)
 }
 
+/// Ticks of the player stage's route: one second of world time at 20 Hz.
+const PLAYER_ROUTE_TICKS: u32 = 20;
+
+/// The shortest clear run the route may start on. Twenty ticks of walking
+/// cover about four blocks, so five keeps the whole route on the run.
+const PLAYER_ROUTE_RUN: u32 = 5;
+
+/// Player movement: the stage `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md`
+/// §17 names between mesh generation and the thousand entities (ADR-0035).
+///
+/// A player is spawned on a walkable run of the benchmark's generated
+/// terrain and walks forward for one second of world time: twenty ticks, each
+/// one controller apply and one tick of physics substeps against the world.
+/// Every timed iteration replays the same route from the same spawn, so the
+/// number is the cost of that route and nothing a previous iteration left
+/// behind.
+///
+/// Checked before it is timed, like the GPU stages: the route must cover what
+/// twenty ticks of walking cover on terrain, and walking it twice from the same
+/// spawn must end in the same state to the bit.
+///
+/// # Errors
+///
+/// Returns an error when the benchmark world has no walkable run, when the
+/// player cannot spawn or tick, or when the route is not the route a player
+/// walks.
+pub fn player(budget: Budget) -> Result<Vec<Measurement>> {
+    use nexora_simulation::{find_walkable_run, ColumnArea, Player, Walk};
+
+    let world = populated_world()?;
+    let terrain = WorldVoxels::new(&world);
+    let shape = world.descriptor().shape;
+    let (sx, sz) = (i64::from(shape.size_x()), i64::from(shape.size_z()));
+    let (min_x, max_x) = (-BENCH_RADIUS * sx, (BENCH_RADIUS + 1) * sx);
+    let (min_z, max_z) = (-BENCH_RADIUS * sz, (BENCH_RADIUS + 1) * sz);
+    let mut high = i64::MIN;
+    for x in min_x..max_x {
+        for z in min_z..max_z {
+            high = high.max(world.surface_height(x, z));
+        }
+    }
+    let area = ColumnArea {
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+        floor_y: world.descriptor().bounds.min_y,
+        // Well above the highest surface and the headroom a run needs.
+        ceiling_y: high + 8,
+    };
+    let run = find_walkable_run(&terrain, &area, PLAYER_ROUTE_RUN)?;
+    let spawned = Player::spawn(
+        &terrain,
+        &run,
+        0.0,
+        world.clock().calendar().ticks_per_second(),
+    )?;
+    let forward = Walk {
+        forward: 1.0,
+        ..Walk::default()
+    };
+    let walk_route = |from: &Player| -> Result<Player> {
+        let mut player = from.clone();
+        for _ in 0..PLAYER_ROUTE_TICKS {
+            player.tick(&terrain, forward)?;
+        }
+        Ok(player)
+    };
+
+    let first = walk_route(&spawned)?;
+    let second = walk_route(&spawned)?;
+    let (dx, dz) = run.facing.step();
+    let (start, end) = (spawned.state().feet, first.state().feet);
+    let walked = (end.x - start.x) * dx as f64 + (end.z - start.z) * dz as f64;
+    verify_route(
+        walked,
+        PLAYER_ROUTE_TICKS,
+        first.state().is_bit_identical(&second.state()),
+    )?;
+
+    Ok(vec![
+        measure(
+            "player.walk_route",
+            "A player walks forward for one second of world time: 20 ticks of control and physics on generated terrain",
+            budget,
+            || {
+                let walked = walk_route(&spawned).expect("the route was checked before timing");
+                consume(walked.state().feet.x);
+            },
+        ),
+        record_quantity(
+            "player.walk_route_cm",
+            "How far that route walks the player, in centimetres",
+            (walked * 100.0).round() as u64,
+        ),
+    ])
+}
+
+/// Whether a timed route is the route a player walks: `ticks` of walking
+/// forward on terrain cover between 0.19 and 0.215 blocks a tick — a band
+/// wide enough for ground friction and airborne ticks, which do not cover the
+/// same distance — and walking it again from the same spawn ended in the same
+/// state to the bit.
+fn verify_route(walked: f64, ticks: u32, rerun_identical: bool) -> Result<()> {
+    use nexora_foundation::error::{Domain, Error, Recovery};
+    let wrong = |message: &'static str| {
+        Error::new(Domain::Physics, "benchmark-player", message)
+            .with_recovery(Recovery::DisableSubsystem)
+    };
+    let ticks = f64::from(ticks);
+    if !(0.19 * ticks..=0.215 * ticks).contains(&walked) {
+        return Err(
+            wrong("the route did not walk the player as far as walking goes")
+                .with_context("walked", format!("{walked:.6}"))
+                .with_context("ticks", format!("{ticks}")),
+        );
+    }
+    if !rerun_identical {
+        return Err(wrong(
+            "the same route from the same spawn ended somewhere else",
+        ));
+    }
+    Ok(())
+}
+
 /// Streaming: the "streaming" stage of the plan's vertical slice.
 ///
 /// Measured as a **pair**, the same way physics is: the manager deciding what
@@ -2159,6 +2284,13 @@ pub const PLAN_SLICE_STAGES: [&str; 13] = [
     "mod boundary",
 ];
 
+/// Stages the language gate's minimum benchmark names
+/// (`ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md` §17) and
+/// [`PLAN_SLICE_STAGES`] does not. `DEBT-0008` needs them as much as the
+/// plan's own, so they are accounted the same way: each is measured or
+/// declared missing, never neither and never both.
+pub const GATE_ONLY_STAGES: [&str; 2] = ["player movement", "one cross-language tool call"];
+
 /// Turning voxels into surfaces (RENDER-9).
 ///
 /// Measures the two reductions separately, because they answer different
@@ -2433,9 +2565,15 @@ pub fn ffi(budget: Budget) -> Vec<Measurement> {
 
 /// The plan's slice stages this run actually measured. The RHI stage is one
 /// of them only when an adapter answered ([`crate::gpu::rhi`]), the window
-/// stage only when a window opened too ([`crate::window::window`]).
+/// stage only when a window opened too ([`crate::window::window`]), and the
+/// tool call only when a Python interpreter answered
+/// ([`crate::tool::tool_call`]).
 #[must_use]
-pub fn measured_stages(rhi_measured: bool, window_measured: bool) -> Vec<&'static str> {
+pub fn measured_stages(
+    rhi_measured: bool,
+    window_measured: bool,
+    tool_measured: bool,
+) -> Vec<&'static str> {
     let mut stages = vec![
         "camera",
         "16³ voxel chunk",
@@ -2446,12 +2584,16 @@ pub fn measured_stages(rhi_measured: bool, window_measured: bool) -> Vec<&'stati
         "streaming",
         "save/load",
         "headless server",
+        "player movement",
     ];
     if rhi_measured {
         stages.push("RHI");
     }
     if window_measured {
         stages.push("window");
+    }
+    if tool_measured {
+        stages.push("one cross-language tool call");
     }
     stages
 }
@@ -2477,11 +2619,14 @@ pub fn published_budgets() -> Result<Vec<Published>> {
 /// Listed rather than skipped: a benchmark table with silent gaps reads as a
 /// benchmark that covered everything. `rhi_gap` is why the RHI stage did not
 /// run, or `None` when it did ([`crate::gpu::RhiStage::gap`]); `window_gap`
-/// the same for the window stage ([`crate::window::WindowStage::gap`]).
+/// the same for the window stage ([`crate::window::WindowStage::gap`]), and
+/// `tool_gap` for the cross-language tool call
+/// ([`crate::tool::ToolStage::gap`]).
 #[must_use]
 pub fn unmeasured_stages(
     rhi_gap: Option<&'static str>,
     window_gap: Option<&'static str>,
+    tool_gap: Option<&'static str>,
 ) -> Vec<Unmeasured> {
     let mut stages = vec![
         Unmeasured {
@@ -2518,6 +2663,14 @@ pub fn unmeasured_stages(
     if let Some(reason) = window_gap {
         stages.push(Unmeasured {
             name: "window",
+            reason,
+        });
+    }
+
+    // The tool call (`crate::tool`) needs a Python interpreter to call.
+    if let Some(reason) = tool_gap {
+        stages.push(Unmeasured {
+            name: "one cross-language tool call",
             reason,
         });
     }
@@ -2600,8 +2753,20 @@ mod tests {
         assert!(!physics(budget).expect("physics").is_empty());
         assert!(!streaming(budget, &scratch).expect("streaming").is_empty());
         assert!(!camera(budget).expect("camera").is_empty());
+        assert!(!player(budget).expect("player").is_empty());
 
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// The route check is what keeps the player number honest: too short a
+    /// walk is a player that stuck, too long one that flew, and a rerun that
+    /// differs is a route that is not a route.
+    #[test]
+    fn a_route_is_checked_for_distance_and_for_replay() {
+        assert!(verify_route(4.0, 20, true).is_ok());
+        assert!(verify_route(3.7, 20, true).is_err(), "stuck: 0.185 a tick");
+        assert!(verify_route(4.4, 20, true).is_err(), "flew: 0.22 a tick");
+        assert!(verify_route(4.0, 20, false).is_err(), "not the same twice");
     }
 
     #[test]
@@ -2610,23 +2775,43 @@ mod tests {
         // in the unmeasured list after the entity suite started measuring it:
         // the report claimed the stage was missing on the same page it printed
         // numbers for it.
-        for (measured, unmeasured) in [
-            (measured_stages(true, true), unmeasured_stages(None, None)),
-            (
-                measured_stages(true, false),
-                unmeasured_stages(None, Some(crate::window::NO_DISPLAY)),
-            ),
-            (
-                measured_stages(false, false),
-                unmeasured_stages(Some(crate::gpu::NO_ADAPTER), Some(crate::gpu::NO_ADAPTER)),
-            ),
+        // The tool call is measured only when an interpreter answered, and
+        // independently of the GPU stages: every combination is checked.
+        for tool_gap in [
+            None,
+            Some(crate::tool::NO_INTERPRETER),
+            Some(crate::tool::DECLARED_NO_PYTHON),
         ] {
-            stages_partition_the_plan(&measured, &unmeasured);
+            let tool_measured = tool_gap.is_none();
+            for (measured, unmeasured) in [
+                (
+                    measured_stages(true, true, tool_measured),
+                    unmeasured_stages(None, None, tool_gap),
+                ),
+                (
+                    measured_stages(true, false, tool_measured),
+                    unmeasured_stages(None, Some(crate::window::NO_DISPLAY), tool_gap),
+                ),
+                (
+                    measured_stages(false, false, tool_measured),
+                    unmeasured_stages(
+                        Some(crate::gpu::NO_ADAPTER),
+                        Some(crate::gpu::NO_ADAPTER),
+                        tool_gap,
+                    ),
+                ),
+            ] {
+                stages_partition_the_plan(&measured, &unmeasured);
+                let declared = unmeasured
+                    .iter()
+                    .find(|entry| entry.name == "one cross-language tool call");
+                assert_eq!(declared.map(|entry| entry.reason), tool_gap);
+            }
         }
     }
 
     fn stages_partition_the_plan(measured: &[&'static str], unmeasured: &[Unmeasured]) {
-        for stage in PLAN_SLICE_STAGES {
+        for stage in PLAN_SLICE_STAGES.into_iter().chain(GATE_ONLY_STAGES) {
             let is_measured = measured.contains(&stage);
             let is_declared = unmeasured.iter().any(|entry| entry.name == stage);
             assert!(
@@ -2641,7 +2826,7 @@ mod tests {
 
         for stage in measured {
             assert!(
-                PLAN_SLICE_STAGES.contains(stage),
+                PLAN_SLICE_STAGES.contains(stage) || GATE_ONLY_STAGES.contains(stage),
                 "`{stage}` is claimed as measured but is not a stage of the plan"
             );
         }

@@ -125,3 +125,50 @@ six *runtime separation* lines (RENDER, SIMULATION, STREAMING, IO, NETWORK,
 BACKGROUND WORK). Mapping seven stages onto six lines is a decision the document
 does not make, and inventing the correspondence here would put a choice nobody
 agreed to behind an API. Stages are the unit of attribution for now.
+
+## Amendment (2026-09-29): the budget classifies work, not the wait on presentation
+
+**Context.** The first frames against a real clock on a real display (local
+reports 6 to 9, the operator's RX 6650 XT) lasted 9.87–9.90 ms each, the
+period of a ~100 Hz monitor, while one chunk's frame costs 0.22–0.24 ms to
+draw (baseline Appendix O, Finding 33). With FIFO the window system holds a
+frame until a surface image comes free, so `wall` measured the monitor. A
+budget published from it would be the monitor's budget, and a slower engine
+would read the same until it missed a refresh.
+
+**Options.** (a) Keep classifying `wall`, and publish no frame budget from a
+display. (b) Present with a mode that does not wait (`Immediate`,
+`Mailbox`): not guaranteed on every platform, and it changes what the
+operator sees to suit a measurement. (c) **Let the host declare the wait,
+inside the stage that spent it, and classify the rest.**
+
+**Decision (c).** `FrameRun::waited_for_presentation(stage, waited)`
+declares how much of a charged stage was blocked handing the frame to the
+window system. The wait stays in the stage's line and in `wall`, where it
+happened, so attribution and `unattributed` are unchanged. The budget
+classifies `FrameReport::work`, which is `wall` less the wait. The wait is
+refused when it names a stage that was not charged, when it is longer than
+that stage, or when a frame declares it twice. Each of those would let
+presentation absorb time a subsystem spent. The runtime still reads no
+clock: the backend times its own two blocking calls (acquiring a surface
+image and handing the frame to the queue, `WgpuRhi::last_present_wait`),
+and the client hands the number in.
+
+**What the wait is.** An image comes free when the display releases it and
+the GPU has finished the frame drawn into it. With FIFO on a real display it
+should be mostly the refresh; the next local report measures it. On lavapipe
+(Xvfb, no refresh) it is usually under a millisecond, and occasionally an
+earlier frame's rasterisation (p95 38 ms), because that GPU is the CPU and
+its rasterisation otherwise blocks in the submission, which stays work. So
+`work` is the frame as the CPU lived it, less the time it was blocked on
+presentation. The GPU's own side needs timestamp queries, which the RHI does
+not have, and `NEXORA PERFORMANCE BUDGETS.md` asks for the two to be
+profiled separately.
+
+**Consequences.** Every frame that declares no wait (the headless walk, the
+benchmark) is classified exactly as before. The client reports `frame work`
+and `presentation wait` beside `frame wall`, and `local-validation.py` keeps
+the line; the benchmark's window stage adds `window.present_wait_chunk_16`,
+the part of each interval blocked on presentation. So the next local report
+gives the first frame work measured on a real display. The frame budget stays `doubling_from(50 ms)` until two
+machines agree on the shape of that number (DEBT-0041).
