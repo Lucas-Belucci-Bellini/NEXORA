@@ -44,4 +44,5 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0032](ADR-0032-the-client-is-the-runtime-in-a-window.md) | The client is the runtime in a window, not a second engine | ACCEPTED |
 | [0033](ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | The pass culls back faces, and splits its quads at every corner | ACCEPTED |
 | [0034](ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md) | The freeze gates the core's language, not every boundary's | **PROPOSED** |
-| [0035](ADR-0035-the-player-is-a-body-the-simulation-steers.md) | The player is a body the simulation steers, and the camera only follows its eye | ACCEPTED |
+| [0035](ADR-0035-the-player-is-a-body-the-simulation-steers.md) | The player is a body the simulation steers, and the camera only follows its eye | ACCEPTED (amended by 0036) |
+| [0036](ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | A player edits the world through commands, and a save keeps the player | ACCEPTED |

@@ -88,7 +88,7 @@ pub fn register_block_commands(registry: &mut CommandRegistry) -> Result<(Runtim
 /// A separate input rather than something read from the instance, because the
 /// server must not take the actor's word for its own position — that is the
 /// value the check exists to test against.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ActorPosition {
     /// World X.
     pub x: f64,

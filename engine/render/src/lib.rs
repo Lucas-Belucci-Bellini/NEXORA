@@ -152,6 +152,27 @@ impl Corners {
         corners
     }
 
+    /// The corners of the quads of `meshes` that touch `extent`'s closed
+    /// box: every corner [`chunk_vertices`] can need for a mesh of `extent`.
+    ///
+    /// A quad's edges lie inside its own region's closed box, and a corner
+    /// splits an edge only by lying on it; so a corner can split an edge of
+    /// a region only if it lies in that region's closed box, and its quad
+    /// then touches the box. For a mesh of `extent`, these corners give the
+    /// same vertices as [`Corners::of`] over every mesh drawn with it, from
+    /// the region's own quads and the few of its neighbours' that meet its
+    /// boundary, rather than from every quad of every neighbour.
+    #[must_use]
+    pub fn touching(meshes: &[&ChunkMesh], extent: Extent) -> Self {
+        let touching: Vec<nexora_mesh::Quad> = meshes
+            .iter()
+            .flat_map(|mesh| &mesh.quads)
+            .filter(|quad| quad_touches(quad, extent))
+            .copied()
+            .collect();
+        Self::of(&[&ChunkMesh { quads: touching }])
+    }
+
     /// Corners strictly between `from` and `to`, which differ only along
     /// `axis`, in order from `from`.
     fn between(&self, axis: usize, from: [i64; 3], to: [i64; 3]) -> Vec<[i64; 3]> {
@@ -180,6 +201,41 @@ impl Corners {
 fn line_key(axis: usize, point: [i64; 3]) -> (usize, i64, i64) {
     let [a, b] = Axis::ALL[axis].others().map(Axis::index);
     (axis, point[a], point[b])
+}
+
+/// Whether a quad's rectangle meets `extent`'s closed box: shares at least a
+/// point with it, its boundary included.
+#[must_use]
+pub fn quad_touches(quad: &nexora_mesh::Quad, extent: Extent) -> bool {
+    let corners = quad_corners(quad);
+    let low = [extent.origin.x, extent.origin.y, extent.origin.z];
+    (0..3).all(|axis| {
+        let min = corners.iter().map(|c| c[axis]).min().unwrap_or(i64::MAX);
+        let max = corners.iter().map(|c| c[axis]).max().unwrap_or(i64::MIN);
+        min <= low[axis] + i64::from(extent.size[axis]) && max >= low[axis]
+    })
+}
+
+/// The corners of a mesh's quads that lie in `extent`'s closed box, sorted
+/// and without repeats: what of the mesh a neighbour across that box's
+/// boundary can be split at.
+#[must_use]
+pub fn corners_in(mesh: &ChunkMesh, extent: Extent) -> Vec<[i64; 3]> {
+    let low = [extent.origin.x, extent.origin.y, extent.origin.z];
+    let inside = |point: &[i64; 3]| {
+        (0..3).all(|axis| {
+            point[axis] >= low[axis] && point[axis] <= low[axis] + i64::from(extent.size[axis])
+        })
+    };
+    let mut points: Vec<[i64; 3]> = mesh
+        .quads
+        .iter()
+        .flat_map(quad_corners)
+        .filter(inside)
+        .collect();
+    points.sort_unstable();
+    points.dedup();
+    points
 }
 
 /// A quad's four corners in world blocks, in the order its triangles walk
@@ -439,6 +495,26 @@ impl ChunkPass {
         corners: &Corners,
     ) -> Result<GpuChunk> {
         let bytes = chunk_vertices(mesh, region.origin, corners)?;
+        self.upload_vertices(rhi, list, bytes, region)
+    }
+
+    /// [`ChunkPass::upload`], for vertex bytes already made by
+    /// [`chunk_vertices`] for `region`.
+    ///
+    /// # Errors
+    ///
+    /// The bytes are not whole vertices, there are more than one draw holds,
+    /// or the backend refused a buffer.
+    pub fn upload_vertices<R: Rhi + ?Sized>(
+        &self,
+        rhi: &mut R,
+        list: &mut CommandList,
+        bytes: Vec<u8>,
+        region: Extent,
+    ) -> Result<GpuChunk> {
+        if bytes.len() % VERTEX_STRIDE as usize != 0 {
+            return Err(wrong("vertex bytes are not a whole number of vertices"));
+        }
         let vertex_count = u32::try_from(bytes.len() / VERTEX_STRIDE as usize)
             .map_err(|_| wrong("a chunk has more vertices than one draw holds"))?;
         let offset = rhi.create_buffer(&BufferDesc {

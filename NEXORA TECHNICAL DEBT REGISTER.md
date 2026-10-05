@@ -1081,6 +1081,19 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 3 (Persistence + Simulation)
 - **STATUS:** CLOSED (2026-09-29, PR #40; verificação contra o SO em
   2026-10-03)
+- **TERCEIRA OCORRÊNCIA, EM CÓDIGO SEM A CORREÇÃO (lida em 2026-10-05):** os
+  relatórios locais 10 a 12 (2026-09-30) rodaram nos commits `61778dc`,
+  `bb159e4` e `ca35a20` — o `main` daquele dia, **antes** do merge da
+  correção (`14ee05d`, que não é ancestral de nenhum dos três). Os relatórios
+  10 e 11 passaram em tudo; o 12 falhou `headless_slice_content` com
+  `Acesso negado. (os error 5)` no `commit save` de um arquivo de região do
+  *spill* (`c-spill\region\r.0.1.nxsv`), e o erro **não traz** `attempts`
+  no contexto — a assinatura do código sem retry. Não é evidência contra a
+  correção: é a terceira vez que o defeito aparece numa máquina real (relatório
+  6, a suíte independente, e agora o caminho do region store), o que confirma
+  a frequência que a correção cobre. O region store passa pelo mesmo
+  `write_atomic`, e portanto pelo mesmo retry, no `HEAD`. Os três relatórios
+  são `STALE_LOCAL_EVIDENCE` para o `HEAD`.
 
 ### DEBT-0049 — A câmera mostra ticks inteiros de 20 Hz, sem interpolação
 
@@ -1099,7 +1112,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
-### DEBT-0050 — O player é um corpo, não uma entidade, e não é salvo
+### DEBT-0050 — O player é um corpo, não uma entidade, ~~e não é salvo~~
 
 - **SYSTEM:** `engine/simulation::player`
 - **CLASS:** ARCHITECTURAL
@@ -1110,16 +1123,31 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   mais compartilha o quadro com ele ainda, e ligá-lo ao store de entidades e
   ao save antes de existir um segundo participante seria construir na frente
   da evidência.
-- **IMPACT:** o player não sobrevive a um save/reload; um NPC ou um caixote
-  não colide com ele nem o empurra.
+- **IMPACT:** ~~o player não sobrevive a um save/reload~~; um NPC ou um
+  caixote não colide com ele nem o empurra.
 - **PROPOSED REMEDIATION:** o player vira uma entidade com identidade
-  persistente, salva na seção de entidades, e o corpo passa a viver no mesmo
-  mundo de física que os outros corpos. A superfície pública — `spawn`,
-  `tick`, `eye`, `state` — é o que fica.
-- **TRIGGER:** o primeiro NPC ou caixote no quadro do cliente, ou o
-  save/load do player (PLAYER-31) — o que vier primeiro.
-- **TARGET STAGE:** Phase 2/3
-- **STATUS:** OPEN
+  persistente, e o corpo passa a viver no mesmo mundo de física que os outros
+  corpos. A superfície pública — `spawn`, `tick`, `eye`, `state`, e agora
+  `resume` — é o que fica.
+- **TRIGGER:** ~~o save/load do player~~ (PLAYER-53 — o registro dizia
+  PLAYER-31, que é energia; chegou e foi atendido, abaixo); o primeiro NPC ou
+  caixote no quadro do cliente.
+- **TARGET STAGE:** Phase 3
+- **STATUS:** IN PROGRESS — **a metade do save foi resolvida em 2026-10-05**
+  ([ADR-0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md)).
+  O gatilho do save/load chegou com o ciclo do vertical slice (interagir →
+  salvar → recarregar → continuar), e foi atendido sem fazer do player uma
+  entidade: o `PlayerState` inteiro — pés, velocidade, se está apoiado,
+  yaw e pitch, em bits — é a seção `nexora:save/player` (versão 1), ao lado
+  das do mundo, como PLAYER-54 pede (*dividir por domínio*), e
+  `Player::resume` o recoloca exatamente. Prova:
+  `persist::tests::a_resumed_player_runs_the_ticks_the_saved_one_would_have`
+  (retomado no meio de um pulo, 60 ticks idênticos ao bit),
+  `a_resumed_player_standing_can_jump_at_once` (a flag de apoio faz parte do
+  estado; com ela fora, o teste falha), e o slice headless, que salva mundo e
+  player, recarrega e roda 140 ticks lado a lado com o mundo nunca salvo, até
+  o último byte. **Continua aberto:** o player não é uma entidade, não tem
+  identidade, e o corpo vive num mundo de física só dele.
 
 ### DEBT-0051 — A direção do player sai do `sin_cos` da libm da plataforma
 
@@ -1144,6 +1172,28 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TRIGGER:** o primeiro replay ou o primeiro servidor; ou cavernas e
   saliências no gerador, para a busca de spawn.
 - **TARGET STAGE:** Phase 3 (replay) / Phase 6 (servidor)
+- **STATUS:** OPEN
+
+### DEBT-0052 — O cliente só edita o que desenha, e o que desenha é fixado na partida
+
+- **SYSTEM:** `engine/client` (`Scene::edit_area`, `BlockEditor::within`)
+- **CLASS:** TEMPORARY
+- **WHY CREATED:** [ADR-0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md).
+  O cliente gera e malha as colunas antes do primeiro quadro, numa faixa
+  vertical de 8 blocos acima da superfície mais alta e abaixo da mais baixa
+  (o streaming para dentro do pass não existe). Uma edição fora dessa caixa
+  não apareceria, e uma torre construída acima dela sumiria do quadro; então o
+  editor do player é limitado à caixa desenhada e diz `outside_area` sem
+  enviar comando. Um jogador que cava até o fundo da faixa, ou constrói até o
+  teto, para ali.
+- **IMPACT:** o mundo pequeno do slice tem um teto e um piso de edição que o
+  jogo não tem; um mundo salvo com um raio maior e reaberto com um menor tem
+  edições que o cliente não desenha (e o player salvo fora das colunas
+  desenhadas renasce pela busca, e o relatório diz isso).
+- **PROPOSED REMEDIATION:** streaming para dentro do pass: as colunas e a
+  faixa seguem o player, e a caixa editável é a residência, não a partida.
+- **TRIGGER:** o streaming no pass do cliente (Phase 2).
+- **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
@@ -1989,6 +2039,22 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   feita. *(2026-09-20: o gatilho "existir um loop de quadro" também disparou —
   ADR-0017. O mesher continua rodando na thread que pedir; o que mudou é que
   agora dá para dizer em que estágio ele roda e quanto do quadro ele levou.)*
+  *(2026-10-05: o primeiro consumidor real chegou — o player minerando e
+  construindo no cliente, ADR-0036 — e o custo foi medido onde ele dói, no
+  quadro em que a edição cai. No contêiner de desenvolvimento (CPU, lavapipe)
+  a primeira versão custava **71 ms** por edição com raio 1 e **150 ms** com
+  raio 3: 8 ms de malha, **102 ms** recalculando o conjunto de cantos do
+  DEBT-0047 sobre 25 regiões inteiras e 60 ms de vértices, calculados duas
+  vezes. A medição mandou o conserto para o lugar certo, e não para o
+  mesher: os vértices de uma região só dependem dos cantos na caixa fechada
+  dela (`Corners::touching`), um vizinho só é reenviado se os cantos na
+  fronteira compartilhada mudaram (`corners_in`), e os bytes são feitos uma
+  vez (`ChunkPass::upload_vertices`). Agora: **~17 ms por edição, nos dois
+  raios**, 2 regiões reenviadas em vez de 18, e o quadro seguinte continua
+  idêntico ao ray cast. O que sobra é este débito: ~8 ms são o snapshot e a
+  malha de uma região na thread do quadro. Enviar ao job system tiraria isso
+  do quadro; o número a bater está no relatório do cliente, linha `edits`,
+  campo `slowest`.)*
 
 ### DEBT-0028 — Não há malha de LOD
 

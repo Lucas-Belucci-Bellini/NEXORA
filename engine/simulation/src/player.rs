@@ -28,12 +28,15 @@
 //!
 //! ## Where the trigonometry is
 //!
-//! Only in the private `aim`, which turns the facing and the walk into a unit
-//! heading (`sin_cos` of the yaw). The step below it is trig-free — the
-//! physics crate uses no transcendental function but `sqrt` — so the heading
-//! is the unit a future command log or network message carries: the part that
-//! a platform's `libm` could round differently is decided once, by whoever
-//! owns the player, and the rest replays bit for bit on any target.
+//! In the private `aim`, which turns the facing and the walk into a unit
+//! heading (`sin_cos` of the yaw), and in [`Eye::forward`], which the
+//! interaction ray is cast along (ADR-0036). The step below `aim` is
+//! trig-free — the physics crate uses no transcendental function but `sqrt` —
+//! so the heading is the unit a future command log or network message
+//! carries: the part that a platform's `libm` could round differently is
+//! decided once, by whoever owns the player, and the rest replays bit for bit
+//! on any target. The interaction ray ends the same way: what it decides is a
+//! cell, and the command carries the cell's integers, not the angle.
 //!
 //! ## Rest is a fixed point, not sleep
 //!
@@ -48,12 +51,12 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
-use nexora_foundation::spatial::WorldPosition;
+use nexora_foundation::spatial::{BlockPos, WorldPosition};
 use nexora_foundation::time::WorldDuration;
 use nexora_physics::body::{BodyDescriptor, RigidBody};
 use nexora_physics::character::{CharacterController, MoveIntent};
 use nexora_physics::collision::overlaps_solid;
-use nexora_physics::math::Vec3;
+use nexora_physics::math::{Axis, Vec3};
 use nexora_physics::voxel::VoxelSource;
 use nexora_physics::world::PhysicsWorld;
 
@@ -147,6 +150,24 @@ pub struct Eye {
     pub yaw: f64,
     /// Elevation, in radians, within `±MAX_PITCH`; positive looks up.
     pub pitch: f64,
+}
+
+impl Eye {
+    /// The unit direction the eye looks along: what the centre of the
+    /// screen shows.
+    ///
+    /// The camera's own formula (`nexora_camera::Camera::forward`), written
+    /// again because the simulation does not depend on the camera; the
+    /// client checks the two agree, so the block a player aims at is the
+    /// block under the centre of the frame. They agree to about 1e-16, not to
+    /// the bit: the camera wraps the yaw again, which can move a negative one
+    /// by a unit in the last place.
+    #[must_use]
+    pub fn forward(&self) -> [f64; 3] {
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
+        [-sin_yaw * cos_pitch, sin_pitch, -cos_yaw * cos_pitch]
+    }
 }
 
 /// Everything the player is, read from the body and the facing.
@@ -246,35 +267,23 @@ impl Player {
         pitch: f64,
         ticks_per_second: u32,
     ) -> Result<Self> {
-        let mut physics = PhysicsWorld::earthlike(ticks_per_second)?;
-        let rate = physics.step().steps_per_second();
-        if rate % ticks_per_second != 0 || rate / ticks_per_second > physics.step().max_substeps() {
-            return Err(
-                refused("a world tick is not a whole number of physics substeps")
-                    .with_context("ticks_per_second", ticks_per_second.to_string())
-                    .with_context("substeps_per_second", rate.to_string()),
-            );
-        }
         if !pitch.is_finite() {
             return Err(
                 refused("the spawn pitch is not finite").with_context("pitch", pitch.to_string())
             );
         }
-        let descriptor = BodyDescriptor::character();
+        let half_height = BodyDescriptor::character().half_extents.y;
         let centre = Vec3::new(
             run.x as f64 + 0.5,
-            run.feet_y as f64 + descriptor.half_extents.y,
+            run.feet_y as f64 + half_height,
             run.z as f64 + 0.5,
         );
-        let body = physics.spawn(descriptor.at(centre))?;
-        let mut player = Self {
-            physics,
-            controller: CharacterController::new(body),
-            yaw: run.facing.yaw(),
-            pitch: pitch.clamp(-MAX_PITCH, MAX_PITCH),
-            tick_seconds: 1.0 / f64::from(ticks_per_second),
-            substeps_per_tick: rate / ticks_per_second,
-        };
+        let mut player = Self::placed(
+            centre,
+            run.facing.yaw(),
+            pitch.clamp(-MAX_PITCH, MAX_PITCH),
+            ticks_per_second,
+        )?;
         if overlaps_solid(terrain, player.body().aabb()) {
             return Err(refused("the spawn is inside terrain")
                 .with_context("column", format!("{},{}", run.x, run.z))
@@ -293,6 +302,86 @@ impl Player {
         Err(refused("the player did not come to rest at its spawn")
             .with_context("column", format!("{},{}", run.x, run.z))
             .with_context("ticks", SETTLE_TICKS.to_string()))
+    }
+
+    /// Put the player back exactly as `state` describes it: the feet, the
+    /// velocity, whether it stood on something, and where it faced — the
+    /// player a save kept (PLAYER-53, ADR-0036).
+    ///
+    /// Nothing is run: a player saved mid-jump resumes mid-jump, and from
+    /// here every tick is the tick the saved player would have run next, to
+    /// the bit (pinned by a test here and by the headless slice).
+    ///
+    /// # Errors
+    ///
+    /// Refused ([`Recovery::Reject`]) when the tick rate is not a whole
+    /// number of physics substeps within the substep cap, a value is not
+    /// finite, the facing is outside `(-π, π]` and `±MAX_PITCH`, or the body
+    /// would begin inside terrain — terrain the save does not describe, or
+    /// one edited since. A caller with a fallback spawns instead.
+    pub fn resume<S: VoxelSource + ?Sized>(
+        terrain: &S,
+        state: &PlayerState,
+        ticks_per_second: u32,
+    ) -> Result<Self> {
+        let finite = [
+            state.feet.x,
+            state.feet.y,
+            state.feet.z,
+            state.velocity[0],
+            state.velocity[1],
+            state.velocity[2],
+            state.yaw,
+            state.pitch,
+        ]
+        .iter()
+        .all(|value| value.is_finite());
+        let facing = state.yaw > -PI && state.yaw <= PI && state.pitch.abs() <= MAX_PITCH;
+        if !(finite && facing) {
+            return Err(
+                refused("a resumed player is not a state a player can be in")
+                    .with_context("state", format!("{state:?}")),
+            );
+        }
+        let half_height = BodyDescriptor::character().half_extents.y;
+        let centre = Vec3::new(state.feet.x, state.feet.y + half_height, state.feet.z);
+        let mut player = Self::placed(centre, state.yaw, state.pitch, ticks_per_second)?;
+        let [vx, vy, vz] = state.velocity;
+        let handle = player.controller.body;
+        let body = player
+            .physics
+            .body_mut(handle)
+            .expect("the player's body lives as long as the player");
+        body.set_velocity(Vec3::new(vx, vy, vz))?;
+        body.grounded = state.grounded;
+        if overlaps_solid(terrain, player.body().aabb()) {
+            return Err(refused("the resumed player is inside terrain")
+                .with_context("feet", format!("{:?}", state.feet)));
+        }
+        Ok(player)
+    }
+
+    /// A body whose centre is `centre`, facing `yaw` and `pitch`, in a
+    /// physics world of its own at `ticks_per_second`.
+    fn placed(centre: Vec3, yaw: f64, pitch: f64, ticks_per_second: u32) -> Result<Self> {
+        let mut physics = PhysicsWorld::earthlike(ticks_per_second)?;
+        let rate = physics.step().steps_per_second();
+        if rate % ticks_per_second != 0 || rate / ticks_per_second > physics.step().max_substeps() {
+            return Err(
+                refused("a world tick is not a whole number of physics substeps")
+                    .with_context("ticks_per_second", ticks_per_second.to_string())
+                    .with_context("substeps_per_second", rate.to_string()),
+            );
+        }
+        let body = physics.spawn(BodyDescriptor::character().at(centre))?;
+        Ok(Self {
+            physics,
+            controller: CharacterController::new(body),
+            yaw,
+            pitch,
+            tick_seconds: 1.0 / f64::from(ticks_per_second),
+            substeps_per_tick: rate / ticks_per_second,
+        })
     }
 
     /// Run exactly one world tick of `walk` against `terrain`.
@@ -347,8 +436,22 @@ impl Player {
         }
     }
 
+    /// The cells the body occupies, lowest and highest corner inclusive.
+    ///
+    /// Read with physics' own touching convention (`Aabb::voxel_span`): a
+    /// body resting exactly on a floor does not occupy the floor's cell, and
+    /// one flush against a wall does not occupy the wall's. A block placed in
+    /// any of these cells would bury the body; one placed outside them
+    /// cannot (BUILD-1's *colisão*).
+    #[must_use]
+    pub fn occupied_cells(&self) -> (BlockPos, BlockPos) {
+        let aabb = self.body().aabb();
+        let [x, y, z] = [Axis::X, Axis::Y, Axis::Z].map(|axis| aabb.voxel_span(axis));
+        (BlockPos::new(x.0, y.0, z.0), BlockPos::new(x.1, y.1, z.1))
+    }
+
     /// Turn the facing by the walk, and derive the heading the body is to
-    /// move in. The only trigonometry the player does.
+    /// move in. The only trigonometry a tick does.
     ///
     /// The facing changes only when a turn or a look was asked for, so a
     /// player standing still keeps its yaw to the bit — wrapping a yaw that

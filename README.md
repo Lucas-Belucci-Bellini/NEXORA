@@ -17,6 +17,8 @@ headless vertical slice proves the chain end to end:
 boot lifecycle -> resolve modules -> create world from a seed
    -> generate chunks across a worker pool -> mutate voxels
    -> drop a character onto the terrain and simulate it until it settles
+   -> a player mines and builds through the command pipeline, is saved with
+      its world, reloaded, and goes on identical to the world never saved
    -> walk an observer away and back, streaming chunks out and in
    -> advance the clock -> save -> shut down -> reopen -> verify the state survived
 ```
@@ -28,12 +30,19 @@ columns through the first render pass
 ([ADR-0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md)),
 walks a first-person player by real keys — gravity, collision and a jump, the
 camera following its eye ([ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md))
-— and runs its frames against a real clock. The
-first frame it shows is read back from the window's surface and held against a
-CPU ray cast pixel by pixel; it does not claim to draw the world unless the
-pixels say so. It has run on the operator's AMD Radeon RX 6650 XT on Windows
-(local reports 6–9). Not built yet: textures in the pass, streaming into it, a
-player body, physics in the frame, audio.
+— and runs its frames against a real clock. The player **mines and builds**
+with the mouse: the ray from its eye names a block, and a command — validated
+by the authority for reach and for the player's own body, never a direct write
+— changes the world; the regions the edit changed are meshed and uploaded
+again in the same frame ([ADR-0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md)).
+`--world PATH` keeps the world **and the player** in a file and goes on from
+it the next time. The first frame it shows, and the first after the world
+first changed, are read back from the window's surface and held against a CPU
+ray cast pixel by pixel; it does not claim to draw the world, or an edit,
+unless the pixels say so. It has run on the operator's AMD Radeon RX 6650 XT
+on Windows (local reports 6–12; the edits and the world file not yet). Not
+built yet: textures in the pass, streaming into it, a crosshair, choosing what
+to build, audio.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
 increment built and did not.
 
@@ -94,7 +103,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 1138 tests
+cargo test --workspace          # 1,323 tests (with --all-targets)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -114,6 +123,9 @@ region store       9 regions, 119482 bytes; one edit rewrote 1 for 18718 bytes
 physics bodies     9 (9 settled)
 physics substeps   600 (270 contacts)
 character drop     1010 cm
+player             walked 2.52 in 12 ticks, rose 1.23, stopped 0.30 from a wall, 86 ticks in all
+interaction        1 mined, 1 built, 1 refused, 1 aimed at nothing; fell 1.00 into its own hole
+save and reload    world and player in 115218 bytes; 140 ticks on, 2 edits, identical to the world never saved
 streaming ticks    29 (95 generated, 120 evicted, 25 restored)
 chunks retained    15 (peak, edits that cannot be regenerated)
 retention spill    25 columns to 12 region files, 25 read back
@@ -134,7 +146,17 @@ cannot be regenerated goes to its region file at the end of the tick that
 evicted it, so the walk's peak retention is one tick's evictions rather than
 every edit ever made — and the save comes out byte-identical either way.
 
+The interaction lines are [ADR-0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md)'s
+loop on a world of its own: a scripted player, through the client's own keys
+and mouse buttons, is refused a block in its own feet, mines the block it
+stands on and falls into the hole, builds under its feet at the top of a jump
+and lands on the block, and finds nothing in reach looking up. The world and
+the player are then saved, reloaded and resumed, and run 140 more ticks beside
+the world that was never saved — identical tick by tick, and to the last byte
+of their saves.
+
 ```bash
+cargo run -p nexora-client -- --world my-world.nxsv   # a window: WASD, Space, arrows, mouse
 cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
 cargo run -p nexora-headless -- --content content/first-generation/blocks.json
 ```
@@ -240,7 +262,8 @@ engine/physics       fixed timestep, bodies, swept voxel collision, characters,
 engine/streaming     interest, priority, budgets, LOD tiers, eviction
                      (also depends on foundation and nothing else)
 engine/simulation    the one crate allowed to see the world, physics and
-                     streaming at the same time
+                     streaming at the same time; the player, its controls,
+                     its interaction ray and its save section
 engine/command       intent: definitions, validation, dispatch, quotas
 engine/query         reads as a contract: versioned, permitted, bounded (ADR-0023)
 engine/asset         surface materials, texture maps, provenance, validation,
@@ -265,7 +288,9 @@ engine/window        the window host: winit, the event loop, and the native
                      `--input` that a key does
 engine/client        the runtime in client mode: the lifecycle, a generated
                      world drawn in a window, WASD and a real clock through
-                     the frame loop (ADR-0032); `nexora-client`
+                     the frame loop (ADR-0032); mining and building, and a
+                     world file the world and the player go on from
+                     (ADR-0036); `nexora-client`
 engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,

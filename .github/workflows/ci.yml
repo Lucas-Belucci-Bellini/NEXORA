@@ -118,11 +118,17 @@ jobs:
       # including presentation, the generated world is drawn in a window, and
       # its first frame, read back from the surface, holds against the ray
       # cast. W is held for a second through XTEST and must move the camera
-      # forward; Escape must end the loop.
+      # forward; the mouse mines under the feet and builds there again at the
+      # top of a jump, and the first frame after the edit must hold against
+      # the ray cast of the edited world (ADR-0036); Escape must end the loop.
+      # Then the same world file is opened again: the world and the player go
+      # on from where they were saved.
       - name: Smoke test the runtime in client mode
         run: |
           xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
-            ./target/release/nexora-client 90 | tee "${RUNNER_TEMP}/client.txt"
+            ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-world.nxsv" \
+            | tee "${RUNNER_TEMP}/client.txt"
+          grep '^start              a new world from seed [0-9]*$' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^lifecycle          17 phases: .* -> simulation-running -> presentation-running -> .* -> process-exit$' \
             "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^modules            .*nexora:module/renderer$' "${RUNNER_TEMP}/client.txt" > /dev/null
@@ -132,7 +138,16 @@ jobs:
           # And it was the player that moved, by walking: the camera only
           # follows its eye (ADR-0035).
           grep '^player             walked [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
+            ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-world.nxsv" \
+            | tee "${RUNNER_TEMP}/client-resumed.txt"
+          grep '^start              resumed from .* at tick [1-9][0-9]*; the player where it was saved$' \
+            "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
+          grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.
@@ -151,6 +166,13 @@ jobs:
           # A player walks, jumps, turns and stops at a wall, deterministically
           # (ADR-0035).
           grep '^player             walked [1-9]\.[0-9]* in 12 ticks, rose 1\.[0-9]*, stopped 0\.30 from a wall, [0-9]* ticks in all$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # It mines and builds through the command pipeline, is refused a
+          # block where its body is, and the world and the player are saved,
+          # reloaded and go on identical to the world never saved (ADR-0036).
+          grep '^interaction        1 mined, 1 built, 1 refused, 1 aimed at nothing; fell 1\.00 into its own hole$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          grep '^save and reload    world and player in [0-9]* bytes; [1-9][0-9]* ticks on, [1-9][0-9]* edits, identical to the world never saved$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
           # stones and five terrain materials must register, show its own surface in a mesh, and survive

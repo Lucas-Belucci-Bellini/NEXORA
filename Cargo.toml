@@ -21,7 +21,8 @@
 #     rhi         -> foundation
 #     rhi-wgpu    -> foundation, rhi, wgpu   (the one external dependency, ADR-0026)
 #     window      -> foundation, runtime, rhi, rhi-wgpu, winit   (the window host, ADR-0027; input, ADR-0031)
-#     simulation  -> foundation, runtime, asset, world, physics, streaming, command, query
+#     simulation  -> foundation, runtime, asset, persistence, world, physics, streaming,
+#                    command, query, mesh
 #     headless    -> all of the above
 #     client      -> foundation, runtime, persistence, world, mesh, camera, render,
 #                    rhi, rhi-wgpu, window, simulation   (client mode, ADR-0032)

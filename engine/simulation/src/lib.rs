@@ -23,6 +23,8 @@
 pub mod commands;
 pub mod content;
 pub mod controls;
+pub mod interaction;
+pub mod persist;
 pub mod player;
 pub mod queries;
 pub mod residency;
@@ -32,7 +34,12 @@ pub mod terrain;
 
 pub use commands::{BreakBlockHandler, PlaceBlockHandler};
 pub use content::{BlockContent, ContentBlock};
-pub use controls::{Controls, Intent, DEFAULT_KEYS};
+pub use controls::{BlockIntent, Controls, Intent, DEFAULT_BUTTONS, DEFAULT_KEYS};
+pub use interaction::{
+    aim, ActorBody, BlockEditor, Edit, EditArea, EditKind, EditTally, PlayerTargetValidator,
+    Refusal, Target, INTERACTION_REACH,
+};
+pub use persist::{load_player, save_player, SECTION_PLAYER};
 pub use player::{Eye, Player, PlayerState, TickOutcome, Walk};
 pub use queries::WorldQueries;
 pub use residency::{FlushReport, RetainedChunks, WorldResidency};

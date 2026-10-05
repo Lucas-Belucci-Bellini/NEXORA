@@ -16,14 +16,21 @@
 //!    [`Intent::walk`]; exit and the held count stay with the frame loop.
 //! 2. **Simulation**: the fixed steps the real time since the last frame
 //!    buys ([`FrameSchedule`]): the world clock advances one tick a step.
+//!    On a frame that ticks, the block the player asked to mine or build
+//!    ([`Intent::block`]) becomes a command, and the command pipeline decides
+//!    (ADR-0036): the player's own [`BlockEditor`] casts the ray from the eye,
+//!    and only a handler writes the world.
 //! 3. **Physics**: the player (ADR-0035) — a character body the simulation
 //!    steers — runs one tick for each of those steps, against one view of
-//!    the world built for the frame. Nothing edits the client's world, so a
-//!    tick that had to push the body out of terrain is a defect, not a fix.
-//! 4. **Render prep**: the camera is made from the player's eye, and never
-//!    the other way round; the render origin follows it (ADR-0029), it is
-//!    sampled, and the frame is recorded by the first render pass
-//!    (ADR-0030).
+//!    the world built for the frame, after the frame's edits. The authority
+//!    refuses a block where the body is, so a tick that had to push the body
+//!    out of terrain is still a defect, not a fix.
+//! 4. **Render prep**: the regions an edit changed are meshed again, and
+//!    they and the neighbours whose shared corners moved uploaded again in
+//!    the frame's own list ([`Scene::remesh`], [`Scene::reupload`]); the camera is made from the
+//!    player's eye, and never the other way round; the render origin follows
+//!    it (ADR-0029), it is sampled, and the frame is recorded by the first
+//!    render pass (ADR-0030).
 //! 5. **Render**: one submission, and the frame presented to the window. The
 //!    part of it the backend spent blocked handing the frame to the window
 //!    system (`WgpuRhi::last_present_wait`) is declared as presentation's,
@@ -37,28 +44,38 @@
 //! one would walk it at the wrong speed in silence.
 //!
 //! The first frame shown — from the player's eye, before any step — is read
-//! back from the surface and, after the window closes, checked against the
-//! CPU ray cast (`nexora_render::reference`) over every drawn column: the
-//! client does not claim to draw the world unless the pixels say so.
+//! back from the surface and checked against the CPU ray cast
+//! (`nexora_render::reference`) over every drawn column: the client does not
+//! claim to draw the world unless the pixels say so. So is the first frame
+//! shown after the player first changed the world, against the ray cast of
+//! the changed world: the client does not claim an edit is drawn unless the
+//! pixels say so either. Each is judged the moment it is read back, against
+//! the world it showed, and the time spent judging is not frame time.
 //!
 //! Not built: streaming into the pass (the world is generated and meshed
-//! before the first frame), textures, pointer look, interpolation between
-//! ticks (DEBT-0049), the player as an entity or in the save (DEBT-0050),
-//! audio. The frame budget is the arithmetic [`FrameBudget::doubling_from`]
-//! the step, not a measured one.
+//! before the first frame), textures, pointer look and a crosshair (the
+//! player aims with the arrow keys at the centre of the frame), interpolation
+//! between ticks (DEBT-0049), the player as an entity or in the save
+//! (DEBT-0050), audio. The frame budget is the arithmetic
+//! [`FrameBudget::doubling_from`] the step, not a measured one.
 
 pub mod scene;
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use nexora_camera::{Camera, Projection, RenderOrigin};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
+use nexora_foundation::ident::Identifier;
+use nexora_foundation::spatial::BlockPos;
 use nexora_foundation::time::{CalendarConfig, TimeScale};
-use nexora_mesh::ChunkMesh;
+use nexora_mesh::Extent;
+use nexora_persistence::container::SaveContainer;
 use nexora_render::reference::{check_frame, FrameCheck};
-use nexora_render::{ChunkPass, Corners, FrameStats, GpuChunk};
+use nexora_render::{ChunkPass, FrameStats, GpuChunk};
 use nexora_rhi::{CommandList, Rhi, TextureDesc, TextureFormat, TextureHandle, Usage};
 use nexora_rhi_wgpu::WgpuRhi;
 use nexora_runtime::frame::{BudgetClass, FrameBudget, FrameLoop, FrameSchedule, FrameStage};
@@ -68,7 +85,8 @@ use nexora_runtime::module::{
     EngineModule, ModuleContext, ModuleDependency, ModuleId, ModuleManager, ModuleSides,
 };
 use nexora_simulation::{
-    Controls, Eye, Intent, PhysicsModule, Player, PlayerState, Walk, WorldSurfaces, WorldVoxels,
+    load_player, save_player, BlockEditor, BlockIntent, Controls, EditTally, Eye, Intent,
+    PhysicsModule, Player, PlayerState, Walk, WorldSurfaces, WorldVoxels,
 };
 use nexora_window::input::InputCounts;
 use nexora_window::{run, Client, Flow, WindowFacts, WindowSpec};
@@ -85,6 +103,12 @@ pub const STEP: Duration = Duration::from_millis(50);
 
 /// Steps one frame may run before the rest are dropped (ADR-0017).
 pub const MAX_STEPS: u32 = 4;
+
+/// The block the player builds (ADR-0036).
+///
+/// One block, the generator's own stone: choosing what to build is the
+/// inventory's (PLAYER-23, Phase 5), and there is no inventory yet.
+pub const BUILT_BLOCK: &str = "nexora:block/stone";
 
 /// How the client is started.
 #[derive(Debug, Clone)]
@@ -105,6 +129,11 @@ pub struct ClientConfig {
     /// Where the world is flushed at shutdown; `None` encodes it but writes
     /// nothing.
     pub save: Option<PathBuf>,
+    /// The world file: resumed from — the world and the player — when it
+    /// exists, created otherwise, and flushed back to at shutdown
+    /// (ADR-0036). Not given with [`ClientConfig::save`]: one place says
+    /// where the world goes.
+    pub world: Option<PathBuf>,
     /// Log lifecycle progress to standard error.
     pub verbose: bool,
 }
@@ -119,7 +148,58 @@ impl Default for ClientConfig {
             frames: None,
             timeout: None,
             save: None,
+            world: None,
             verbose: false,
+        }
+    }
+}
+
+/// How a run's world and player began.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// A new world was generated from the seed, and the player spawned by
+    /// the search.
+    Created {
+        /// The seed.
+        seed: u64,
+    },
+    /// The world was read from its file and goes on from where it stopped.
+    Resumed {
+        /// The file.
+        path: PathBuf,
+        /// The world tick it was saved at.
+        tick: u64,
+        /// Where the player came from.
+        player: Placed,
+    },
+}
+
+/// Where a resumed world's player came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placed {
+    /// From the save, exactly as it was (`Player::resume`).
+    Saved,
+    /// From the spawn search, because the save holds no player.
+    NoneSaved,
+    /// From the spawn search, because the saved player is outside the drawn
+    /// columns: the run's radius is smaller than the one it was saved from.
+    OutsideDrawn,
+    /// From the spawn search, because the save's player would be inside
+    /// terrain, or is not a state a player can be in.
+    Refused,
+}
+
+impl Placed {
+    /// A stable description.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Saved => "the player where it was saved",
+            Self::NoneSaved => "no player saved, spawned by search",
+            Self::OutsideDrawn => {
+                "the saved player is outside the drawn columns, spawned by search"
+            }
+            Self::Refused => "the saved player was refused, spawned by search",
         }
     }
 }
@@ -161,6 +241,8 @@ pub struct ClientReport {
     pub adapter: String,
     /// The window.
     pub window: WindowFacts,
+    /// How the world and the player began.
+    pub start: Start,
     /// Columns drawn, and generated (drawn plus a ring).
     pub columns: (usize, usize),
     /// The drawn band, bottom and top block.
@@ -201,6 +283,17 @@ pub struct ClientReport {
     pub turned: f64,
     /// What the player's body did, read from the body rather than the camera.
     pub player: PlayerSummary,
+    /// What the player's block edits came to (ADR-0036).
+    pub edits: EditTally,
+    /// The first frame shown after the world first changed, against the ray
+    /// cast of the changed world; `None` when nothing changed it, or when the
+    /// surface cannot be read back.
+    pub edited_frame: Option<FrameCheck>,
+    /// Regions meshed again after edits, and regions uploaded again, summed.
+    pub remeshed: (u64, u64),
+    /// The slowest frame's meshing and recording of uploads after its edits:
+    /// what an edit costs the frame it lands in, before the GPU sees it.
+    pub slowest_remesh: Duration,
     /// The flushed world's size, and where it was written.
     pub flushed: (usize, Option<PathBuf>),
 }
@@ -269,9 +362,26 @@ fn run_in(
     lifecycle.advance_through(Phase::RuntimeInit)?;
     log(diagnostics, "engine modules initialized");
 
-    // --- world --------------------------------------------------------------
-    let descriptor = WorldDescriptor::new("nexora-client", config.seed)?;
-    let mut world = World::create(descriptor, CalendarConfig::earthlike())?;
+    // --- world: resumed from its file, or created --------------------------
+    if config.world.is_some() && config.save.is_some() {
+        return Err(Error::new(
+            Domain::Save,
+            "client",
+            "a world file and a save path both say where the world goes",
+        )
+        .with_recovery(Recovery::Reject));
+    }
+    let resumed = match config.world.as_deref().filter(|path| path.exists()) {
+        Some(path) => Some((path.to_path_buf(), SaveContainer::read(path)?)),
+        None => None,
+    };
+    let mut world = match &resumed {
+        Some((_, container)) => persist::load(container)?,
+        None => World::create(
+            WorldDescriptor::new("nexora-client", config.seed)?,
+            CalendarConfig::earthlike(),
+        )?,
+    };
     let ticks_per_second = world.clock().calendar().ticks_per_second();
     if ticks_per_second == 0 || STEP != Duration::from_secs(1) / ticks_per_second {
         return Err(Error::new(
@@ -286,30 +396,68 @@ fn run_in(
     lifecycle.advance_to(Phase::WorldAttach)?;
     world.bring_online()?;
     lifecycle.advance_to(Phase::SimulationRunning)?;
-    let scene = scene::build(&mut world, config.radius)?;
+    let mut scene = scene::build(&mut world, config.radius)?;
     log(diagnostics, "world generated and meshed");
 
     // --- the player ---------------------------------------------------------
-    // On the first column of a run the scene found, at rest before the first
-    // frame, so that frame shows - and is judged from - the eye it starts at.
-    let player = Player::spawn(
-        &WorldVoxels::new(&world),
-        &scene.spawn,
-        scene::SPAWN_PITCH,
-        ticks_per_second,
-    )?;
+    // A resumed world's player goes on from where it was saved, if it can;
+    // otherwise on the first column of a run the scene found, at rest before
+    // the first frame, so that frame shows - and is judged from - the eye it
+    // starts at.
+    let saved = match &resumed {
+        Some((_, container)) => load_player(container)?,
+        None => None,
+    };
+    let (player, placed) = {
+        let terrain = WorldVoxels::new(&world);
+        let spawn = || Player::spawn(&terrain, &scene.spawn, scene::SPAWN_PITCH, ticks_per_second);
+        match saved {
+            None => (spawn()?, Placed::NoneSaved),
+            Some(state)
+                if !scene.edit_area().contains(BlockPos::new(
+                    state.feet.x.floor() as i64,
+                    scene.bounds.origin.y,
+                    state.feet.z.floor() as i64,
+                )) =>
+            {
+                (spawn()?, Placed::OutsideDrawn)
+            }
+            Some(state) => match Player::resume(&terrain, &state, ticks_per_second) {
+                Ok(player) => (player, Placed::Saved),
+                Err(error) if error.recovery() == Recovery::Reject => (spawn()?, Placed::Refused),
+                Err(error) => return Err(error),
+            },
+        }
+    };
     let start = player.state();
-    log(diagnostics, "player spawned and at rest");
+    let begun = match resumed {
+        Some((path, _)) => Start::Resumed {
+            path,
+            tick: world.clock().now().ticks(),
+            player: placed,
+        },
+        None => Start::Created { seed: config.seed },
+    };
+    log(diagnostics, "player placed");
+
+    // --- the player's authority for edits (ADR-0036) ------------------------
+    // Shared, because the command handlers are the ones that write it.
+    let built = world.block_id(&Identifier::parse(BUILT_BLOCK)?)?;
+    let world = Rc::new(RefCell::new(world));
+    let editor = BlockEditor::new(Rc::clone(&world), built, 1)?.within(scene.edit_area());
 
     // --- presentation -------------------------------------------------------
     let start_camera = camera_at(player.eye(), scene.projection)?;
+    let projection = scene.projection;
     let mut presentation = Presentation {
-        world: &mut world,
+        world: Rc::clone(&world),
         lifecycle,
-        scene: &scene,
+        scene: &mut scene,
         controls: Controls::new()?,
+        editor,
+        block_latched: BlockIntent::default(),
         player,
-        projection: scene.projection,
+        projection,
         camera: start_camera,
         origin: RenderOrigin::containing(start_camera.position())?,
         frame_loop: FrameLoop::new(
@@ -336,8 +484,12 @@ fn run_in(
         projection,
         tally,
         adapter,
+        editor,
         ..
     } = presentation;
+    let edits = editor.tally();
+    // The handlers hold the world; they go before it is flushed.
+    drop(editor);
     // The camera is derived from the eye and never written back; a run in
     // which they part ways drew something the player was not looking at.
     if camera != camera_at(player.eye(), projection)? {
@@ -353,39 +505,26 @@ fn run_in(
     };
     log(diagnostics, "presentation stopped");
 
-    // --- the first frame, judged now that the world is not borrowed ---------
-    let first_frame = match &tally.captured {
-        Some(captured) => {
-            let view = WorldSurfaces::untextured(&world);
-            let check = check_frame(
-                &view,
-                scene.bounds,
-                &captured.camera,
-                (captured.width, captured.height),
-                &captured.rgba,
-            )?;
-            if !frame_holds(&check) {
-                return Err(
-                    wrong("the window did not show what a ray cast says it must")
-                        .with_context("judged", check.judged.to_string())
-                        .with_context("matching", check.matching.to_string())
-                        .with_context("backfacing", check.backfacing.to_string())
-                        .with_context("snapped", check.snapped.to_string())
-                        .with_context("pixels", check.pixels.to_string()),
-                );
-            }
-            Some(check)
-        }
+    // --- what was shown: judged as it was read back, in the frame loop ------
+    let first_frame = match tally.first_frame {
+        Some(check) => Some(check),
         None if tally.unreadable => None,
         None => return Err(wrong("no frame reached the window")),
     };
+    if tally.show_edit && !tally.unreadable {
+        return Err(wrong(
+            "the world was edited and no frame showing it was read back",
+        ));
+    }
 
     // --- shutdown -----------------------------------------------------------
     lifecycle.advance_to(Phase::ShutdownRequested)?;
     lifecycle.advance_to(Phase::SimulationStop)?;
-    let container = persist::save(&world)?;
+    let mut container = persist::save(&world.borrow())?;
+    save_player(&mut container, &player)?;
     let flushed = container.encode().len();
-    if let Some(path) = &config.save {
+    let target = config.world.as_ref().or(config.save.as_ref());
+    if let Some(path) = target {
         container.write_atomic(path)?;
     }
     lifecycle.advance_to(Phase::WorldFlush)?;
@@ -412,6 +551,7 @@ fn run_in(
         modules: initialized,
         adapter,
         window: session.window,
+        start: begun,
         columns: (scene.regions.len(), scene.generated),
         band: (
             scene.bounds.origin.y,
@@ -436,7 +576,11 @@ fn run_in(
             walked: walked(&start, &now),
             grounded: now.grounded,
         },
-        flushed: (flushed, config.save.clone()),
+        edits,
+        edited_frame: tally.edited_frame,
+        remeshed: (tally.remeshed, tally.uploaded),
+        slowest_remesh: tally.slowest_remesh,
+        flushed: (flushed, target.cloned()),
     })
 }
 
@@ -454,6 +598,22 @@ fn walk_for_ticks(latched: &mut bool, mut walk: Walk, steps: u32) -> Walk {
         walk.jump = std::mem::take(latched);
     }
     walk
+}
+
+/// The block edits a frame's ticks run with.
+///
+/// The same reason as [`walk_for_ticks`]: a click is held for exactly one
+/// frame, and most frames buy no tick. An edit is a command at a world tick,
+/// so one asked for on a frame without a tick is latched until a frame with
+/// one spends it — once, however many ticks that frame runs — and a frame
+/// without a tick edits nothing.
+fn block_for_ticks(latched: &mut BlockIntent, block: BlockIntent, steps: u32) -> BlockIntent {
+    *latched = latched.or(block);
+    if steps > 0 {
+        std::mem::take(latched)
+    } else {
+        BlockIntent::default()
+    }
 }
 
 /// The camera at the player's eye: made from it every frame, never read
@@ -488,6 +648,41 @@ pub fn frame_holds(check: &FrameCheck) -> bool {
         && check.backfacing == 0
         && check.matching + check.snapped == check.judged
         && check.snapped * SNAPPED_PER_JUDGED <= check.judged
+}
+
+/// Judge a frame read back from the surface against the ray cast of the
+/// world it showed, over `bounds`.
+///
+/// # Errors
+///
+/// The ray cast could not run, or the frame is not what it says
+/// ([`frame_holds`]); `which` names the frame in the error.
+fn judge(
+    world: &World,
+    bounds: Extent,
+    captured: &Captured,
+    which: &'static str,
+) -> Result<FrameCheck> {
+    let view = WorldSurfaces::untextured(world);
+    let check = check_frame(
+        &view,
+        bounds,
+        &captured.camera,
+        (captured.width, captured.height),
+        &captured.rgba,
+    )?;
+    if !frame_holds(&check) {
+        return Err(
+            wrong("the window did not show what a ray cast says it must")
+                .with_context("frame", which)
+                .with_context("judged", check.judged.to_string())
+                .with_context("matching", check.matching.to_string())
+                .with_context("backfacing", check.backfacing.to_string())
+                .with_context("snapped", check.snapped.to_string())
+                .with_context("pixels", check.pixels.to_string()),
+        );
+    }
+    Ok(check)
 }
 
 /// Where `now` is relative to `start`: forward, right and up in `start`'s
@@ -536,7 +731,16 @@ struct Tally {
     unattributed: Duration,
     drawn: FrameStats,
     active_frames: u64,
-    captured: Option<Captured>,
+    /// The first frame shown, judged.
+    first_frame: Option<FrameCheck>,
+    /// The first frame shown after the world first changed, judged.
+    edited_frame: Option<FrameCheck>,
+    /// The world has changed and no frame showing it has been read back.
+    show_edit: bool,
+    /// Regions meshed again, and uploaded again.
+    remeshed: u64,
+    uploaded: u64,
+    slowest_remesh: Duration,
     unreadable: bool,
     ending: Option<Ending>,
     started: Option<Instant>,
@@ -555,10 +759,15 @@ struct Live {
 
 /// The client's side of the window host: the frame loop, living in a window.
 struct Presentation<'a> {
-    world: &'a mut World,
+    world: Rc<RefCell<World>>,
     lifecycle: &'a mut Lifecycle,
-    scene: &'a Scene,
+    scene: &'a mut Scene,
     controls: Controls,
+    /// The authority the player's block edits go through (ADR-0036).
+    editor: BlockEditor,
+    /// An edit asked for on a frame that bought no tick, waiting for one
+    /// that does ([`block_for_ticks`]).
+    block_latched: BlockIntent,
     /// The player the keys steer, which owns where the view is.
     player: Player,
     projection: Projection,
@@ -601,13 +810,13 @@ impl Client for Presentation<'_> {
         ))?;
         let pass = ChunkPass::new(rhi, TextureFormat::Rgba8Unorm)?;
         let mut upload = CommandList::new("client upload");
-        // Every column's corners, so the seams between columns are split
-        // too (DEBT-0047).
-        let meshes: Vec<&ChunkMesh> = self.scene.regions.iter().map(|(_, mesh)| mesh).collect();
-        let corners = Corners::of(&meshes);
+        // Each column split at its neighbours' corners too, so the seams
+        // between columns are split (DEBT-0047): the same path an edit's
+        // upload takes.
         let mut chunks = Vec::with_capacity(self.scene.regions.len());
-        for (region, mesh) in &self.scene.regions {
-            chunks.push(pass.upload(rhi, &mut upload, mesh, *region, &corners)?);
+        for (index, (region, _)) in self.scene.regions.iter().enumerate() {
+            let bytes = self.scene.vertices(index)?;
+            chunks.push(pass.upload_vertices(rhi, &mut upload, bytes, *region)?);
         }
         let fence = rhi.submit(upload)?;
         rhi.wait(fence)?;
@@ -636,41 +845,56 @@ impl Client for Presentation<'_> {
             // not draw again (ADR-0027).
             return Ok(Flow::Exit);
         }
-        let Some(live) = self.live.as_ref() else {
+        if self.live.is_none() {
             return Err(wrong("a frame before the window opened"));
-        };
+        }
         let begun = Instant::now();
         let elapsed = self.tally.last.map_or(Duration::ZERO, |last| begun - last);
         self.tally.last = Some(begun);
         let mut frame = self.frame_loop.begin(elapsed);
         let plan = frame.plan();
 
-        // Input: one sample; the player gets the walk and nothing else.
+        // Input: one sample; the player gets the walk, the editor the block
+        // intent, and nothing else crosses.
         let clock = Instant::now();
         let intent: Intent = self.controls.sample(&std::mem::take(&mut self.pending));
         let walk = walk_for_ticks(&mut self.jump_latched, intent.walk(), plan.steps);
+        let block = block_for_ticks(&mut self.block_latched, intent.block(), plan.steps);
         frame.record(FrameStage::Input, clock.elapsed())?;
 
-        // Simulation: the steps real time bought, each one world tick.
+        // Simulation: the steps real time bought, each one world tick; then
+        // the edits the player asked for, as commands at the tick reached.
         let clock = Instant::now();
-        for _ in 0..plan.steps {
-            self.world.clock_mut().advance_by(TimeScale::Tick, 1)?;
+        {
+            let mut world = self.world.borrow_mut();
+            for _ in 0..plan.steps {
+                world.clock_mut().advance_by(TimeScale::Tick, 1)?;
+            }
+        }
+        let mut changed = Vec::new();
+        if block.any() {
+            let now = self.world.borrow().clock().now();
+            for edit in self.editor.apply(&self.player, block, now)? {
+                if let (true, Some(cell)) = (edit.changed(), edit.cell) {
+                    changed.push(cell);
+                }
+            }
         }
         frame.record(FrameStage::Simulation, clock.elapsed())?;
 
         // Physics: the player, one tick for each step, against one view of
-        // the world built after the clock has moved (the clock needs the
-        // world mutably; the view borrows it).
+        // the world built after the clock has moved and the edits landed.
         if plan.steps > 0 {
             let clock = Instant::now();
-            let terrain = WorldVoxels::new(&*self.world);
+            let world = self.world.borrow();
+            let terrain = WorldVoxels::new(&world);
             for _ in 0..plan.steps {
                 let outcome = self.player.tick(&terrain, walk)?;
                 if outcome.depenetrated > 0 {
                     return Err(Error::new(
                         Domain::Physics,
                         "client",
-                        "the player was pushed out of terrain that nothing edited",
+                        "the player was pushed out of terrain; no edit may bury it",
                     )
                     .with_recovery(Recovery::Manual)
                     .with_context("substeps", outcome.depenetrated.to_string()));
@@ -679,22 +903,49 @@ impl Client for Presentation<'_> {
             frame.record(FrameStage::Physics, clock.elapsed())?;
         }
 
-        // Render prep: the camera is the player's eye, the origin follows
-        // it, the pass is recorded.
+        // Render prep: what the edits changed, meshed and uploaded again in
+        // the frame's own list; the camera is the player's eye, the origin
+        // follows it, the pass is recorded.
         let clock = Instant::now();
+        let mut list = CommandList::new("client frame");
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| wrong("a frame before the window opened"))?;
+        if !changed.is_empty() {
+            let remeshing = Instant::now();
+            let remeshed = self.scene.remesh(&self.world.borrow(), &changed)?;
+            let upload = self.scene.reupload(&remeshed);
+            for &index in &upload {
+                let bytes = self.scene.vertices(index)?;
+                let region = self.scene.regions[index].0;
+                let fresh = live.pass.upload_vertices(rhi, &mut list, bytes, region)?;
+                // Released once the last frame that drew it is done.
+                std::mem::replace(&mut live.chunks[index], fresh).destroy(rhi)?;
+            }
+            self.tally.remeshed += remeshed.len() as u64;
+            self.tally.uploaded += upload.len() as u64;
+            self.tally.slowest_remesh = self.tally.slowest_remesh.max(remeshing.elapsed());
+            if self.tally.edited_frame.is_none() {
+                self.tally.show_edit = true;
+            }
+        }
         self.camera = camera_at(self.player.eye(), self.projection)?;
         self.origin = self.origin.follow(self.camera.position())?;
         let state = self.camera.sample(self.origin, live.width, live.height)?;
-        let mut list = CommandList::new("client frame");
         let drawn = live
             .pass
             .record(&mut list, &state, live.target, live.depth, &live.chunks)?;
         frame.record(FrameStage::RenderPrep, clock.elapsed())?;
 
-        // Render: one submission, then the window.
+        // Render: one submission, then the window. The first frame, and the
+        // first after the world changed, are read back to be judged.
         let clock = Instant::now();
         rhi.submit(list)?;
-        let shown = if self.tally.captured.is_none() && !self.tally.unreadable {
+        let wanted =
+            !self.tally.unreadable && (self.tally.first_frame.is_none() || self.tally.show_edit);
+        let mut captured = None;
+        let shown = if wanted {
             match rhi.present_and_capture(live.target) {
                 Ok(Some(image)) => {
                     if (image.width, image.height) != (live.width, live.height) {
@@ -702,7 +953,7 @@ impl Client for Presentation<'_> {
                             .with_context("surface", format!("{}x{}", image.width, image.height))
                             .with_context("frame", format!("{}x{}", live.width, live.height)));
                     }
-                    self.tally.captured = Some(Captured {
+                    captured = Some(Captured {
                         camera: self.camera,
                         width: live.width,
                         height: live.height,
@@ -729,6 +980,25 @@ impl Client for Presentation<'_> {
         // frame (a free surface image): not the engine's work (Finding 33).
         frame.waited_for_presentation(FrameStage::Render, rhi.last_present_wait())?;
         let report = frame.finish(begun.elapsed());
+
+        // Judged against the world it showed, which no later frame has
+        // changed yet. The world stands still while it is judged, so the
+        // time is not the next frame's: the clock the loop reads moves past it.
+        if let Some(captured) = captured {
+            let judging = Instant::now();
+            let bounds = self.scene.bounds;
+            if self.tally.first_frame.is_none() {
+                let check = judge(&self.world.borrow(), bounds, &captured, "first")?;
+                self.tally.first_frame = Some(check);
+            } else {
+                let check = judge(&self.world.borrow(), bounds, &captured, "edited")?;
+                self.tally.edited_frame = Some(check);
+                self.tally.show_edit = false;
+            }
+            if let Some(last) = self.tally.last.as_mut() {
+                *last += judging.elapsed();
+            }
+        }
 
         let tally = &mut self.tally;
         tally.ticks += u64::from(plan.steps);
@@ -821,6 +1091,18 @@ pub fn format_report(report: &ClientReport) -> String {
         "window             {}x{} on {}\n",
         report.window.width, report.window.height, report.window.platform
     ));
+    match &report.start {
+        Start::Created { seed } => {
+            out.push_str(&format!(
+                "start              a new world from seed {seed}\n"
+            ));
+        }
+        Start::Resumed { path, tick, player } => out.push_str(&format!(
+            "start              resumed from {} at tick {tick}; {}\n",
+            path.display(),
+            player.as_str()
+        )),
+    }
     out.push_str(&format!(
         "world              {} columns drawn of {} generated, blocks {}..{} high\n",
         report.columns.0, report.columns.1, report.band.0, report.band.1
@@ -884,6 +1166,25 @@ pub fn format_report(report: &ClientReport) -> String {
             "airborne"
         }
     ));
+    let edits = report.edits;
+    out.push_str(&format!(
+        "edits              {} mined, {} built, {} refused, {} with nothing to aim at; {} regions meshed again, {} uploaded, slowest {}\n",
+        edits.mined,
+        edits.built,
+        edits.refused,
+        edits.unsent,
+        report.remeshed.0,
+        report.remeshed.1,
+        ms(report.slowest_remesh)
+    ));
+    match (report.edited_frame, edits.mined + edits.built) {
+        (Some(check), _) => out.push_str(&format!(
+            "edited frame       {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} back faces, the first frame after an edit\n",
+            check.judged, check.pixels, check.matching, check.snapped, check.backfacing
+        )),
+        (None, 0) => out.push_str("edited frame       none: nothing was edited\n"),
+        (None, _) => out.push_str("edited frame       not readable on this surface\n"),
+    }
     match &report.flushed.1 {
         Some(path) => out.push_str(&format!(
             "world flush        {} bytes, written to {}\n",
@@ -997,7 +1298,7 @@ mod tests {
     use nexora_foundation::time::DEFAULT_TICKS_PER_SECOND;
     use nexora_runtime::input::{ButtonCode, DeviceId, DeviceKind, Signal};
     use nexora_simulation::player::{EYE_HEIGHT, MAX_PITCH};
-    use nexora_simulation::{Walk, DEFAULT_KEYS};
+    use nexora_simulation::{Walk, DEFAULT_BUTTONS, DEFAULT_KEYS};
 
     /// Found in review: a jump tapped on a frame that buys no tick used to be
     /// dropped. It is carried to the next frame that ticks, spent there once,
@@ -1042,6 +1343,74 @@ mod tests {
 
     const KEYBOARD: DeviceId = DeviceId::new(DeviceKind::Keyboard, 0);
 
+    /// A click on a frame that buys no tick reaches the next tick, once; a
+    /// frame without a tick edits nothing; and a mine and a build asked on
+    /// different tickless frames both arrive.
+    #[test]
+    fn a_click_on_a_frame_without_a_tick_reaches_the_next_tick_once() {
+        let mine = BlockIntent {
+            mine: true,
+            build: false,
+        };
+        let build = BlockIntent {
+            mine: false,
+            build: true,
+        };
+        let mut latched = BlockIntent::default();
+        assert!(
+            !block_for_ticks(&mut latched, mine, 0).any(),
+            "no tick, no edit"
+        );
+        assert!(!block_for_ticks(&mut latched, build, 0).any());
+        assert_eq!(
+            block_for_ticks(&mut latched, BlockIntent::default(), 2),
+            mine.or(build),
+            "both, on the next frame that ticks, however many ticks"
+        );
+        assert!(
+            !block_for_ticks(&mut latched, BlockIntent::default(), 1).any(),
+            "and only once"
+        );
+        assert_eq!(
+            block_for_ticks(&mut latched, mine, 1),
+            mine,
+            "a click on a ticking frame"
+        );
+    }
+
+    /// The block a player aims at is the block under the centre of the
+    /// frame: the eye's direction is the camera's at every facing a player
+    /// can have (yaw in `(-π, π]`, which both wrap into).
+    ///
+    /// Not to the bit: the camera wraps the yaw it is given again
+    /// (`rem_euclid`), which moves a negative one by a unit in the last
+    /// place, as `the_camera_is_the_players_eye` already allows for. The ray
+    /// is cast from the eye, by the authority; what differs is where the
+    /// frame's centre is, by about 1e-16 of a radian.
+    #[test]
+    fn the_eye_aims_where_the_camera_looks() {
+        let projection = Projection::perspective(1.0, 0.1, 100.0).unwrap();
+        for yaw_step in -7..=8 {
+            for pitch_step in -6..=6 {
+                let eye = Eye {
+                    position: WorldPosition::new(1.5, 70.0, -3.25),
+                    yaw: f64::from(yaw_step) * std::f64::consts::PI / 8.0,
+                    pitch: f64::from(pitch_step) * MAX_PITCH / 6.0,
+                };
+                let camera = camera_at(eye, projection).unwrap();
+                let (a, b) = (eye.forward(), camera.forward());
+                for axis in 0..3 {
+                    assert!(
+                        (a[axis] - b[axis]).abs() < 1e-15,
+                        "yaw {} pitch {}: {a:?} against {b:?}",
+                        eye.yaw,
+                        eye.pitch
+                    );
+                }
+            }
+        }
+    }
+
     /// The table is HID usages, the numbers the window host hands in: checked
     /// against the host's own translation, so the two cannot drift.
     #[test]
@@ -1063,6 +1432,14 @@ mod tests {
         assert_eq!(keys.len(), DEFAULT_KEYS.len());
         for ((path, usage), key) in DEFAULT_KEYS.iter().zip(keys) {
             assert_eq!(key_usage(key), Some(ButtonCode(*usage)), "{path}");
+        }
+        // And the mouse: mine on the primary button, build on the secondary.
+        use nexora_window::input::mouse_usage;
+        use winit::event::MouseButton as M;
+        let buttons = [M::Left, M::Right];
+        assert_eq!(buttons.len(), DEFAULT_BUTTONS.len());
+        for ((path, usage), button) in DEFAULT_BUTTONS.iter().zip(buttons) {
+            assert_eq!(mouse_usage(button), ButtonCode(*usage), "{path}");
         }
     }
 

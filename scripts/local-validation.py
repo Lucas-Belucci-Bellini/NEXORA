@@ -408,7 +408,8 @@ def run_checks(scratch: Path, quick: bool) -> list:
     probe = str(release / _exe("nexora-rhi-probe"))
     window_probe = str(release / _exe("nexora-window-probe"))
     client = str(release / _exe("nexora-client"))
-    slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
+    slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified",
+                         "interaction", "save and reload")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
     built = results[0]["status"] == "PASS"
@@ -466,6 +467,18 @@ def run_checks(scratch: Path, quick: bool) -> list:
         results.append(needs_build("client_mode", [client, "--frames", "120", "--timeout", "120"],
                                    _lines("adapter", "window", "first frame", "frames", "frame loop",
                                           "frame wall", "frame work", "player", "result")))
+    # The world file (ADR-0036): the client opens it twice. The first run
+    # creates the world and writes it, with the player, through the atomic
+    # save -- the rename Windows can refuse for a moment (DEBT-0048) -- and
+    # the second must go on from it, the player where it was saved.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("client_resume", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("client_resume", "NEXORA_GPU=none: nothing can present without a GPU"))
+    elif not built:
+        results.append(skipped("client_resume", "the release build failed"))
+    else:
+        results.append(client_resume(client, scratch / "client-world.nxsv"))
     # A real key through a real window (ADR-0031): the probe opens a window
     # and waits for W. A person has to press it, so the check runs only when
     # someone is at the terminal; --quick and a non-interactive run skip it,
@@ -495,6 +508,22 @@ def run_checks(scratch: Path, quick: bool) -> list:
                                + ["--scratch", str(scratch / "bench")],
                                lambda out: "see the report's benchmark section", keep_whole=True))
     return results
+
+
+def client_resume(client: str, world: Path) -> dict:
+    """Open the client on a world file twice: created, then resumed."""
+    if world.exists():
+        world.unlink()
+    args = [client, "--frames", "60", "--timeout", "120", "--world", str(world)]
+    first = check("client_resume", args, _lines("start", "world flush", "result"))
+    if first["status"] != "PASS":
+        return first
+    second = check("client_resume", args, _lines("start", "first frame", "world flush", "result"))
+    if second["status"] == "PASS" and "the player where it was saved" not in second["summary"]:
+        second["status"] = "FAIL"
+        second["summary"] = "the second run did not resume the world and the player: " + second["summary"]
+    second["seconds"] = round(first["seconds"] + second["seconds"], 1)
+    return second
 
 
 def skipped(id_, why):
