@@ -129,6 +129,7 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     measurements.extend(suites::worldgen(coarse)?);
     measurements.extend(suites::entities(coarse)?);
     measurements.extend(suites::physics(coarse)?);
+    measurements.extend(suites::player(coarse)?);
     measurements.extend(suites::streaming(coarse, &options.scratch)?);
     measurements.extend(suites::jobs(coarse)?);
     measurements.extend(suites::frame(standard)?);
@@ -150,14 +151,18 @@ fn run(options: &Options) -> nexora_foundation::error::Result<Report> {
     let window = nexora_benchmark::window::window(coarse, rhi.gap)?;
     measurements.extend(window.measurements);
     measurements.extend(suites::ffi(standard));
+    // The same question one rung up: a tool in another language, over IPC.
+    let tool = nexora_benchmark::tool::tool_call(coarse, &options.scratch)?;
+    measurements.extend(tool.measurements);
 
     // Captured last, so peak memory reflects the whole run.
     let mut environment = Environment::capture();
     environment.gpu = rhi.adapter;
+    environment.tool_interpreter = tool.interpreter;
     Ok(Report {
         measurements,
         budgets: suites::published_budgets()?,
-        unmeasured: suites::unmeasured_stages(rhi.gap, window.gap),
+        unmeasured: suites::unmeasured_stages(rhi.gap, window.gap, tool.gap),
         environment,
     })
 }
@@ -182,6 +187,7 @@ fn markdown_document(report: &Report) -> String {
          | peak resident memory | {memory} |\n\
          | benchmark binary size | {binary} |\n\
          | GPU adapter (RHI stage) | {gpu} |\n\
+         | tool interpreter (tool-call stage) | {interpreter} |\n\
          \n## Measurements\n\n{table}",
         cpus = environment.cpus,
         profile = environment.profile,
@@ -190,6 +196,10 @@ fn markdown_document(report: &Report) -> String {
             .gpu
             .as_deref()
             .unwrap_or("none: the RHI stage did not run"),
+        interpreter = environment
+            .tool_interpreter
+            .as_deref()
+            .unwrap_or("none: the tool-call stage did not run"),
         table = format_markdown(report),
     )
 }

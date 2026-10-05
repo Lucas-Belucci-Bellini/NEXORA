@@ -41,6 +41,12 @@ nexora-ffi-probe.workspace = true
 nexora-rhi.workspace = true
 nexora-rhi-wgpu.workspace = true
 
+# The tool-call stage's fixture is read back by the engine's one PNG decoder
+# (ADR-0022) in its tests; the stage itself does not decode it.
+[dev-dependencies]
+nexora-asset.workspace = true
+nexora-image.workspace = true
+
 [features]
 # Link the C++ translation unit and measure the language boundary for real.
 # Off by default so `cargo build --workspace` needs no C++ compiler; turned on

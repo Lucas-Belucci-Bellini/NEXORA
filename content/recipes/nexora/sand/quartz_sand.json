@@ -1,0 +1,29 @@
+{
+  "category": "sand",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/sand/quartz_sand",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 8,
+    "cells_y": 8,
+    "cracks": 0.0,
+    "octaves": 4,
+    "strength": 0.8
+  },
+  "ramp": [
+    "#cdbf9f",
+    "#d9ccae",
+    "#e4d9bf",
+    "#eee5d0",
+    "#f7f1e3"
+  ],
+  "relief": 0.25,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.18,
+    "density": 0.3
+  },
+  "strips": null
+}

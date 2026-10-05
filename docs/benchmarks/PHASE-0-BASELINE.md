@@ -2256,3 +2256,202 @@ one frame. On the operator's GPU, device creation alone took 249–276 ms
   report runs this stage on the real desktop.
 - **Not a world.** One chunk, as in Appendix M.
 - **Not a budget.** One machine, one software driver, 20% between runs.
+
+# Appendix O — the camera, frame and window stages, on a real GPU (2026-09-29)
+
+Findings 31 and 32 each ended with a prediction the operator's machine would
+test. Four local reports ran the stages there, fourteen minutes apart, all on
+the same engine code: `6ad11f2` (the merge of ADR-0029 to ADR-0033) and three
+commits that only add the previous report's files. The machine, driver
+(`32.0.21045.5002`, AMD 26.8.1) and toolchain (rustc 1.94.1) are the ones
+Appendix K used. Every frame was checked against the ray cast before it was
+timed, as everywhere: **51,376 pixels judged, all matching**, both headless
+and read back from the window's surface.
+
+| | |
+| --- | --- |
+| machine | machine A of Appendix I: Windows 10, AMD Ryzen 5 5500, 12 logical CPUs |
+| adapter / display | `AMD Radeon RX 6650 XT`, Vulkan, `discretegpu` / a Win32 window, FIFO |
+| mesh | 7,377 vertices: ADR-0033 splits quads at corners (4,842 in Appendix M) |
+
+| measurement (median) | report 6 | 7 | 8 | 9 | p95, widest |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `camera.sample` | 100 ns | 200 ns | 100 ns | 100 ns | 200 ns |
+| `camera.cull_columns_r12` | 4.40 µs | 7.50 µs | 4.30 µs | 4.30 µs | 7.60 µs |
+| `rhi.device_open` | 185.40 ms | 175.03 ms | 170.26 ms | 193.53 ms | 202.21 ms |
+| `rhi.fence_roundtrip` | 102.62 µs | 94.50 µs | 111.06 µs | 99.26 µs | 132.75 µs |
+| `rhi.draw_16` | 139.78 µs | 130.09 µs | 125.91 µs | 136.93 µs | 986.41 µs |
+| `frame.draw_chunk_16` | 241.95 µs | 230.74 µs | 225.81 µs | 223.16 µs | 268.45 µs |
+| `window.present_chunk_16` | 9.97 ms | 9.94 ms | 9.98 ms | 9.98 ms | 10.58 ms |
+| `window.first_frame` | 433.67 ms | 401.90 ms | 393.37 ms | 378.73 ms | — |
+
+The client (`client_mode`, all four reports, on the operator's desktop) drew
+nine chunk columns, 487,461 vertices, for 120 frames: **median 9.87–9.90 ms
+of wall time a frame, p95 10.33–10.68 ms, max 28.03–52.34 ms**, 0.11–0.12 ms
+unattributed in all. Every first frame held: 79,391 judged, 79,390 matching,
+1 snapped edge, 0 back faces (ADR-0033).
+
+## Finding 33 — on the operator's GPU a frame costs two fences, and the monitor sets the rest
+
+**Finding 31 said a frame of the pass would cost about one fence. It costs
+two.** 223–242 µs a frame against 95–111 µs a fence, a ratio of 2.0 to 2.4
+in every report. Against lavapipe's 1.5–1.8 ms (Appendix M, with fewer
+vertices), it is seven times cheaper, so the shape Finding 29 argued for
+held: the frame is wait, not rasterisation. What the second fence's worth is
+(recording the pass, the uniform write, or the GPU's own work at 256×256)
+the benchmark does not separate, and this appendix does not guess.
+
+**Finding 32 said the monitor would bound the interval. It does, at about
+100 Hz.** `window.present_chunk_16` is 9.94–9.98 ms in all four reports, and
+so is the client's median with nine columns and sixty-six times the
+vertices. One chunk's frame is 2.3% of that interval. The frame the client
+reports is therefore **the display's period, not the engine's cost**: its
+`render` stage includes the wait for the next refresh. A frame budget drawn
+from it would be a budget of the monitor.
+
+**Startup is the driver's.** From nothing to the first frame on screen takes
+379–434 ms, of which opening the device is 170–194 ms. On lavapipe both were
+about 50 and 21 ms (Appendix N, Appendix J).
+
+**The same machine and driver ran 25–35% faster than three days earlier.**
+Against Appendix K: the fence 95–111 µs against 112–162, the draw 126–140 µs
+against 192–205, opening the device 170–194 ms against 249–276. Nothing in
+the engine, the toolchain or the driver changed between them. It is the kind
+of spread Appendix I's rule exists for.
+
+**And one of the four ran on a busier machine, which a published budget
+felt.** Report 6 is the run whose test suite lost a save to a process holding
+the file (`DEBT-0048`). In it `physics.thousand_bodies_step` has a median of
+165.88 µs against 82.62–93.17 µs in reports 7–9, and a p95 of **243.43 µs —
+7 µs under the 250 µs target** the physics budget publishes (`DEBT-0013`,
+Appendix I). The budget held in all four runs, once by 3%, on identical code
+on the machine it was measured on. That is why the benchmark reports budgets
+rather than gating on them.
+
+### What these numbers are not
+
+- **Not a budget.** One machine, and 30% between two days on it. The
+  client's frame time measures the refresh rate, not the frame.
+- **Not a world.** Nine columns, flat-coloured, no textures, no streaming
+  inside the frame.
+- **Not the frame's parts.** The benchmark times record, submit and wait as
+  one number; Finding 29's rule (one submission, one fence a frame) is what
+  keeps that number near the fence.
+
+# Appendix P — one cross-language tool call (2026-10-04)
+
+The last stage of §17's minimum benchmark that can be built before the
+freeze (ADR-0034): *one tool, written in a language other than the core's,
+called across the boundary layer the language map gives tools, and timed*.
+The tool is [`tools/catalog-digest`](../../tools/catalog-digest/README.md),
+Python with the standard library only. It computes what
+`content/first-generation/CATALOG.md` records for an albedo: its size, the
+FNV-1a 64 of its bytes, and the IHDR that makes it 16×16 RGBA8. The benchmark
+(`nexora_benchmark::tool`) talks to it over **IPC**: a versioned line contract
+(`nexora-tool/1`) on the child's stdin and stdout, through `std::process`,
+with no crate and no `unsafe`. Before anything is timed, the tool's answer
+must equal the digest Rust computes from the bytes it wrote, and a missing
+file must come back as a structured refusal (`err unreadable`). Every timed
+answer is checked again.
+
+| | |
+| --- | --- |
+| machine | Windows 11 Pro, AMD Ryzen 5 5500 (the CPU of Appendix I's machine A), 12 logical CPUs, release profile, rustc 1.94.1 |
+| payload | one 16×16 RGBA8 PNG of 256 bytes, written by the engine's deflate (the catalog's albedos are 202–423 bytes) |
+| `python3` | CPython 3.11.9 from the Microsoft Store, behind its App Execution Alias. This is the interpreter the stage picks, because it tries `python3` first |
+| `python` | CPython 3.14.6, installed directly; chosen with `NEXORA_PYTHON=python` |
+| invocation | `<interpreter> -I -S -B catalog_digest.py`: isolated, no site-packages, no bytecode |
+
+These are five full runs of the same binary. Each sample is one cold call
+(after one warm-up), 100 round trips, or 200 Rust digests.
+
+| measurement (median) | run 1 | run 2 | run 3 | run 4 | run 5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| interpreter | 3.11.9 | 3.11.9 | 3.11.9 | 3.14.6 | 3.14.6 |
+| `tool.cold_call` | 103.26 ms | 227.92 ms | 102.51 ms | 39.79 ms | 41.63 ms |
+| `tool.warm_roundtrip` | 198.88 µs | 242.93 µs | 203.24 µs | 222.59 µs | 214.66 µs |
+| `tool.python_work` | 157.52 µs | 196.01 µs | 164.39 µs | 180.64 µs | 173.23 µs |
+| round trip − work: **the boundary** | 41.4 µs | 46.9 µs | 38.9 µs | 42.0 µs | 41.4 µs |
+| `tool.digest_in_rust` | 76.65 µs | 77.79 µs | 86.48 µs | 87.59 µs | 110.00 µs |
+| `ffi.scalar_opaque_rust` | 2.1 ns | 2.2 ns | 1.6 ns | 1.7 ns | 2.0 ns |
+
+Run 2 ran on a busy machine. In it `physics.thousand_bodies_step` was 162 µs
+against 82–86 µs in the other four runs, and `rhi.fence_roundtrip` was 294 µs
+against 119–199 µs. Its tool rows have a p95 of 624 ms (cold) and 4.07 ms
+(warm). Runs 1 and 3 to 5 have warm p95s of 212–250 µs.
+
+## Finding 34 — a tool over IPC costs five orders of magnitude more than an FFI call when it is running, and seven to eight when it is not
+
+Three rungs of one ladder. Appendix D measured the first, and this appendix
+measures the other two:
+
+| rung | cost | against the FFI floor (1.2 ns) |
+| --- | ---: | ---: |
+| a call in the process: an FFI crossing (Appendix D) or an un-inlined Rust call (`ffi.scalar_opaque_rust`, this run) | 1.2–2.2 ns | 1× |
+| one request to a tool that is already running: the boundary alone | 39–47 µs | ~35,000× |
+| the same, with the tool's work (`tool.warm_roundtrip`) | 199–243 µs | ~180,000× |
+| a tool run once (`tool.cold_call`) | 40–228 ms | 3×10⁷ to 2×10⁸ |
+
+**The boundary is about 40 µs a round trip, and the interpreter does not
+change it.** That covers two pipe transfers, two wake-ups and two line
+parses. It measured 38.9–46.9 µs under both interpreters, while the work on
+either side of it moved.
+
+**A cold call is the interpreter starting, and how it was installed decides
+the cost.** Starting the interpreter is all of a cold call except its 0.2 ms
+round trip. Through the Store's alias, Python 3.11.9 takes 102–228 ms; the
+directly installed 3.14.6 takes 40–42 ms. These runs do not separate how much
+of that difference is the alias and how much is the version. It is why the
+report prints the interpreter: a cold-call number without it means little.
+
+**The work is mostly the file system.** Rust's same digest costs 77–110 µs.
+Hashing 256 bytes is about 0.24 µs of that (`ffi.bulk_inlined` hashes 4 KiB
+in 3.86–3.95 µs, and 256 bytes is 1/16 of it). The rest is opening and reading
+a file on Windows. The tool's work exceeds Rust's by 63–118 µs, which is its
+interpreted FNV loop. Timed on its own with `timeit` (outside the harness),
+that loop costs 80 µs on 3.11.9 and 70 µs on 3.14.6 for the same 256 bytes.
+
+**What it means for the language map.** At 20 ticks a second a tick is
+50 ms, and at 60 Hz a frame is 16.7 ms. If 1,000 entities each crossed this
+boundary once, they would spend 0.2 s, four ticks or twelve frames. One cold
+call costs one to five ticks. The rule *"hot simulation loops must not cross
+FFI repeatedly"* holds at 1.2 ns for the reasons Finding 20 gave. Across IPC
+it is arithmetic: no per-tick, per-entity or per-frame call can afford a tool.
+The same numbers show the boundary is cheap where the language map puts it:
+digesting all 21 first-generation albedos is 21 round trips, about 4 ms on a
+running tool, or one cold start plus those, 45–230 ms. A build step cannot
+feel that. A batch request would amortise the 40 µs further, which is the map's
+*"Rust simulation → batch result → stable boundary → tools"*.
+
+This is also the condition ADR-0034 rests on. This tool meets the core through
+a language-neutral contract: lines of text, versioned, with structured errors.
+Rewriting it in another language changes no frozen contract.
+
+### What these numbers are not
+
+- **Not Linux's.** Creating a process and opening a file are expensive on
+  Windows, where the antivirus filter sits in the file path. CI's Ubuntu smoke
+  run executes the stage on `python3`. As everywhere, its times are not kept.
+- **Not a budget.** One machine, two interpreters, and one busy run of five.
+- **Not a verdict on Python or on Rust.** The work is one file read and a
+  256-byte hash. An interpreted loop costs what an interpreter costs, and that
+  says nothing about the core's language.
+- **Not a checked clock.** `tool.python_work` is the tool's own
+  `perf_counter_ns`. The harness checks only that it fits inside the round
+  trip. The round trip is the harness's own clock.
+- **Not the mod boundary.** A mod runtime is sandboxed scripting inside the
+  server, which belongs to Phase 7. This is a tool, over IPC.
+- **Not hidden when Python is absent.** With `PATH` cut to
+  `C:\Windows\System32;C:\Windows`, the same binary prints
+  `tool interpreter: none`. It lists `one cross-language tool call` under *not
+  measured*: "no Python 3.8+ interpreter answered: tried `python3`, then
+  `python`". `NEXORA_PYTHON=none` declares the same, and the run exits 0 with
+  no tool rows.
+
+### Gate progress
+
+`DEBT-0008`: this was the last §17 stage that can be built before the freeze.
+Three things remain. The **mod boundary** belongs to Phase 7. The
+**engine-scale comparison** (ADR-0009) is also open, and ADR-0034 proposes
+recording it as *not justified* unless the scorecard shows a core stage held
+back by its language. The third is the **ADR-0034 decision** itself.

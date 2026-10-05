@@ -93,12 +93,17 @@ pub fn run_input_probe(timeout: Duration) -> Result<InputReport> {
         (pressed, _) => Err(Error::new(
             Domain::Input,
             "input-probe",
-            "no key press and release reached the engine in time",
+            if session.input.focused == 0 {
+                "no key reached the engine in time, and the window never had keyboard focus: click it before pressing W"
+            } else {
+                "no key press and release reached the engine in time"
+            },
         )
         .with_recovery(Recovery::Retry)
         .with_context("pressed", pressed.is_some().to_string())
         .with_context("timeout_s", timeout.as_secs().to_string())
-        .with_context("signals", session.input.delivered.to_string())),
+        .with_context("signals", session.input.delivered.to_string())
+        .with_context("focused", session.input.focused.to_string())),
     }
 }
 

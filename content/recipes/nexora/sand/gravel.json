@@ -1,0 +1,29 @@
+{
+  "category": "sand",
+  "contrast": 2.2,
+  "courses": null,
+  "id": "nexora:recipe/sand/gravel",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 6,
+    "cells_y": 6,
+    "cracks": 0.55,
+    "octaves": 2,
+    "strength": 1.0
+  },
+  "ramp": [
+    "#5d5a55",
+    "#77736d",
+    "#8f8a83",
+    "#a8a39b",
+    "#c4bfb5"
+  ],
+  "relief": 0.8,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.25,
+    "density": 0.25
+  },
+  "strips": null
+}

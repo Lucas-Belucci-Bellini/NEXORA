@@ -129,6 +129,9 @@ jobs:
           grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^frames             [0-9]* shown, ended by exit key$' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^camera             moved [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
+          # And it was the player that moved, by walking: the camera only
+          # follows its eye (ADR-0035).
+          grep '^player             walked [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
@@ -145,12 +148,16 @@ jobs:
           # with no GPU initialized (ADR-0025). Its pool is the third above.
           grep '^rhi                null backend, conformance 11/11 cases, no GPU initialized$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # A player walks, jumps, turns and stops at a wall, deterministically
+          # (ADR-0035).
+          grep '^player             walked [1-9]\.[0-9]* in 12 ticks, rose 1\.[0-9]*, stopped 0\.30 from a wall, [0-9]* ticks in all$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
-          # stones must register, show its own surface in a mesh, and survive
+          # stones and five terrain materials must register, show its own surface in a mesh, and survive
           # the save, the reload and the journal replay as a probe.
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-content.nxsv" \
             --content content/first-generation/blocks.json \
-            | grep '^content blocks     16 (16 surfaces in the mesh)$' > /dev/null
+            | grep '^content blocks     21 (21 surfaces in the mesh)$' > /dev/null
 
       # The benchmark harness is code too: run a minimal pass so it cannot rot.
       # Deliberately NOT gated on timings - a shared runner's numbers would
@@ -175,6 +182,9 @@ jobs:
           # The camera stage (ADR-0029) checks its target lands mid-screen and
           # that culling keeps some columns and drops others before timing.
           grep '^camera.sample ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # Player movement, the stage the language gate names (ADR-0035): its
+          # route was checked before it was timed.
+          grep '^player.walk_route ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^camera.visible_columns_r12 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           # Frame time: the first render pass draws the meshed 16³ region
           # through the camera; the frame matched a CPU ray cast before timing.
@@ -183,7 +193,24 @@ jobs:
           # Window: the same frame drawn in a window and presented; the first
           # frame, read back from the surface, matched the ray cast.
           grep '^window.present_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^window.present_wait_chunk_16 ' "${RUNNER_TEMP}/bench.txt" > /dev/null
           grep '^window.pixels_judged ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          # The cross-language tool call (§17, ADR-0034): the Python tool in
+          # tools/catalog-digest, over its stdin/stdout contract, run once and
+          # kept running. Every answer equalled Rust's digest before it was
+          # timed. The runner has python3, so the stage must have run: it may
+          # not be declared missing. (`if grep`, not `! grep`: a negated
+          # command never fails a step under `bash -e`.)
+          grep '^tool interpreter: Python 3\.[0-9]*\.[0-9]* (cpython, via python3)$' \
+            "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.cold_call ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.warm_roundtrip ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.python_work ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          grep '^tool.digest_in_rust ' "${RUNNER_TEMP}/bench.txt" > /dev/null
+          if grep -F 'one cross-language tool call' "${RUNNER_TEMP}/bench.txt"; then
+            echo "the tool-call stage was declared not measured on a runner with python3"
+            exit 1
+          fi
 
       # The texture forge is code too, and its output is content: generate a
       # material from a checked-in definition, then read it back off disk and
@@ -310,12 +337,12 @@ jobs:
           ./target/release/nexora-texture-forge validate nexora:material/stone/basalt \
             --out "${RUNNER_TEMP}/first-generation"
           # The build ends with the pipeline's INDEX stage: the runtime's view
-          # of what was generated -- 16 textures and 16 materials.
+          # of what was generated -- 21 textures and 21 materials.
           grep -q '"id": "nexora:texture/stone/basalt/albedo"' \
             "${RUNNER_TEMP}/first-generation/resources.json"
           ./target/release/nexora-texture-forge build content/first-generation/plan.json \
             --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes \
-            | grep '^build .*: 0 written, 16 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
+            | grep '^build .*: 0 written, 21 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
 
       # The runtime reading what the forge wrote: every first-generation
       # block's texture resolved by identifier through the index the build
@@ -325,14 +352,14 @@ jobs:
           ./target/release/nexora-headless --quiet --radius 1 --save "${RUNNER_TEMP}/ci-textures.nxsv" \
             --content content/first-generation/blocks.json \
             --resources "${RUNNER_TEMP}/first-generation" > "${RUNNER_TEMP}/ci-textures.txt"
-          grep '^content textures   16 (resolved, verified and decoded)$' \
+          grep '^content textures   21 (resolved, verified and decoded)$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
           # The decoded textures are a fourth pool, and the cache that held them
           # must have given its bytes back when the stage ended -- as must the
-          # RHI, which received all sixteen as RGBA8 in one submission.
+          # RHI, which received all twenty-one as RGBA8 in one submission.
           grep '^memory             4 pools, worst nominal, 0 suspected leaks$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
-          grep '^rhi uploads        16 textures as RGBA8, 16384 bytes, one fence$' \
+          grep '^rhi uploads        21 textures as RGBA8, 21504 bytes, one fence$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
 
       # The bridge to a real machine (docs/validation/local/): its rules are
@@ -424,6 +451,12 @@ jobs:
             ~/.cargo/git
             target
           key: platforms-${{ matrix.label }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # The check job's clippy runs on Linux, which never compiles code behind
+      # `cfg(windows)` or `cfg(target_os = "macos")` -- the save commit's
+      # Windows refusal judgement and its tests among it. Here it does.
+      - name: Clippy on this platform
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # The full report runs the test suite; nothing else runs it off Linux.
       - name: Test on this platform

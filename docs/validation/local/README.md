@@ -53,9 +53,9 @@ not local evidence, and a committed one would claim hardware that was not there.
 | `headless_slice_textures` | the runtime resolves, verifies and decodes that set |
 | `rhi_native` | the native RHI backend on **this machine's GPU**: adapter, the eleven conformance cases, a 16×16 upload and a draw, both read back (ADR-0026), a draw with a vertex layout, a sampled texture, a uniform and a depth test, read back texel for texel (ADR-0028), and back faces culled while front faces are kept (ADR-0033) |
 | `window` | a **real window** on this machine's display: its surface, the conformance cases with presentation on, 60 frames of a 16×16 target shown in it, the first read back from the surface where the platform allows (ADR-0027) |
-| `client_mode` | the **runtime in client mode**: all 17 lifecycle phases, the generated world drawn in a window for 120 frames against a real clock, the first frame read back from the surface and held against the ray cast (ADR-0032). A window opens for a few seconds; no key needed |
+| `client_mode` | the **runtime in client mode**: all 17 lifecycle phases, the generated world drawn in a window for 120 frames against a real clock, the first frame read back from the surface and held against the ray cast (ADR-0032), and each frame's work reported apart from its wait on presentation (ADR-0017 amendment). A window opens for a few seconds; no key needed |
 | `input_devices` | a **real key** through a real window: the probe opens a window titled *NEXORA input probe: press W*, and you click it and press W. The key must reach the engine as HID usage 26 and come out of `runtime::input` as the bound action's press and release (ADR-0031). It needs a person, so it runs only from a terminal and never with `--quick`; `NEXORA_INPUT=none` skips it |
-| `benchmark_cpu` | the full CPU benchmark, judged against every published budget, plus the RHI, camera, frame-time and window stages on this machine's adapter and display (a window opens for a second or two; `NEXORA_DISPLAY=none` records the window stage as not measured). The first report that kept it closed DEBT-0013 (baseline Appendix I); reports 4 and 5 gave the RHI stage its first GPU numbers (Appendix K) |
+| `benchmark_cpu` | the full CPU benchmark, judged against every published budget, plus the RHI, camera, frame-time and window stages on this machine's adapter and display (a window opens for a second or two; `NEXORA_DISPLAY=none` records the window stage as not measured). The first report that kept it closed DEBT-0013 (baseline Appendix I); reports 4 and 5 gave the RHI stage its first GPU numbers (Appendix K), and reports 6 to 9 the camera, frame and window stages theirs (Appendix O) |
 
 ## What it cannot validate yet, and says so
 
@@ -69,8 +69,17 @@ check. The window, the swapchain and presentation were on it until ADR-0027;
 they are now the `window` check. Real input devices were on it until ADR-0031;
 they are now the `input_devices` check. Client mode was on it until ADR-0032; it
 is now the `client_mode` check. Reports 4 and 5 (2026-09-26, an RX 6650 XT
-over Vulkan on Windows 10) passed both, which closed DEBT-0046 and the freeze
-gate's second blocker.
+over Vulkan on Windows 10) passed `rhi_native` and `window`, which closed
+DEBT-0046 and the freeze gate's second blocker. Reports 6 to 9 (2026-09-29,
+the same machine) passed `client_mode` all four times and `input_devices` in
+reports 7 and 9, which put Phase 1's exit criterion on local hardware.
+
+A failed check in one report and a pass in the next, on the same code, is
+still a failure to explain, not noise to average away. Reports 6 to 9 had two:
+a test that lost a Windows rename to a process holding the file (the save
+container now retries that one refusal, a bounded number of times), and two
+input timeouts that could not say whether the window ever had keyboard focus
+(the probe now asks for focus and reports it).
 
 A machine with no GPU at all says so with `NEXORA_GPU=none`: `rhi_native`,
 `window` and `client_mode` are then recorded as `SKIPPED` with that reason,

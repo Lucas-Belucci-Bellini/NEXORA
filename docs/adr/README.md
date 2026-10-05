@@ -26,7 +26,7 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0014](ADR-0014-a-region-file-is-authoritative-for-its-region.md) | A region file is authoritative for its region; the resident set is not a delete list | ACCEPTED |
 | [0015](ADR-0015-a-spatial-index-is-a-loose-grid-and-a-query-may-decline-it.md) | The spatial index is a loose grid the store maintains, and a query may decline it | ACCEPTED |
 | [0016](ADR-0016-a-job-result-can-be-forgotten-and-says-so.md) | A job result can be forgotten, and the pool says so rather than guessing | ACCEPTED |
-| [0017](ADR-0017-a-frame-is-time-the-host-hands-in.md) | A frame is time the host hands in, and the stages account for it | ACCEPTED |
+| [0017](ADR-0017-a-frame-is-time-the-host-hands-in.md) | A frame is time the host hands in, and the stages account for it | ACCEPTED (amended 2026-09-29: the budget classifies work, not the wait on presentation) |
 | [0018](ADR-0018-input-is-intent-the-host-hands-in.md) | Input is intent the host hands in, and a context consumes a source | ACCEPTED |
 | [0019](ADR-0019-a-recipe-is-data-and-a-material-names-it.md) | A recipe is data, and a material names it | ACCEPTED |
 | [0020](ADR-0020-content-blocks-enter-through-the-api-a-mod-uses.md) | Content blocks enter through the API a mod uses | ACCEPTED |
@@ -34,3 +34,14 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0022](ADR-0022-one-png-decoder-and-it-lives-in-the-engine.md) | One PNG decoder, and it lives in the engine | ACCEPTED |
 | [0023](ADR-0023-queries-are-reads-and-a-contract.md) | Queries are reads, and a contract | ACCEPTED |
 | [0024](ADR-0024-memory-is-accounted-by-its-owner-in-one-ledger.md) | Memory is accounted by its owner, in one ledger | ACCEPTED |
+| [0025](ADR-0025-the-rhi-is-a-contract-a-null-backend-keeps-before-a-gpu-does.md) | The RHI is a contract a null backend keeps before a GPU does | ACCEPTED |
+| [0026](ADR-0026-the-first-native-backend-is-wgpu-and-ci-runs-it.md) | The first native backend is wgpu, and CI runs it | ACCEPTED |
+| [0027](ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md) | The window host is winit, and it owns the event loop | ACCEPTED |
+| [0028](ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md) | A draw names its vertex layout, its bindings and its depth | ACCEPTED |
+| [0029](ADR-0029-the-camera-is-reverse-z-over-a-floating-integer-origin.md) | The camera is reverse-Z, over a floating integer origin | ACCEPTED |
+| [0030](ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md) | The first render pass draws over the RHI contract, and a ray cast checks every frame it is timed on | ACCEPTED |
+| [0031](ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md) | A window hands input in as HID usages, once per frame | ACCEPTED |
+| [0032](ADR-0032-the-client-is-the-runtime-in-a-window.md) | The client is the runtime in a window, not a second engine | ACCEPTED |
+| [0033](ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | The pass culls back faces, and splits its quads at every corner | ACCEPTED |
+| [0034](ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md) | The freeze gates the core's language, not every boundary's | **PROPOSED** |
+| [0035](ADR-0035-the-player-is-a-body-the-simulation-steers.md) | The player is a body the simulation steers, and the camera only follows its eye | ACCEPTED |

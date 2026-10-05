@@ -249,6 +249,11 @@ impl Host<'_> {
             .with_recovery(Recovery::DisableSubsystem)
             .with_context("cause", error.to_string())
         })?);
+        // Ask for the keyboard: a window that opens behind the terminal that
+        // started it cannot hear a key. The window system may still refuse
+        // (Windows' foreground lock); `InputCounts::focused` says whether it
+        // did.
+        window.focus_window();
         let size = window.inner_size();
         let facts = WindowFacts {
             width: size.width,
@@ -315,6 +320,7 @@ impl ApplicationHandler for Host<'_> {
                 self.input.mouse(button, state);
             }
             WindowEvent::Focused(false) => self.input.focus_lost(),
+            WindowEvent::Focused(true) => self.input.focus_gained(),
             WindowEvent::RedrawRequested => {
                 // The frame's input first, then the frame (ADR-0031).
                 self.client.input(&self.input.take());

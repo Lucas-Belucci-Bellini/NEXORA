@@ -21,11 +21,21 @@ boot lifecycle -> resolve modules -> create world from a seed
    -> advance the clock -> save -> shut down -> reopen -> verify the state survived
 ```
 
-There is deliberately **no renderer and no window yet**. Those are specified but
-unbuilt, because they cannot be verified in the environment Phase 0 was built in,
-and `NEXORA DEFINITION OF DONE.md` does not accept unverified work.
-[ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists exactly what is and
-is not implemented.
+The slice has a **client** now too, the same runtime in a window
+([ADR-0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md)): it
+walks the lifecycle in client mode, draws a generated world of nine chunk
+columns through the first render pass
+([ADR-0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md)),
+walks a first-person player by real keys — gravity, collision and a jump, the
+camera following its eye ([ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md))
+— and runs its frames against a real clock. The
+first frame it shows is read back from the window's surface and held against a
+CPU ray cast pixel by pixel; it does not claim to draw the world unless the
+pixels say so. It has run on the operator's AMD Radeon RX 6650 XT on Windows
+(local reports 6–9). Not built yet: textures in the pass, streaming into it, a
+player body, physics in the frame, audio.
+[ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
+increment built and did not.
 
 There *is* an **RHI**, as a contract
 ([ADR-0025](docs/adr/ADR-0025-the-rhi-is-a-contract-a-null-backend-keeps-before-a-gpu-does.md)):
@@ -37,20 +47,26 @@ slice runs that suite on every start and uploads the first generation's
 textures through it. The first **native** backend is `wgpu`
 ([ADR-0026](docs/adr/ADR-0026-the-first-native-backend-is-wgpu-and-ci-runs-it.md)).
 It passes the same suite, uploads a texture and draws a triangle, and reads
-both back from the device. CI runs it on Mesa's software Vulkan. The window
-host is `winit`
+both back from the device. CI runs it on Mesa's software Vulkan, on WARP
+(Direct3D 12) and on Metal's paravirtual device, and it has run on a real GPU:
+the operator's RX 6650 XT, over Vulkan. The window host is `winit`
 ([ADR-0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md)):
-it opens a window, the native backend presents to it, and CI reads the first
-frame back from the surface on a virtual display (Xvfb). There is no renderer
-yet; what is presented is a 16×16 test target.
+it opens a window, the native backend presents to it, and the first frame is
+read back from the surface — on a virtual display (Xvfb) in CI, and on a Win32
+desktop in the local reports.
 
 There *is* a frame, as of ENGINE-0
 ([ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)): a fixed
 timestep, a cap on catching up that says how many steps it threw away, and
 per-stage attribution whose point is the time **no** stage claimed. A frame does
 not need a renderer; it needs somewhere for the engine's own costs to be
-compared against a budget, which until now existed only in prose. Nothing in the
-repository yet drives it against a real clock — `DEBT-0041`.
+compared against a budget, which until now existed only in prose. The client
+drives it against a real clock. On the operator's machine a frame's wall time
+turned out to be the display's refresh interval, ~9.9 ms, while drawing one
+region costs ~0.23 ms ([Appendix O](docs/benchmarks/PHASE-0-BASELINE.md)), so
+the budget now classifies a frame's **work** and leaves out its wait on
+presentation (ADR-0017, amended). No frame budget is published yet: the one in
+use is still a convention (`DEBT-0041`).
 
 There is also **input**, as of ENGINE-8
 ([ADR-0018](docs/adr/ADR-0018-input-is-intent-the-host-hands-in.md)): devices,
@@ -62,8 +78,10 @@ slice's walk is driven through it: the route used to be a list of stops and is
 now what the input system says the player asked for. The window host translates
 real keyboard and mouse events into it, as USB HID usages, once per frame
 ([ADR-0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md));
-CI presses a real key through an X server, and `local-validation.py` asks a
-person to press one (`DEBT-0043`).
+CI presses a real key through an X server, and on the operator's machine a real
+keyboard has done it too: `local-validation.py` asks a person to press `W`,
+and in local reports 7 and 9 it reached the engine as the bound action
+(`DEBT-0043`).
 
 The implementation language is **not locked**. Rust is the reference
 implementation for the benchmark gate defined in
@@ -252,6 +270,9 @@ engine/image         the one PNG decoder and the texture loader (ADR-0022)
 tools/texture-forge  the material generator -- a content tool, not an engine
                      crate, so it lives outside engine/: recipes, generation,
                      batch manifests, build plans, INDEX
+tools/catalog-digest the catalog's digest columns, in Python (stdlib only),
+                     over a versioned stdin/stdout contract: the language
+                     gate's cross-language tool call
 engine/benchmark     the measurement harness for the language gate
 benchmarks/cpp       a C++20 reference of the hot kernels -- not an engine
 benchmarks/ffi-probe the one crate allowed to say `unsafe`, and why (ADR-0009)
@@ -298,12 +319,22 @@ overhead — a plan metric that was unmeasurable with one language in the build 
 is **~1.2 ns per crossing** at the C ABI floor, the same as any un-inlined call,
 and invisible at 4 KiB per crossing.
 
-**What still blocks the gate is no longer "no second stack".** It is the GPU
-stages, which cannot run in a headless container, and an engine-scale
-comparison, which a kernel reference is explicitly not (ADR-0009). Nine pieces
-of arithmetic say nothing about allocation, cache behaviour at scale, or
-threading — and `NEXORA LANGUAGE AND FFI BOUNDARY.md` reserves the language lock
-for the completed benchmark.
+**What still blocks the gate is no longer "no second stack", and no longer the
+GPU.** Every GPU stage of the plan has a number, on software drivers in CI and
+on the operator's RX 6650 XT
+([Appendices K and O](docs/benchmarks/PHASE-0-BASELINE.md)). What is left is an
+engine-scale comparison, which a kernel reference is explicitly not (ADR-0009)
+— nine pieces of arithmetic say nothing about allocation, cache behaviour at
+scale, or threading — and one stage the gate's documents name and nothing
+builds: the mod boundary. Player movement (ADR-0035) and the cross-language
+tool call are measured now: a Python tool over IPC costs ~0.2 ms a round trip
+and ~40–230 ms run once, against ~1.2 ns for an FFI crossing
+([Appendix P](docs/benchmarks/PHASE-0-BASELINE.md)), which is why hot loops
+stay in one language. The mod boundary belongs to Phase 7, and the full
+language lock also asks for stable mod and editor boundaries (Phases 7 and 8),
+so part of the gate cannot close before the freeze it is meant to gate. Which
+part the freeze needs is a decision for an ADR, not code (`DEBT-0008`,
+proposed in ADR-0034).
 
 Measurement also opened `DEBT-0009` through `DEBT-0020`, each with a trigger
 point rather than a guess. Among them: the job system costs ~4,900× the work

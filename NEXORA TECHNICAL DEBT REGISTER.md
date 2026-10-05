@@ -404,10 +404,73 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   etapas de GPU do plano têm número agora.** Desta dívida resta só a
   comparação em **escala de motor** do ADR-0009, que é uma questão de escopo
   do gate, não de GPU.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** as etapas **câmera**,
+  **frame time** e **window** também têm números na RX 6650 XT do operador,
+  quatro execuções do mesmo código
+  ([Apêndice O](docs/benchmarks/PHASE-0-BASELINE.md), achado 33): um quadro de
+  um chunk custa 223–242 µs, cerca de dois round-trips de fence, e o intervalo
+  entre quadros numa janela é o período de um monitor de ~100 Hz. Todas as
+  etapas de GPU do plano estão medidas em software (CI) e em hardware real.
+- **CORREÇÃO (2026-10-03):** "todas as etapas do plano estão medidas" não é
+  verdade, e esta entrada nunca listou o que falta. Os documentos do gate
+  nomeiam três etapas que nada constrói: *player movement* e *one
+  cross-language tool call* (§17 da
+  `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md`) e a *mod boundary*
+  (`NEXORA TECHNOLOGY BENCHMARK PLAN.md`; o próprio benchmark a lista como
+  "não medida: Phase 7"). O `player movement` é o player da Phase 2 e dá para
+  construir agora; a chamada de ferramenta entre linguagens também. A
+  `mod boundary` não dá, na ordem do roadmap — é da Phase 7 —, e o §18 pede
+  ainda uma fronteira de mod estável e uma fronteira editor/runtime estável
+  (Phases 7 e 8) antes do lock. Lido como "o benchmark completo e o lock
+  inteiro antes do freeze", o gate espera fases que vêm depois do freeze.
+  **Isso é uma decisão a registrar, não código a escrever**, e está
+  **proposta** em
+  [ADR-0034](docs/adr/ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md)
+  (PROPOSED — cabe ao dono do projeto aceitar ou rejeitar): o freeze trava a
+  linguagem do núcleo pelas etapas do núcleo, e as linguagens atrás de uma
+  fronteira neutra (mod, editor, ferramentas) viram extensões das Phases 7 e
+  8. Aceita ou não, `player movement` e a chamada de ferramenta estão no §17
+  nas duas leituras, e seguem sem esperar por ela.
+- **PROGRESS (2026-10-04, [ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md)):**
+  *player movement* está construído e medido: `player.walk_route`, um player
+  que anda um segundo de tempo de mundo sobre o terreno gerado, conferido
+  antes de cronometrar (distância de vinte ticks de caminhada, e
+  bit-idêntico ao repetir). Das três etapas sem construção, restam duas: a
+  chamada de ferramenta entre linguagens e a *mod boundary*.
+- **PROGRESS (2026-10-04, chamada de ferramenta entre linguagens):** *one
+  cross-language tool call* está construída e medida. A ferramenta é
+  [`tools/catalog-digest`](tools/catalog-digest/README.md): Python, a
+  linguagem de pesquisa e automação do mapa, só com a biblioteca padrão. Ela
+  calcula as colunas de digest do `CATALOG.md` (FNV-1a 64 dos bytes do PNG,
+  tamanho e IHDR). O benchmark (`nexora_benchmark::tool`) a chama por
+  **IPC**: um contrato de linhas versionado (`nexora-tool/1`) no
+  stdin/stdout do processo filho, via `std::process`, sem crate novo e sem
+  `unsafe`. Antes de cronometrar, toda resposta é conferida com o digest que
+  o próprio Rust calcula, e um arquivo ausente precisa voltar como recusa
+  estruturada (`err unreadable`). Nesta máquina (Ryzen 5 5500, Windows 11):
+  - uma chamada a frio (subir o interpretador, uma requisição, sair) custa
+    **102–228 ms** com o Python 3.11.9 da Microsoft Store e **40–42 ms**
+    com o 3.14.6 instalado direto;
+  - um round trip com a ferramenta já rodando custa **199–243 µs**, dos
+    quais **~40 µs** são a fronteira e o resto é o trabalho da ferramenta;
+  - o mesmo trabalho em Rust, no processo, custa 77–110 µs, quase tudo
+    abrir o arquivo;
+  - a travessia FFI custa ~1,2 ns (Apêndice D).
+
+  É a evidência numérica da regra do mapa de linguagens: nenhum laço quente
+  atravessa uma fronteira dessas
+  ([Apêndice P](docs/benchmarks/PHASE-0-BASELINE.md), achado 34). Sem
+  interpretador Python 3.8+ (`python3`, depois `python`), a etapa fica "não
+  medida" com o motivo, como o RHI sem adaptador; `NEXORA_PYTHON=none`
+  declara isso. Das três etapas sem construção resta só a *mod boundary*.
 - **TARGET STAGE:** antes da Phase 2
-- **STATUS:** IN PROGRESS — a segunda linguagem e a etapa RHI estão medidas;
-  faltam frame time e câmera (código: não há renderer), números em GPU real
-  (relatório local) e a comparação em escala de motor
+- **STATUS:** IN PROGRESS — a segunda linguagem está medida, toda etapa de
+  GPU do plano tem número (em CI e na GPU e no display do operador), e as
+  duas etapas do §17 construíveis antes do freeze (`player movement` e
+  `one cross-language tool call`) estão medidas. Faltam a `mod boundary`
+  (Phase 7), a comparação em escala de motor (ADR-0009) e uma decisão
+  registrada sobre a parte do gate que só pode fechar nas Phases 7 e 8
+  (proposta: ADR-0034)
 
 ### DEBT-0009 — Job system custa ~8,8 µs por submissão
 
@@ -677,9 +740,44 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   a partir de medição (o `doubling_from` segue sendo convenção), números numa
   máquina real (a checagem `client_mode` do `local-validation.py` ainda não
   rodou lá), e um quadro com mundo, física e streaming dentro do laço.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** o laço rodou na
+  máquina do operador (RX 6650 XT, Win32), quatro vezes sobre o mesmo código:
+  120 quadros cada, **mediana de 9,87–9,90 ms de parede, p95 de
+  10,33–10,68 ms, máximo de 28–52 ms, 0,11–0,12 ms não atribuídos**, todos
+  `target`. A evidência local deixa de faltar, e mostra por que o orçamento
+  ainda não pode sair dela: o quadro de um chunk custa 223–242 µs
+  (`frame.draw_chunk_16`), e o de nove colunas leva o mesmo que a janela sem
+  mundo nenhum (`window.present_chunk_16`, 9,94–9,98 ms). **O que o cliente
+  mede é o período do monitor, ~100 Hz**, porque o estágio `render` inclui a
+  espera do FIFO (baseline, Finding 33). Um orçamento tirado desse número
+  seria o orçamento do monitor. **Falta**, portanto: separar no relatório do
+  quadro o trabalho da espera pela apresentação, e só então publicar
+  target/warning/critical/emergency a partir de medição; e um quadro com
+  mundo, física e streaming dentro do laço.
+- **PROGRESS (2026-09-29, emenda à
+  [ADR-0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md)):** o
+  quadro separa o **trabalho** da **espera pela apresentação**. O backend
+  cronometra as duas chamadas que bloqueiam no sistema de janelas (pegar uma
+  imagem da surface e entregar o quadro à fila, `WgpuRhi::last_present_wait`),
+  o cliente declara essa espera dentro do estágio `render`
+  (`FrameRun::waited_for_presentation`), e o orçamento classifica
+  `FrameReport::work`, o tempo de parede menos a espera. A atribuição não
+  muda: a espera continua na linha do `render` e no tempo de parede, e o
+  `unattributed` é o mesmo. O relatório do cliente ganhou a linha
+  `frame work`, que o `local-validation.py` guarda, e a etapa window do
+  benchmark ganhou `window.present_wait_chunk_16`, a parte de cada intervalo
+  bloqueada na apresentação. No lavapipe/Xvfb: trabalho mediano de
+  ~37 ms, espera mediana de ~0,6 ms e p95 de ~38 ms, porque ali a espera às
+  vezes é a rasterização do quadro anterior (a GPU é a CPU). **Falta**: o
+  número de trabalho medido no hardware do operador (o próximo relatório
+  local), duas máquinas concordando na forma dele antes de publicar
+  target/warning/critical/emergency, o lado GPU do quadro (o RHI não tem
+  timestamp queries), e um quadro com mundo, física e streaming dentro do
+  laço.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio; o
-  orçamento publicado e a evidência local faltam)
+- **STATUS:** OPEN (PARTIAL: um cliente roda o laço contra o relógio, em CI e
+  no hardware do operador, e o orçamento classifica o trabalho do quadro, não
+  a espera pelo monitor; o orçamento publicado falta)
 
 ### DEBT-0042 — A resolução de input varre todos os bindings a cada quadro, e 70% disso é procurar o contexto
 
@@ -781,9 +879,22 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   `input_devices` do `local-validation.py` existe e ainda não rodou), gamepad,
   toque, movimento do ponteiro, roda do mouse, entrada de texto, gravar o
   arquivo de remap em disco, e um snapshot que atravesse uma rede.
+- **PROGRESS (2026-09-29, relatórios locais 6 a 9):** **verificado no
+  hardware do operador.** Nos relatórios 7 e 9 um W apertado pelo operador
+  numa janela Win32 chegou ao motor como usage 26 e saiu como o press e o
+  release da ação (depois de 657 e 571 quadros; 6 e 4 sinais, nenhuma tecla
+  sem usage, nenhuma repetição). Nos relatórios 6 e 8 a checagem esgotou os 60 s
+  com 2 sinais e nenhuma tecla, e o probe não sabia dizer se a tecla não veio
+  ou se a janela nunca teve o foco do teclado. Agora a janela pede o foco ao
+  abrir (o Windows pode negar a um processo que não está em primeiro plano),
+  conta cada vez que ganha foco, e o timeout diz qual dos dois foi. **Falta**,
+  e a dívida fica aberta por isso: gamepad, toque, movimento do ponteiro, roda
+  do mouse, entrada de texto, gravar o arquivo de remap em disco, e um
+  snapshot que atravesse uma rede.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos e
-  verificados em CI; hardware local não testado)
+- **STATUS:** OPEN (PARTIAL: teclado e botões do mouse construídos,
+  verificados em CI e no hardware do operador; os outros dispositivos, o
+  remap em disco e a rede faltam)
 
 ### DEBT-0046 — O RHI ainda não apresenta nada, e nenhuma GPU real o executou
 
@@ -919,6 +1030,121 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   index buffers são a alavanca.
 - **TARGET STAGE:** Phase 2 (renderer do voxel)
 - **STATUS:** CLOSED (2026-09-28)
+
+### DEBT-0048 — O commit de um save dizia `Retry` e ninguém tentava de novo: no Windows, um processo alheio derrubava o save
+
+- **SYSTEM:** `engine/persistence` (`SaveContainer::write_atomic`, `quarantine`)
+- **CLASS:** COMPATIBILITY (plataforma), com risco de save
+- **WHY CREATED:** o relatório local 6 (`6ad11f2`, 2026-09-29) falhou `tests`
+  com `Acesso negado. (os error 5)` no passo `commit save` de
+  `r.-1.-1.nxsv`, em `the_same_seed_produces_the_same_world_twice`; os
+  relatórios 7–9 no mesmo código passaram, e o `check` só lê o último. A
+  mesma falha, idêntica, apareceu de novo numa execução independente da suíte
+  na mesma máquina. O `write_atomic` escreve o temporário, faz `fsync`, relê e
+  decodifica, e só então **renomeia** por cima do save antigo; no Windows esse
+  rename é **recusado por outro processo** — erro 5 enquanto algo segura o
+  destino sem compartilhar exclusão, erro 32 enquanto segura a origem —, e
+  esse algo é tipicamente o antivírus ou o indexador abrindo o arquivo recém-
+  escrito. O erro já saía `Recovery::Retry`, e nada no caminho do save tentava
+  de novo.
+- **MEASUREMENT (2026-09-29, a máquina do operador, `%TEMP%`):** um laço de
+  rascunho com a mesma sequência (escrever → `fsync` → reler → renomear):
+  **3.000 commits sozinho, nenhuma recusa; 40.000 commits durante a suíte de
+  testes, 2 recusas, ambas erro 5, ambas liberadas na segunda tentativa
+  depois de 1 ms.** Uma em ~20.000, sob carga. Reproduzida sob demanda:
+  segurar o destino com `share_mode(FILE_SHARE_READ)` dá exatamente
+  `Acesso negado. (os error 5)`, e o save antigo fica intacto — a atomicidade
+  nunca esteve em risco; a disponibilidade do save, sim.
+- **RESOLUTION:** o `rename_with_retry` do contêiner (PR #40): o rename — e
+  só ele, porque o temporário já está escrito e verificado — é tentado até
+  **8 vezes, com pausa dobrando de 5 ms, 635 ms no máximo**, só no Windows e
+  só para os erros 5, 32 e 33; o `quarantine` segue a mesma política; quando
+  desiste, o erro é o mesmo `Retry`, com `attempts` no contexto. A política é
+  testada em toda plataforma com um rename que recusa sob comando. **E com o
+  próprio sistema operacional recusando**: dois testes Windows seguram o
+  arquivo como um antivírus segura e o soltam no instante em que o retry pausa
+  — então a recusa é fato, não corrida contra um relógio —, registrando os
+  códigos que o SO devolveu (destino segurado: 5; origem: 32); um terceiro
+  segura o save durante todo o `write_atomic` real e confere o limite e o save
+  antigo intacto. Com `RENAME_ATTEMPTS = 1` — sem retry — o primeiro falha com
+  **o mesmo erro do relatório 6**: `Acesso negado. (os error 5)`,
+  `commit save`. O job `platforms` do CI roda esses testes no Windows e agora
+  também o `clippy`, porque o do Linux nunca compila código atrás de
+  `cfg(windows)`.
+- **O QUE ISTO NÃO RESOLVE:** um rename que *termina* devagar (sob carga, um
+  rename bem-sucedido levou 582 ms) é latência, não recusa. Só o rename é
+  tentado de novo: um antivírus que segure o **temporário** por mais que o
+  limite faz o próximo save falhar já no `File::create`. E o `quarantine`
+  escolhe o nome livre antes de renomear (checar-e-depois-agir), o que a
+  espera alarga; hoje ele não tem chamador de produção e os saves são de uma
+  thread só.
+- **TARGET STAGE:** Phase 3 (Persistence + Simulation)
+- **STATUS:** CLOSED (2026-09-29, PR #40; verificação contra o SO em
+  2026-10-03)
+
+### DEBT-0049 — A câmera mostra ticks inteiros de 20 Hz, sem interpolação
+
+- **SYSTEM:** `engine/client` (a câmera derivada do olho do player)
+- **CLASS:** TEMPORARY
+- **WHY CREATED:** [ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md).
+  A câmera é derivada do olho do player a cada quadro, e o player só muda a
+  cada tick de 50 ms; entre ticks o quadro repete a mesma vista, e um
+  step-up levanta o olho um bloco num tick só. O gatilho que a ADR-0029
+  deixou para a interpolação — existir um alvo que a câmera segue — chegou.
+- **IMPACT:** movimento visivelmente em degraus a 20 Hz num display de
+  ~100 Hz; nenhum efeito na simulação, que não lê a câmera.
+- **PROPOSED REMEDIATION:** interpolar a apresentação entre os dois últimos
+  estados do player pela fração do passo que o `FrameSchedule` já calcula —
+  sem tocar no estado autoritativo — e suavizar o step-up no olho.
+- **TARGET STAGE:** Phase 2
+- **STATUS:** OPEN
+
+### DEBT-0050 — O player é um corpo, não uma entidade, e não é salvo
+
+- **SYSTEM:** `engine/simulation::player`
+- **CLASS:** ARCHITECTURAL
+- **WHY CREATED:** [ADR-0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md).
+  O primeiro player é um corpo de personagem num `PhysicsWorld` só dele, e
+  não uma entidade do `engine/entity` (ADR-0006), embora `PLAYER SYSTEM.md`
+  e `Entity System.md` digam que o player é uma entidade persistente. Nada
+  mais compartilha o quadro com ele ainda, e ligá-lo ao store de entidades e
+  ao save antes de existir um segundo participante seria construir na frente
+  da evidência.
+- **IMPACT:** o player não sobrevive a um save/reload; um NPC ou um caixote
+  não colide com ele nem o empurra.
+- **PROPOSED REMEDIATION:** o player vira uma entidade com identidade
+  persistente, salva na seção de entidades, e o corpo passa a viver no mesmo
+  mundo de física que os outros corpos. A superfície pública — `spawn`,
+  `tick`, `eye`, `state` — é o que fica.
+- **TRIGGER:** o primeiro NPC ou caixote no quadro do cliente, ou o
+  save/load do player (PLAYER-31) — o que vier primeiro.
+- **TARGET STAGE:** Phase 2/3
+- **STATUS:** OPEN
+
+### DEBT-0051 — A direção do player sai do `sin_cos` da libm da plataforma
+
+- **SYSTEM:** `engine/simulation::player` (`aim`)
+- **CLASS:** ARCHITECTURAL (determinismo entre plataformas)
+- **WHY CREATED:** revisão adversária do commit da ADR-0035 (2026-10-04).
+  Cada tick calcula a direção de caminhada com `yaw.sin_cos()`, que vai para
+  a libm da plataforma (UCRT no Windows, glibc no Linux, a da Apple no
+  macOS), e nenhuma garante arredondamento correto. A ADR-0035 faz da
+  intenção a unidade que replay e servidor vão carregar; com a direção
+  vinda de libms diferentes, a mesma sequência de intenções pode terminar
+  em posições que diferem no último bit entre máquinas. Na mesma máquina, o
+  determinismo vale, e os testes só provam isso.
+- **IMPACT:** nenhum hoje (não há replay nem servidor); um replay gravado no
+  Windows e reproduzido no Linux pode divergir.
+- **PROPOSED REMEDIATION:** escolher a unidade de replay e torná-la
+  determinística: seno/cosseno próprios, só com operações básicas; ou o yaw
+  como contagem inteira de passos de giro com a direção tabelada. Junto: a
+  busca de spawn assume terreno de mapa de altura (um bloco suspenso acima
+  de uma coluna baixa conta como parede sem conferir as células na altura
+  do corpo), o que só vale enquanto o gerador não fizer saliências.
+- **TRIGGER:** o primeiro replay ou o primeiro servidor; ou cavernas e
+  saliências no gerador, para a busca de spawn.
+- **TARGET STAGE:** Phase 3 (replay) / Phase 6 (servidor)
+- **STATUS:** OPEN
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

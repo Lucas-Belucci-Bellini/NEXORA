@@ -187,3 +187,13 @@ them. ADR-0033 culls them and splits quads at every corner, so the rule now
 tolerates **no back face** and only snapped edges, at most 1 in 5,000. Over
 the same twenty seeds: 10 snapped edges in all, 0 back faces, and 13 seeds
 with no wrong pixel.
+
+## Verified on the operator's machine (2026-09-29)
+
+The consequence above waited for a local report. Reports 6 to 9 ran
+`client_mode` four times on an RX 6650 XT, Win32, on the code of ADR-0033:
+all 17 phases every time, every first frame 79,390 of 79,391 judged pixels
+matching (1 snapped edge, 0 back faces), 120 frames at a median of
+9.87–9.90 ms of wall time. That time is the display's period, about 100 Hz,
+not the frame's cost (baseline Appendix O, Finding 33), so the frame budget
+above stays arithmetic. Phase 1's exit criterion is met on local hardware.
