@@ -304,8 +304,20 @@ fn every_pixel_shows_the_texel_a_ray_through_it_reaches() {
         check.judged,
         check.pixels
     );
-    assert_eq!(check.matching + check.snapped, check.judged, "{check:?}");
+    // Every judged pixel is explained: the right texel, a geometry edge, or a
+    // texel edge -- the last counted apart since the reference split them
+    // (86dd1ec), which this test had not followed. Lavapipe shows no texel
+    // edge in this scene; WARP, Metal and the operator's RX 6650 XT show
+    // about 20 of 14,549, which is what failed CI's Windows and macOS jobs.
+    assert_eq!(
+        check.matching + check.snapped + check.texel_snapped,
+        check.judged,
+        "{check:?}"
+    );
     assert!(check.snapped * 100 <= check.judged, "{check:?}");
+    // Bounded as the client bounds them (`TEXEL_SNAPPED_PER_JUDGED`, one in
+    // 500); a texel off by one shows thousands, not tens.
+    assert!(check.texel_snapped * 500 <= check.judged, "{check:?}");
     // Many texels on screen, not one colour per face.
     let mut colours: Vec<&[u8]> = texels.chunks_exact(4).collect();
     colours.sort_unstable();
