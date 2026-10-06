@@ -1251,6 +1251,35 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
+
+### DEBT-0055 — Um corpo que caiu repousava um ulp fora de onde repousa um corpo posto no mesmo chão
+
+- **SYSTEM:** `engine/physics::world` (`integrate_dynamic`)
+- **CLASS:** ARCHITECTURAL (determinismo do repouso)
+- **WHY CREATED:** varredura de 80 combinações de seed e raio do slice
+  headless (2026-10-05/06). A seed 28 falha no estágio de caminhada, nos raios
+  1 e 2, no `main` em `ae36360`: a corrida do spawn desce cinco blocos (a
+  busca só exclui paredes, degraus para baixo valem), o corpo pousa a
+  9,8 m/s com os pés em `63 + 1 ulp`, o pulo seguinte pousa em `63,0`
+  exato, e o slice recusa "não pousou onde decolou".
+- **CAUSA:** o solver move a caixa pela distância permitida (`plano − face`,
+  exata): a face que lidera cai exatamente no plano, mas a face oposta é a
+  antiga mais a mesma distância, e essa soma arredonda; o centro, média das
+  duas, saía um ulp fora conforme a velocidade de chegada. Um mesmo chão
+  tinha duas alturas de repouso — até o chão em `y = 0`: `0.8999999999999999`
+  ou `0.9`.
+- **IMPACT:** um replay ou uma retomada que compare posições ao bit depois de
+  uma queda pode divergir sem bug no replay; o slice falhava na seed 28.
+- **STATUS:** CLOSED (2026-10-06)
+- **RESOLUÇÃO:** `engine/physics::world::settled_center` — no eixo em que a
+  face que lidera parou exatamente sobre o plano de um contato, o centro é
+  `plano ± meia-extensão`, a mesma conta que põe um corpo de pé nesse plano.
+  Um corpo em repouso é um ponto fixo só, venha de onde vier. Fixado por
+  `a_body_rests_at_one_height_on_a_floor_whatever_it_fell_from` (quatro pisos,
+  seis alturas de queda; com o centro antigo falha já no piso 0, queda 1), e
+  a seed 28 entrou no CI. A varredura de 80 seeds e raios passa inteira; os
+  números do slice padrão não mudaram.
+
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 
 - **SYSTEM:** `engine/simulation::terrain` (`WorldVoxels`)
