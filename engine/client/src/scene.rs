@@ -42,8 +42,8 @@ pub const CLIENT_RUN: u32 = 5;
 /// How far the player starts looking down, in radians: 15°.
 ///
 /// The one tunable of the first frame, which is judged from the eye: level
-/// would put the horizon mid-screen over a field of pillars, and a little
-/// down puts the run being walked in view.
+/// would put the horizon mid-screen, and a little down puts the run being
+/// walked in view.
 pub const SPAWN_PITCH: f64 = -15.0 * PI / 180.0;
 
 /// The widest square the client draws: 8 columns each side of the player.

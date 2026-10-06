@@ -48,3 +48,4 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0036](ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | A player edits the world through commands, and a save keeps the player | ACCEPTED (amended by 0038) |
 | [0037](ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md) | The pass draws albedo from one atlas, and a frame is still checked texel for texel | ACCEPTED |
 | [0038](ADR-0038-the-drawn-square-follows-the-player.md) | The drawn square follows the player, through the engine's streaming | ACCEPTED |
+| [0039](ADR-0039-terrain-is-continuous-and-a-world-keeps-its-generator.md) | Terrain is continuous, and a world keeps the generator it was made with | ACCEPTED |

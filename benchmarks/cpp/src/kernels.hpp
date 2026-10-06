@@ -458,10 +458,47 @@ inline constexpr BlockStateId kStone = 1;
 inline constexpr BlockStateId kDirt = 2;
 inline constexpr BlockStateId kGrass = 3;
 
+// Generator version 2, the one new worlds are made with (ADR-0039): mirrors
+// engine/world/src/terrain.rs `continuous`. Three octaves of heights on square
+// lattices 64, 16 and 8 blocks apart, within +-8, +-3 and +-1 blocks, drawn in
+// 1/256 of a block from the terrain stream at y = octave + 1, interpolated
+// bilinearly in exact integers and floored once per octave; the sum floored
+// to blocks. Integers and Euclidean division only, so it is bit-identical to
+// Rust on every compiler.
+struct TerrainOctave {
+  std::int64_t spacing;
+  std::int64_t amplitude;
+};
+
+inline constexpr std::int64_t kTerrainFraction = 256;
+inline constexpr TerrainOctave kTerrainOctaves[3] = {{64, 8}, {16, 3}, {8, 1}};
+
+inline std::int64_t terrain_lattice(std::uint64_t seed, std::size_t index, const TerrainOctave& octave,
+                                    std::int64_t i, std::int64_t j) {
+  const std::int64_t units = octave.amplitude * kTerrainFraction;
+  const auto span = static_cast<std::uint64_t>(units * 2 + 1);
+  Rng rng = positional_rng(seed, "terrain", i, static_cast<std::int64_t>(index) + 1, j);
+  return static_cast<std::int64_t>(rng.next_below(span)) - units;
+}
+
 inline std::int64_t surface_height(std::uint64_t seed, std::int64_t x, std::int64_t z) {
-  Rng rng = positional_rng(seed, "terrain", x, 0, z);
-  const auto span = static_cast<std::uint64_t>(kTerrainAmplitude * 2 + 1);
-  return kTerrainBaseHeight + static_cast<std::int64_t>(rng.next_below(span)) - kTerrainAmplitude;
+  std::int64_t total = 0;
+  for (std::size_t index = 0; index < 3; ++index) {
+    const TerrainOctave& octave = kTerrainOctaves[index];
+    const std::int64_t s = octave.spacing;
+    const std::int64_t i = div_euclid(x, s);
+    const std::int64_t j = div_euclid(z, s);
+    const std::int64_t tx = rem_euclid(x, s);
+    const std::int64_t tz = rem_euclid(z, s);
+    const std::int64_t v00 = terrain_lattice(seed, index, octave, i, j);
+    const std::int64_t v10 = terrain_lattice(seed, index, octave, i + 1, j);
+    const std::int64_t v01 = terrain_lattice(seed, index, octave, i, j + 1);
+    const std::int64_t v11 = terrain_lattice(seed, index, octave, i + 1, j + 1);
+    const std::int64_t numerator = v00 * (s - tx) * (s - tz) + v10 * tx * (s - tz) +
+                                   v01 * (s - tx) * tz + v11 * tx * tz;
+    total += div_euclid(numerator, s * s);
+  }
+  return kTerrainBaseHeight + div_euclid(total, kTerrainFraction);
 }
 
 struct GeneratedChunk {

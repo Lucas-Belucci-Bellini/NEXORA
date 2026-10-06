@@ -50,9 +50,12 @@ The square of columns it draws follows the player: the engine's streaming
 makes the columns around it resident and evicts what falls behind — an edited
 column is kept and comes back with its edit — and every move is checked
 against a fresh build and against the ray cast
-([ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)). Not
-built yet: terrain a body can walk across (today a field of pillars,
-DEBT-0054), a light model, a crosshair, choosing what to build, audio.
+([ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)). The
+generated terrain is continuous hills a body walks across in any direction —
+neighbouring columns differ by at most one block — while worlds saved under
+the first generator keep growing its pillars
+([ADR-0039](docs/adr/ADR-0039-terrain-is-continuous-and-a-world-keeps-its-generator.md)).
+Not built yet: a light model, a crosshair, choosing what to build, audio.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
 increment built and did not.
 

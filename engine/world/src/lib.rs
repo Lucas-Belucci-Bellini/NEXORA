@@ -17,6 +17,7 @@ pub mod chunk;
 pub mod persist;
 pub mod recovery;
 pub mod region;
+mod terrain;
 pub mod voxel;
 pub mod world;
 

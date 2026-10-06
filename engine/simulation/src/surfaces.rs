@@ -394,14 +394,17 @@ mod tests {
 
     /// A row of blocks in open air, and the extent that covers exactly it.
     ///
-    /// The height is taken from the tallest column the row spans, not from the
-    /// first: terrain varies by the full amplitude across four columns, and a
-    /// row placed relative to one of them can end up with rock sitting on top
-    /// of another — which culls a face and makes the test count the wrong
-    /// thing for the wrong reason.
+    /// The height is taken from the tallest column around the row, its own
+    /// and every neighbour's, not from the first: a row placed relative to
+    /// one column can end up with terrain beside or on top of a cell — which
+    /// culls a face, or exposes one against a terrain block the test's table
+    /// made transparent, and makes the test count the wrong thing for the
+    /// wrong reason. The pillar terrain of generator version 1 did exactly
+    /// that to the transparency test (ADR-0039).
     fn row(world: &mut World, blocks: &[&str]) -> (i64, Extent) {
-        let y = (0..blocks.len() as i64)
-            .map(|x| world.surface_height(x, 0))
+        let y = (-1..=blocks.len() as i64)
+            .flat_map(|x| (-1..=1).map(move |z| (x, z)))
+            .map(|(x, z)| world.surface_height(x, z))
             .max()
             .expect("a non-empty row")
             + 4;
@@ -525,10 +528,15 @@ mod tests {
             glazed.area(),
             opaque.area()
         );
+        // Exactly one: the stone's face behind the glass. The glass's own face
+        // against the stone stays hidden, as any face against an opaque
+        // neighbour does — no viewer can see it. Under generator version 1
+        // this read 2, because a pillar beside the row put terrain dirt —
+        // glass in this table — against the glass cell (ADR-0039).
         assert_eq!(
             glazed.area() - opaque.area(),
-            2,
-            "exactly the two faces either side of the shared plane"
+            1,
+            "exactly the stone's face behind the glass"
         );
     }
 

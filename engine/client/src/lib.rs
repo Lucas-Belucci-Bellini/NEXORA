@@ -2051,9 +2051,9 @@ mod tests {
     /// and back — with the device chunks updated by the frame loop's own
     /// [`restream`], at radius 2 so the inner columns keep their chunks: after every move the frame drawn from
     /// them, read back, holds against the ray cast of the square it moved to
-    /// ([`judge`], the client's own check). The live client cannot be walked
-    /// across a column yet — the terrain is a field of pillars — so this is
-    /// where a move is drawn and judged.
+    /// ([`judge`], the client's own check). Since generator version 2 the
+    /// live client can be walked across columns (ADR-0039); this is still
+    /// where every move is drawn and judged, deterministically.
     #[test]
     fn every_move_of_the_square_is_drawn_as_the_ray_cast_says() {
         const SIZE: (u32, u32) = (192, 144);

@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
-use nexora_foundation::rng::{positional_rng, ReproductionKey, SeedStream};
+use nexora_foundation::rng::ReproductionKey;
 use nexora_foundation::spatial::{BlockPos, ChunkCoord, ChunkShape};
 use nexora_foundation::time::{CalendarConfig, WorldClock, WorldTime};
 use nexora_foundation::version::{ContentVersion, GeneratorVersion, ENGINE_VERSION};
@@ -22,13 +22,19 @@ use nexora_runtime::registry::Registry;
 
 use crate::chunk::{Chunk, ChunkState};
 use crate::recovery::EditRecord;
+use crate::terrain;
 use crate::voxel::{BlockStateId, Section, AIR};
 
-/// Version of the terrain algorithm in this build.
+/// Version of the terrain algorithm new worlds are made with.
 ///
 /// Bumping this is mandatory whenever generation changes: the same seed is only
-/// guaranteed to reproduce a world under the same generator version.
-pub const GENERATOR_VERSION: GeneratorVersion = GeneratorVersion(1);
+/// guaranteed to reproduce a world under the same generator version. Version 2
+/// is continuous terrain a player can walk across (ADR-0039); version 1, the
+/// Phase 0 field of pillars, still generates every world saved with it.
+pub const GENERATOR_VERSION: GeneratorVersion = GeneratorVersion(2);
+
+/// Every generator version this build can generate, oldest first.
+pub const GENERATOR_VERSIONS: [GeneratorVersion; 2] = [GeneratorVersion(1), GeneratorVersion(2)];
 
 pub use nexora_foundation::ident::WorldId;
 
@@ -158,12 +164,6 @@ impl WorldDescriptor {
     }
 }
 
-/// Base terrain height, in blocks.
-const TERRAIN_BASE_HEIGHT: i64 = 64;
-
-/// Peak-to-trough variation of the terrain surface, in blocks.
-const TERRAIN_AMPLITUDE: i64 = 12;
-
 /// Depth of the soil layer beneath the surface block.
 const SOIL_DEPTH: i64 = 4;
 
@@ -222,6 +222,21 @@ impl World {
         calendar: CalendarConfig,
         content: &[(Identifier, BlockDefinition)],
     ) -> Result<Self> {
+        // A world made by a generator this build does not have cannot grow:
+        // every column it has not generated yet would come out of a different
+        // algorithm, with a seam where the two meet (ADR-0039).
+        if !GENERATOR_VERSIONS.contains(&descriptor.generator_version) {
+            return Err(Error::new(
+                Domain::World,
+                "world",
+                "the world was made by a terrain generator this build does not have",
+            )
+            .with_recovery(Recovery::Reject)
+            .with_context(
+                "generator_version",
+                descriptor.generator_version.0.to_string(),
+            ));
+        }
         let mut blocks = Registry::new(Identifier::parse("nexora:registry/block")?);
 
         // Air must be runtime id 0: section storage answers "is this empty"
@@ -663,20 +678,44 @@ impl World {
     #[must_use]
     pub const fn surface_range() -> (i64, i64) {
         (
-            TERRAIN_BASE_HEIGHT - TERRAIN_AMPLITUDE,
-            TERRAIN_BASE_HEIGHT + TERRAIN_AMPLITUDE,
+            terrain::BASE_HEIGHT - terrain::AMPLITUDE,
+            terrain::BASE_HEIGHT + terrain::AMPLITUDE,
         )
     }
 
-    /// The generated surface height for one world column.
+    /// The generated surface height for one world column, by the generator
+    /// version the world was made with (ADR-0039).
     ///
-    /// Derived from a position-seeded stream, so a column's height does not
+    /// Derived from position-seeded streams, so a column's height does not
     /// depend on which chunks were generated first.
     #[must_use]
     pub fn surface_height(&self, x: i64, z: i64) -> i64 {
-        let mut rng = positional_rng(self.descriptor.seed, SeedStream::Terrain, x, 0, z);
-        let span = (TERRAIN_AMPLITUDE * 2 + 1) as u64;
-        TERRAIN_BASE_HEIGHT + (rng.next_below(span) as i64) - TERRAIN_AMPLITUDE
+        let seed = self.descriptor.seed;
+        if self.descriptor.generator_version == GeneratorVersion(1) {
+            terrain::column_noise(seed, x, z)
+        } else {
+            terrain::continuous(seed, x, z)
+        }
+    }
+
+    /// [`Self::surface_height`] for a rectangle of columns, row by row.
+    fn surface_heights(&self, min_x: i64, min_z: i64, size_x: i64, size_z: i64) -> Vec<i64> {
+        let seed = self.descriptor.seed;
+        if self.descriptor.generator_version == GeneratorVersion(1) {
+            let mut heights = Vec::with_capacity((size_x * size_z) as usize);
+            for local_z in 0..size_z {
+                for local_x in 0..size_x {
+                    heights.push(terrain::column_noise(
+                        seed,
+                        min_x + local_x,
+                        min_z + local_z,
+                    ));
+                }
+            }
+            heights
+        } else {
+            terrain::continuous_area(seed, min_x, min_z, size_x, size_z)
+        }
     }
 
     /// Generate one chunk from the world seed.
@@ -702,14 +741,17 @@ impl World {
 
         // Heightmap first, so the vertical span to fill is known before any
         // section is allocated.
-        let mut heights = Vec::with_capacity((size_x * size_z) as usize);
-        for local_z in 0..size_z {
-            for local_x in 0..size_x {
-                heights.push(self.surface_height(origin_x + local_x, origin_z + local_z));
-            }
-        }
-        let lowest = heights.iter().copied().min().unwrap_or(TERRAIN_BASE_HEIGHT);
-        let highest = heights.iter().copied().max().unwrap_or(TERRAIN_BASE_HEIGHT);
+        let heights = self.surface_heights(origin_x, origin_z, size_x, size_z);
+        let lowest = heights
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(terrain::BASE_HEIGHT);
+        let highest = heights
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(terrain::BASE_HEIGHT);
 
         let first_section = self.descriptor.bounds.min_y.div_euclid(size_y);
         let last_section = highest.div_euclid(size_y);
@@ -911,8 +953,8 @@ mod tests {
             for z in -50..50i64 {
                 let height = world.surface_height(x, z);
                 assert!(
-                    (TERRAIN_BASE_HEIGHT - TERRAIN_AMPLITUDE
-                        ..=TERRAIN_BASE_HEIGHT + TERRAIN_AMPLITUDE)
+                    (terrain::BASE_HEIGHT - terrain::AMPLITUDE
+                        ..=terrain::BASE_HEIGHT + terrain::AMPLITUDE)
                         .contains(&height),
                     "height {height} at ({x},{z}) escaped the amplitude"
                 );
@@ -920,22 +962,94 @@ mod tests {
         }
     }
 
-    /// The range a client takes its band from is the range the generator
-    /// keeps to, and both ends of it are reached.
+    fn world_of_version(seed: u64, version: GeneratorVersion) -> World {
+        let mut descriptor = WorldDescriptor::new("test-world", seed).expect("descriptor");
+        descriptor.generator_version = version;
+        World::create(descriptor, CalendarConfig::earthlike()).expect("world")
+    }
+
+    /// The range a client takes its band from is the range every generator
+    /// keeps to. Version 1 reaches both ends of it; version 2 stays inside,
+    /// since an end needs every octave at its extreme at once (ADR-0039).
     #[test]
-    fn the_surface_range_is_what_the_generator_produces() {
+    fn the_surface_range_is_what_the_generators_produce() {
         let (low, high) = World::surface_range();
-        let world = world(31_337);
-        let (mut seen_low, mut seen_high) = (i64::MAX, i64::MIN);
-        for x in -50..50i64 {
-            for z in -50..50i64 {
-                let height = world.surface_height(x, z);
-                assert!((low..=high).contains(&height), "{height} at ({x},{z})");
-                seen_low = seen_low.min(height);
-                seen_high = seen_high.max(height);
+        for version in GENERATOR_VERSIONS {
+            let world = world_of_version(31_337, version);
+            let (mut seen_low, mut seen_high) = (i64::MAX, i64::MIN);
+            for x in -50..50i64 {
+                for z in -50..50i64 {
+                    let height = world.surface_height(x, z);
+                    assert!((low..=high).contains(&height), "{height} at ({x},{z})");
+                    seen_low = seen_low.min(height);
+                    seen_high = seen_high.max(height);
+                }
+            }
+            if version == GeneratorVersion(1) {
+                assert_eq!((seen_low, seen_high), (low, high));
             }
         }
-        assert_eq!((seen_low, seen_high), (low, high));
+    }
+
+    /// A world saved under version 1 loads as version 1, and the columns it
+    /// generates after the load are version 1's: it grows without a seam
+    /// where the algorithm would otherwise have changed under it.
+    #[test]
+    fn a_version_one_save_still_grows_version_one_terrain() {
+        let mut old = world_of_version(11, GeneratorVersion(1));
+        old.bring_online().unwrap();
+        old.load_or_generate(ChunkCoord::new(0, 0)).unwrap();
+        let bytes = crate::persist::save(&old).unwrap().encode();
+        let container = nexora_persistence::SaveContainer::decode(&bytes).unwrap();
+        let mut loaded = crate::persist::load(&container).unwrap();
+        assert_eq!(loaded.descriptor().generator_version, GeneratorVersion(1));
+        loaded.bring_online().unwrap();
+        loaded.load_or_generate(ChunkCoord::new(1, 0)).unwrap();
+        let grass = block(&loaded, "nexora:block/grass");
+        for x in 32..64 {
+            let surface = loaded.surface_height(x, 3);
+            assert_eq!(surface, terrain::column_noise(11, x, 3));
+            assert_eq!(loaded.get_block(BlockPos::new(x, surface, 3)), Ok(grass));
+            assert_eq!(loaded.get_block(BlockPos::new(x, surface + 1, 3)), Ok(AIR));
+        }
+    }
+
+    /// A world keeps the generator it was made with: a version 1 world
+    /// still generates pillars, a new world walkable ground, and a world
+    /// made by a version this build does not have is refused rather than
+    /// grown with a seam.
+    #[test]
+    fn a_world_keeps_the_generator_it_was_made_with() {
+        let steep = |world: &World| {
+            (0..64)
+                .filter(|x| {
+                    (world.surface_height(x + 1, 0) - world.surface_height(*x, 0)).abs() > 1
+                })
+                .count()
+        };
+        let old = world_of_version(9, GeneratorVersion(1));
+        let new = world(9);
+        assert_eq!(new.descriptor().generator_version, GENERATOR_VERSION);
+        assert!(steep(&old) > 20, "version 1 is a field of pillars");
+        assert_eq!(steep(&new), 0, "version 2 is walkable");
+
+        let chunk = old.generate_chunk(ChunkCoord::new(0, 0)).unwrap();
+        let surface = old.surface_height(3, 5);
+        let grass = block(&old, "nexora:block/grass");
+        let local =
+            nexora_foundation::spatial::LocalPos::new(3, (surface.rem_euclid(32)) as u32, 5);
+        assert_eq!(
+            chunk
+                .section(surface.div_euclid(32))
+                .map(|s| s.get(local).unwrap()),
+            Some(grass),
+            "the chunk is built from the world's own generator"
+        );
+
+        let mut unknown = WorldDescriptor::new("test-world", 9).unwrap();
+        unknown.generator_version = GeneratorVersion(99);
+        let refused = World::create(unknown, CalendarConfig::earthlike()).unwrap_err();
+        assert_eq!(refused.recovery(), Recovery::Reject);
     }
 
     #[test]

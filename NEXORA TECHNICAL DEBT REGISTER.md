@@ -1225,7 +1225,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
-### DEBT-0054 — O terreno gerado é um campo de pilares que o player não atravessa a pé
+### DEBT-0054 — ~~O terreno gerado é um campo de pilares que o player não atravessa a pé~~
 
 - **SYSTEM:** `engine/world` (`World::surface_height`), e quem o reproduz:
   `benchmarks/cpp` (`nexora::surface_height`, o digest `world.surface_height`)
@@ -1249,7 +1249,19 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   ciclo próprio.
 - **TRIGGER:** o critério de saída da Phase 2 — é o próximo bloqueio dele.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-10-06,
+  [ADR-0039](docs/adr/ADR-0039-terrain-is-continuous-and-a-world-keeps-its-generator.md))
+- **RESOLUÇÃO:** gerador versão 2 — ruído de valor contínuo em inteiros (três
+  oitavas em grades de 64, 16 e 8 blocos, ± 8, ± 3 e ± 1, em 1/256 de bloco,
+  interpolação bilinear exata). Colunas vizinhas diferem em no máximo um
+  bloco por construção (declive 0,875 + arredondamento, conferido por
+  `const` assert), e a faixa continua 52..76. Mundos novos usam a versão 2;
+  um mundo salvo na versão 1 continua gerando a versão 1 onde crescer (o
+  descritor já guarda a versão), e uma versão desconhecida é recusada. O
+  C++ de `benchmarks/cpp` reproduz a versão 2; os 12 digests de
+  conformidade batem (g++ 16.1). Provado andando: um player com W por 200
+  ticks anda mais de 35 blocos em cada uma das quatro direções, em quatro
+  seeds; com o gerador de volta à versão 1 o mesmo teste anda 0,20 e falha.
 
 
 ### DEBT-0055 — Um corpo que caiu repousava um ulp fora de onde repousa um corpo posto no mesmo chão

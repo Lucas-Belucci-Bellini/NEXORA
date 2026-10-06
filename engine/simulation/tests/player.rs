@@ -1,8 +1,9 @@
 //! The player against real generated worlds, through `WorldVoxels` (ADR-0035).
 //!
 //! The unit tests in `player.rs` pin the arithmetic on fixtures; these pin
-//! what only the generator can show: that a run found in white-noise terrain
-//! is really walkable, that a resting player on it is a fixed point of the
+//! what only the generator can show: that a run found in generated terrain
+//! is really walkable, that the terrain can be walked across at all
+//! (ADR-0039), that a resting player on it is a fixed point of the
 //! solver to the bit, that an unloaded column is the wall the policy says it
 //! is, and that the player reads the world and never writes it.
 
@@ -285,4 +286,68 @@ fn the_same_input_frames_give_the_same_player_bit_for_bit() {
         moved |= first.state().feet != spawned;
     }
     assert!(moved, "the script must actually move the player");
+}
+
+/// DEBT-0054, the Phase 2 exit's *navegável* (ADR-0039): on generator
+/// version 2 a player walks across generated terrain in a straight line, in
+/// every direction, through chunk borders, up and down its slopes, and
+/// nothing stops it short of the end of what is loaded. On version 1's
+/// pillars the same walk stopped within a block or two.
+#[test]
+fn a_player_walks_across_generated_terrain_in_every_direction() {
+    const TICKS: u32 = 200;
+    for seed in [CLIENT_SEED, 1, 28, 987_654_321] {
+        // Columns -64..96 on both axes are generated; the walk starts at 16,
+        // so 200 ticks (about 42 blocks) stay inside them every way.
+        let world = world(seed, 2);
+        let terrain = WorldVoxels::new(&world);
+        for facing in [
+            Cardinal::NegZ,
+            Cardinal::PosX,
+            Cardinal::PosZ,
+            Cardinal::NegX,
+        ] {
+            let run = Run {
+                x: 16,
+                z: 16,
+                facing,
+                feet_y: world.surface_height(16, 16) + 1,
+                length: 1,
+                end_plane: 16,
+            };
+            let mut player = spawn(&world, &run);
+            let start = player.state();
+            let mut climbed = 0.0f64;
+            let mut last = start;
+            for tick in 0..TICKS {
+                let outcome = player
+                    .tick(
+                        &terrain,
+                        Walk {
+                            forward: 1.0,
+                            ..Walk::default()
+                        },
+                    )
+                    .unwrap_or_else(|error| panic!("seed {seed} {facing:?} tick {tick}: {error}"));
+                assert_eq!(
+                    outcome.depenetrated, 0,
+                    "seed {seed} {facing:?} tick {tick}"
+                );
+                let now = player.state();
+                climbed += (now.feet.y - last.feet.y).abs();
+                last = now;
+            }
+            let (dx, dz) = facing.step();
+            let forward =
+                (last.feet.x - start.feet.x) * dx as f64 + (last.feet.z - start.feet.z) * dz as f64;
+            assert!(
+                forward >= 35.0,
+                "seed {seed} {facing:?}: walked only {forward:.2} blocks in {TICKS} ticks"
+            );
+            assert!(
+                climbed >= 1.0,
+                "seed {seed} {facing:?}: the ground was flat"
+            );
+        }
+    }
 }
