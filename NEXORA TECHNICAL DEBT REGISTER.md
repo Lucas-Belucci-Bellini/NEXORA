@@ -1208,8 +1208,9 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   arredondados para a grade de sub-pixel —, a fração passa de 1 e volta a
   0: o pixel mostra o texel da borda oposta do tile. A referência modela
   isso (o quad vizinho lido no próprio plano; uma fronteira de texel a até
-  `TEXEL_SNAP` = 1/16 px) e conta esses pixels como `snapped`, em vez de
-  deixá-los passar sem nome.
+  `TEXEL_SNAP` = 1/16 px, ou a até 1/128 de texel do ponto exato) e conta
+  esses pixels como `texel_snapped`, em vez de deixá-los passar sem nome, com
+  um limite próprio no cliente: um em 500 pixels julgados.
 - **IMPACT:** medido: 479 pixels em 15.573.620 julgados, em quarenta
   sementes a 768×512 (0,003 %), sempre um pixel isolado numa aresta. A
   16×16 e sem filtro, o texel errado é o do outro lado do mesmo tile: um

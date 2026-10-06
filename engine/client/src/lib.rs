@@ -762,16 +762,30 @@ fn camera_at(eye: Eye, projection: Projection) -> Result<Camera> {
 /// mutation-checked (a `Less` depth test gets 28% wrong).
 pub const SNAPPED_PER_JUDGED: usize = 5_000;
 
+/// At most one judged pixel in this many may be explained by a texel
+/// boundary within `TEXEL_SNAP` of its centre (ADR-0037), and nothing else.
+///
+/// A bound of its own, because a textured frame has a texel boundary every
+/// sixteenth of a block and how many fall that close to a centre depends on
+/// the device's interpolation. Measured: lavapipe at worst 1 in 17,800 over
+/// forty seeds at 768×512; WARP (Windows' software adapter) 1 in 4,640 at
+/// 384×256, which the geometry bound above refused. Nine times WARP's rate,
+/// and far below what a broken texel rule gives (a texel off by one: one
+/// judged pixel in fourteen explained this way, and a sixth plainly wrong).
+pub const TEXEL_SNAPPED_PER_JUDGED: usize = 500;
+
 /// Whether a checked frame is the one the ray cast says: at least half the
 /// pixels judged; every judged pixel matching except snapped edges, within
-/// [`SNAPPED_PER_JUDGED`]; and **no back face at all**, which the pass culls,
-/// so one on screen means culling or winding broke.
+/// [`SNAPPED_PER_JUDGED`], and snapped texels, within
+/// [`TEXEL_SNAPPED_PER_JUDGED`]; and **no back face at all**, which the pass
+/// culls, so one on screen means culling or winding broke.
 #[must_use]
 pub fn frame_holds(check: &FrameCheck) -> bool {
     check.judged * 2 >= check.pixels
         && check.backfacing == 0
-        && check.matching + check.snapped == check.judged
+        && check.matching + check.snapped + check.texel_snapped == check.judged
         && check.snapped * SNAPPED_PER_JUDGED <= check.judged
+        && check.texel_snapped * TEXEL_SNAPPED_PER_JUDGED <= check.judged
 }
 
 /// The decoded-texture budget the atlas is built under: 36 first-generation
@@ -871,6 +885,7 @@ fn judge(
                 .with_context("matching", check.matching.to_string())
                 .with_context("backfacing", check.backfacing.to_string())
                 .with_context("snapped", check.snapped.to_string())
+                .with_context("texel_snapped", check.texel_snapped.to_string())
                 .with_context("pixels", check.pixels.to_string()),
         );
     }
@@ -1415,8 +1430,8 @@ pub fn format_report(report: &ClientReport) -> String {
     ));
     match report.first_frame {
         Some(check) => out.push_str(&format!(
-            "first frame        {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} back faces, read back from the surface\n",
-            check.judged, check.pixels, check.matching, check.snapped, check.backfacing
+            "first frame        {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} snapped texels, {} back faces, read back from the surface\n",
+            check.judged, check.pixels, check.matching, check.snapped, check.texel_snapped, check.backfacing
         )),
         None => out.push_str("first frame        not readable on this surface\n"),
     }
@@ -1485,8 +1500,8 @@ pub fn format_report(report: &ClientReport) -> String {
     ));
     match (report.edited_frame, edits.mined + edits.built) {
         (Some(check), _) => out.push_str(&format!(
-            "edited frame       {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} back faces, the first frame after an edit\n",
-            check.judged, check.pixels, check.matching, check.snapped, check.backfacing
+            "edited frame       {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} snapped texels, {} back faces, the first frame after an edit\n",
+            check.judged, check.pixels, check.matching, check.snapped, check.texel_snapped, check.backfacing
         )),
         (None, 0) => out.push_str("edited frame       none: nothing was edited\n"),
         (None, _) => out.push_str("edited frame       not readable on this surface\n"),
@@ -1504,8 +1519,8 @@ pub fn format_report(report: &ClientReport) -> String {
     ));
     match report.moved_frame {
         Some(check) => out.push_str(&format!(
-            "moved frame        {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} back faces, the first frame after the square moved\n",
-            check.judged, check.pixels, check.matching, check.snapped, check.backfacing
+            "moved frame        {} of {} pixels judged by the ray cast, {} matching, {} snapped edges, {} snapped texels, {} back faces, the first frame after the square moved\n",
+            check.judged, check.pixels, check.matching, check.snapped, check.texel_snapped, check.backfacing
         )),
         None if streaming.moves == 0 => {
             out.push_str("moved frame        none: the player stayed in its column\n");
@@ -1970,6 +1985,15 @@ mod tests {
             matching,
             backfacing,
             snapped,
+            texel_snapped: 0,
+        };
+        let texels = |judged, matching, texel_snapped| FrameCheck {
+            pixels: 20_000,
+            judged,
+            matching,
+            backfacing: 0,
+            snapped: 0,
+            texel_snapped,
         };
         assert!(frame_holds(&check(10_000, 10_000, 0, 0)));
         assert!(frame_holds(&check(10_000, 9_998, 0, 2)));
@@ -1989,6 +2013,10 @@ mod tests {
             !frame_holds(&check(10_000, 9_997, 0, 3)),
             "past one in 5,000"
         );
+        // Texel edges have their own, wider bound: WARP's first textured
+        // frame snapped 21 in 97,505, past the geometry bound.
+        assert!(frame_holds(&texels(10_000, 9_980, 20)));
+        assert!(!frame_holds(&texels(10_000, 9_979, 21)), "past one in 500");
     }
 
     #[test]
