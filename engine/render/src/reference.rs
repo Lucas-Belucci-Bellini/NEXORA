@@ -71,6 +71,19 @@ pub struct FrameCheck {
     /// centre: an edge that passes that close to the centre, and that the
     /// rasteriser placed on the other side of it.
     pub snapped: usize,
+    /// Judged pixels of a textured frame that do not match and are explained
+    /// only because the frame is textured: an edge between faces turned the
+    /// same way, which a frame of face colours would not show; a quad read
+    /// past its own edge, where the fraction wraps to the far side of its
+    /// tile; or a texel boundary within [`TEXEL_SNAP`] of the centre, or
+    /// within [`TEXEL_EPSILON`] of the exact point (ADR-0037, DEBT-0053).
+    ///
+    /// Counted apart from [`Self::snapped`], which keeps meaning what it
+    /// means in a frame of face colours: neither rule has a counterpart
+    /// there, a textured face has a texel boundary every sixteenth of a
+    /// block, and how many land that close to a centre depends on how the
+    /// device interpolates.
+    pub texel_snapped: usize,
 }
 
 /// How close to a pixel's centre an edge must pass for a mismatch there to
@@ -88,6 +101,15 @@ pub const SNAP: f64 = 1.0 / 64.0;
 /// that tile, gets this. The worst measured on lavapipe over twenty seeds was
 /// 0.04 of a pixel.
 pub const TEXEL_SNAP: f64 = 1.0 / 16.0;
+
+/// The same allowance in the texture's own units, for faces close enough to
+/// the eye that a texel covers tens of pixels: a texel boundary within a
+/// 128th of a texel (a 2,048th of a block) of the exact point may fall
+/// either way. Close up, the position a clipped, perspective-corrected
+/// triangle interpolates is off by a share of the attribute, not of the
+/// pixel. The worst measured on lavapipe: a 256th of a texel, on a face half
+/// a block from the eye, where a texel spans forty pixels.
+pub const TEXEL_EPSILON: f64 = 1.0 / 2048.0;
 
 /// The direction of the ray through the point `(px, py)` of a `width` ×
 /// `height` viewport, scaled so that its component along the camera's
@@ -201,7 +223,7 @@ fn snapped_edge<V: VoxelView + ?Sized>(
     centre: Walked,
     shading: &Shading<'_>,
     shown: [u8; 4],
-) -> Result<bool> {
+) -> Result<Snapped> {
     let explains = |walked: &Walked| {
         shading
             .expect(walked)
@@ -213,11 +235,21 @@ fn snapped_edge<V: VoxelView + ?Sized>(
             (cx + radius * angle.cos(), cy + radius * angle.sin())
         })
     };
+    // An edge a frame of face colours would also show is between faces
+    // turned different ways; one between faces turned the same way shows
+    // only because their textures differ, and is counted with the texels.
+    let kind = |by: &Walked| {
+        if by.hit == centre.hit {
+            Snapped::Texel
+        } else {
+            Snapped::Edge
+        }
+    };
     let mut quads = vec![centre];
     for (x, y) in around(SNAP) {
         let near = walk(view, region, camera, viewport, x, y)?;
         if explains(&near) {
-            return Ok(true);
+            return Ok(kind(&near));
         }
         quads.push(near);
     }
@@ -241,28 +273,72 @@ fn snapped_edge<V: VoxelView + ?Sized>(
         // turned towards the eye may take the pixel instead.
         for sibling in siblings(view, camera, viewport, (cx, cy), layer) {
             if explains(&sibling) {
-                return Ok(true);
+                return Ok(kind(&sibling));
             }
             quads.push(sibling);
         }
         skipped.push(layer.cell);
         layer = walk_past(view, region, camera, viewport, cx, cy, &skipped)?;
         if explains(&layer) {
-            return Ok(true);
+            return Ok(kind(&layer));
         }
         quads.push(layer);
     }
     if matches!(shading, Shading::Faces) {
-        return Ok(false);
+        return Ok(Snapped::No);
     }
     // The quad that covers the pixel evaluates its position at the centre,
-    // to within TEXEL_SNAP, and past its own edge when it is a neighbour's
-    // (DEBT-0053).
-    Ok(quads.iter().any(|&quad| {
-        std::iter::once((cx, cy))
-            .chain(around(TEXEL_SNAP))
-            .any(|(x, y)| on_plane_of(camera, viewport, x, y, quad).is_some_and(|w| explains(&w)))
-    }))
+    // past its own edge when it is a neighbour's, and to within TEXEL_SNAP
+    // of it: the two textured-only rules (DEBT-0053). Neither has a
+    // counterpart in a frame of face colours, so neither is counted with its
+    // edges.
+    let reads = |x: f64, y: f64| {
+        quads
+            .iter()
+            .any(|&quad| on_plane_of(camera, viewport, x, y, quad).is_some_and(|w| explains(&w)))
+    };
+    if std::iter::once((cx, cy))
+        .chain(around(TEXEL_SNAP))
+        .any(|(x, y)| reads(x, y))
+    {
+        return Ok(Snapped::Texel);
+    }
+    // And within TEXEL_EPSILON of the exact point, in the plane of the quad
+    // the centre ray reached.
+    if let Hit::Face(axis, _) = centre.hit {
+        let i = axis.index();
+        let (a, b) = ((i + 1) % 3, (i + 2) % 3);
+        for (da, db) in [
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (1.0, 1.0),
+            (1.0, -1.0),
+            (-1.0, 1.0),
+            (-1.0, -1.0),
+        ] {
+            let mut point = centre.point;
+            point[a] += da * TEXEL_EPSILON;
+            point[b] += db * TEXEL_EPSILON;
+            if explains(&Walked { point, ..centre }) {
+                return Ok(Snapped::Texel);
+            }
+        }
+    }
+    Ok(Snapped::No)
+}
+
+/// What explains a pixel that shows the wrong colour, if anything does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Snapped {
+    /// Nothing: the pixel is wrong.
+    No,
+    /// An edge between faces turned different ways, within [`SNAP`] of the
+    /// centre ([`FrameCheck::snapped`]).
+    Edge,
+    /// A textured-only rule ([`FrameCheck::texel_snapped`]).
+    Texel,
 }
 
 /// How many grazed blocks [`snapped_edge`] looks past along one ray.
@@ -581,6 +657,7 @@ pub fn check_frame_shaded<V: VoxelView + ?Sized>(
         matching: 0,
         backfacing: 0,
         snapped: 0,
+        texel_snapped: 0,
     };
     for py in 0..height {
         for px in 0..width {
@@ -611,17 +688,21 @@ pub fn check_frame_shaded<V: VoxelView + ?Sized>(
                 })
             {
                 check.backfacing += 1;
-            } else if snapped_edge(
-                view,
-                region,
-                camera,
-                viewport,
-                (cx, cy),
-                centre,
-                &shading,
-                shown,
-            )? {
-                check.snapped += 1;
+            } else {
+                match snapped_edge(
+                    view,
+                    region,
+                    camera,
+                    viewport,
+                    (cx, cy),
+                    centre,
+                    &shading,
+                    shown,
+                )? {
+                    Snapped::Edge => check.snapped += 1,
+                    Snapped::Texel => check.texel_snapped += 1,
+                    Snapped::No => {}
+                }
             }
         }
     }
