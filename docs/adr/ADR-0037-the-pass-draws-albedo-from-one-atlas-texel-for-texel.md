@@ -66,7 +66,11 @@ checks.
    the rounding of two sRGB conversions done by different hardware.
 5. **What the rasteriser may legitimately do, modelled — not tolerated.**
    A pixel that does not match is accepted only when the reference can name
-   the quad that drew it, and is counted as `snapped`:
+   the quad that drew it. It is counted as `snapped` when a frame of face
+   colours would show the same edge — faces turned different ways — and as
+   `texel_snapped` when only texturing makes it visible: an edge between
+   faces turned the same way, or one of the rules below that exist only for
+   textures:
    - *the neighbour quad*: at a quad's edge the rasteriser may give the pixel
      to the quad across it, which reads its position at the pixel's centre —
      where the centre ray crosses **its own plane**, past its edge, so the
@@ -75,8 +79,11 @@ checks.
    - *the texel edge*: the position is interpolated from vertices snapped to
      the sub-pixel grid, which Vulkan lets be as coarse as a sixteenth of a
      pixel; a texel boundary within `TEXEL_SNAP` = 1/16 px of the centre,
-     on the drawing quad's plane, may fall either way. Geometry edges keep
-     ADR-0030's `SNAP` = 1/64 px.
+     on the drawing quad's plane, may fall either way — or within
+     `TEXEL_EPSILON` = 1/128 of a texel of the exact point, for faces so
+     close that a texel spans tens of pixels and the error is a share of the
+     attribute, not of the pixel. Geometry edges keep ADR-0030's `SNAP` =
+     1/64 px.
    - *the grazed block* (also in the face-colour pass): a block whose face
      the centre ray meets within `SNAP` of the face's edge may lose the pixel
      to what is behind it, or to its own face across that edge. With the eye
@@ -85,7 +92,14 @@ checks.
      ring of samples. The reference walks the centre ray on past each grazed
      block (`GRAZED_DEPTH` = 4) and also tries the block's other faces that
      face the eye. A back face is never one of them.
-   The textured pixels the first two accept are `DEBT-0053`.
+   The textured pixels the first two accept are `DEBT-0053`. The client
+   bounds the two counts apart: `snapped` at one judged pixel in 5,000, as
+   for face colours, and `texel_snapped` at one in 500
+   (`TEXEL_SNAPPED_PER_JUDGED`), because how many texel boundaries fall that
+   close to a centre depends on the device: lavapipe one in 17,800 at worst,
+   WARP — Windows' software adapter — one in 4,640, which the single
+   geometry bound refused on CI's Windows runner before the counts were
+   split.
 6. **Content restyles engine blocks.** Block content schema 2 adds
    `"surfaces": [{ "block", "surface" }]`: an engine block (one the world
    registers, not the document) drawn with a material the document lists.
