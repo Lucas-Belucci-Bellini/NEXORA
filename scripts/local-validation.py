@@ -72,7 +72,8 @@ HARDWARE_GATED = [
                   "(benchmark_cpu's frame-time and window stages) and nine chunk columns of a "
                   "generated world in client mode (client_mode) -- every frame checked against a "
                   "CPU ray cast, culling back faces over quads split at every corner "
-                  "(ADR-0033); textures and streaming into the pass are not built"),
+                  "(ADR-0033), drawing the first generation's albedo from one atlas (ADR-0037, "
+                  "client_textures); streaming into the pass is not built"),
 ]
 
 
@@ -408,7 +409,8 @@ def run_checks(scratch: Path, quick: bool) -> list:
     probe = str(release / _exe("nexora-rhi-probe"))
     window_probe = str(release / _exe("nexora-window-probe"))
     client = str(release / _exe("nexora-client"))
-    slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified")
+    slice_lines = _lines("result", "memory ", "content ", "queries", "rhi ", "probes verified",
+                         "interaction", "save and reload")
 
     results = [check("build_release", ["cargo", "build", "--workspace", "--release"])]
     built = results[0]["status"] == "PASS"
@@ -465,7 +467,32 @@ def run_checks(scratch: Path, quick: bool) -> list:
     else:
         results.append(needs_build("client_mode", [client, "--frames", "120", "--timeout", "120"],
                                    _lines("adapter", "window", "first frame", "frames", "frame loop",
-                                          "frame wall", "frame work", "player", "result")))
+                                          "frame wall", "frame work", "player", "streaming", "result")))
+    # The world file (ADR-0036): the client opens it twice. The first run
+    # creates the world and writes it, with the player, through the atomic
+    # save -- the rename Windows can refuse for a moment (DEBT-0048) -- and
+    # the second must go on from it, the player where it was saved.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("client_resume", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("client_resume", "NEXORA_GPU=none: nothing can present without a GPU"))
+    elif not built:
+        results.append(skipped("client_resume", "the release build failed"))
+    else:
+        results.append(client_resume(client, scratch / "client-world.nxsv"))
+    # The textured pass (ADR-0037): the client draws the first generation's
+    # albedo from one atlas, sRGB-encoded on this machine's GPU, and the first
+    # frame must still hold texel for texel against the ray cast through the
+    # same atlas. Needs the forge's output from `forge_first_generation`.
+    if os.environ.get("NEXORA_DISPLAY") == "none":
+        results.append(skipped("client_textures", "NEXORA_DISPLAY=none: this machine declares no display"))
+    elif os.environ.get("NEXORA_GPU") == "none":
+        results.append(skipped("client_textures", "NEXORA_GPU=none: nothing can present without a GPU"))
+    else:
+        results.append(needs_build("client_textures", [
+            client, "--frames", "60", "--timeout", "120",
+            "--content", "content/first-generation/blocks.json", "--resources", str(scratch / "fg")],
+            _lines("adapter", "textures", "first frame", "result")))
     # A real key through a real window (ADR-0031): the probe opens a window
     # and waits for W. A person has to press it, so the check runs only when
     # someone is at the terminal; --quick and a non-interactive run skip it,
@@ -495,6 +522,22 @@ def run_checks(scratch: Path, quick: bool) -> list:
                                + ["--scratch", str(scratch / "bench")],
                                lambda out: "see the report's benchmark section", keep_whole=True))
     return results
+
+
+def client_resume(client: str, world: Path) -> dict:
+    """Open the client on a world file twice: created, then resumed."""
+    if world.exists():
+        world.unlink()
+    args = [client, "--frames", "60", "--timeout", "120", "--world", str(world)]
+    first = check("client_resume", args, _lines("start", "world flush", "result"))
+    if first["status"] != "PASS":
+        return first
+    second = check("client_resume", args, _lines("start", "first frame", "world flush", "result"))
+    if second["status"] == "PASS" and "the player where it was saved" not in second["summary"]:
+        second["status"] = "FAIL"
+        second["summary"] = "the second run did not resume the world and the player: " + second["summary"]
+    second["seconds"] = round(first["seconds"] + second["seconds"], 1)
+    return second
 
 
 def skipped(id_, why):
@@ -582,6 +625,14 @@ def render_markdown(report: dict) -> str:
         lines += ["#" + line if line.startswith("#") else line for line in report["benchmark_output"]]
     elif report.get("benchmark_tail"):
         lines += ["", "## CPU benchmark (tail)", "", "```text", *report["benchmark_tail"], "```"]
+    # A failed check's own words, scrubbed like every tail: the summary of a
+    # failure is only its exit code, and the reason is what someone reading
+    # the report from another machine needs first.
+    failed = [c for c in report["checks"] if c["status"] == "FAIL" and c.get("tail")]
+    if failed:
+        lines += ["", "## Failure output (last lines)", ""]
+        for c in failed:
+            lines += [f"### `{c['id']}`", "", "```text", *c["tail"], "```", ""]
     failures = report["verdict"]["failures"]
     lines += ["", "## Verdict", "", "Every executed check passed." if not failures
               else "Failed: " + ", ".join(f"`{f}`" for f in failures) + "."]

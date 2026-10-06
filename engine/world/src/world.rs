@@ -654,6 +654,20 @@ impl World {
         }
     }
 
+    /// The lowest and the highest surface the generator can produce, in any
+    /// column of any world: [`Self::surface_height`] never leaves this range.
+    ///
+    /// A client that draws a vertical band around the surface takes the band
+    /// from here rather than from the columns it happens to have generated, so
+    /// the band holds wherever the player walks (ADR-0038).
+    #[must_use]
+    pub const fn surface_range() -> (i64, i64) {
+        (
+            TERRAIN_BASE_HEIGHT - TERRAIN_AMPLITUDE,
+            TERRAIN_BASE_HEIGHT + TERRAIN_AMPLITUDE,
+        )
+    }
+
     /// The generated surface height for one world column.
     ///
     /// Derived from a position-seeded stream, so a column's height does not
@@ -904,6 +918,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The range a client takes its band from is the range the generator
+    /// keeps to, and both ends of it are reached.
+    #[test]
+    fn the_surface_range_is_what_the_generator_produces() {
+        let (low, high) = World::surface_range();
+        let world = world(31_337);
+        let (mut seen_low, mut seen_high) = (i64::MAX, i64::MIN);
+        for x in -50..50i64 {
+            for z in -50..50i64 {
+                let height = world.surface_height(x, z);
+                assert!((low..=high).contains(&height), "{height} at ({x},{z})");
+                seen_low = seen_low.min(height);
+                seen_high = seen_high.max(height);
+            }
+        }
+        assert_eq!((seen_low, seen_high), (low, high));
     }
 
     #[test]

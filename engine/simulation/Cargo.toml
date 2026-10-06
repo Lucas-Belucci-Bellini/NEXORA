@@ -16,6 +16,7 @@ nexora-foundation.workspace = true
 nexora-runtime.workspace = true
 nexora-asset.workspace = true
 nexora-world.workspace = true
+nexora-persistence.workspace = true
 nexora-command.workspace = true
 nexora-query.workspace = true
 nexora-mesh.workspace = true

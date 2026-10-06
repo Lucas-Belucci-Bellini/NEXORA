@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "materials": [
     "stone/granite_light.json",
     "stone/granite_dark.json",
@@ -21,7 +21,22 @@
     "soil/clay.json",
     "sand/gravel.json",
     "sand/quartz_sand.json",
-    "vegetation/grass.json"
+    "vegetation/grass.json",
+    "brick/nexora_brick.json",
+    "concrete/concrete.json",
+    "stone/worked_stone.json",
+    "ceramic/floor_tile.json",
+    "wood/plank_floor.json",
+    "soil/moist_earth.json",
+    "soil/wet_mud.json",
+    "mineral/snow.json",
+    "mineral/ash.json",
+    "vegetation/moss.json",
+    "ore/iron.json",
+    "ore/copper.json",
+    "ore/tin.json",
+    "ore/gold.json",
+    "ore/cobalt.json"
   ],
   "blocks": [
     {
@@ -127,6 +142,95 @@
     {
       "id": "nexora:block/vegetation/grass",
       "solid": true,
+      "surface": "nexora:material/vegetation/grass"
+    },
+    {
+      "id": "nexora:block/brick/nexora_brick",
+      "solid": true,
+      "surface": "nexora:material/brick/nexora_brick"
+    },
+    {
+      "id": "nexora:block/concrete/concrete",
+      "solid": true,
+      "surface": "nexora:material/concrete/concrete"
+    },
+    {
+      "id": "nexora:block/stone/worked_stone",
+      "solid": true,
+      "surface": "nexora:material/stone/worked_stone"
+    },
+    {
+      "id": "nexora:block/ceramic/floor_tile",
+      "solid": true,
+      "surface": "nexora:material/ceramic/floor_tile"
+    },
+    {
+      "id": "nexora:block/wood/plank_floor",
+      "solid": true,
+      "surface": "nexora:material/wood/plank_floor"
+    },
+    {
+      "id": "nexora:block/soil/moist_earth",
+      "solid": true,
+      "surface": "nexora:material/soil/moist_earth"
+    },
+    {
+      "id": "nexora:block/soil/wet_mud",
+      "solid": true,
+      "surface": "nexora:material/soil/wet_mud"
+    },
+    {
+      "id": "nexora:block/mineral/snow",
+      "solid": true,
+      "surface": "nexora:material/mineral/snow"
+    },
+    {
+      "id": "nexora:block/mineral/ash",
+      "solid": true,
+      "surface": "nexora:material/mineral/ash"
+    },
+    {
+      "id": "nexora:block/vegetation/moss",
+      "solid": true,
+      "surface": "nexora:material/vegetation/moss"
+    },
+    {
+      "id": "nexora:block/ore/iron",
+      "solid": true,
+      "surface": "nexora:material/ore/iron"
+    },
+    {
+      "id": "nexora:block/ore/copper",
+      "solid": true,
+      "surface": "nexora:material/ore/copper"
+    },
+    {
+      "id": "nexora:block/ore/tin",
+      "solid": true,
+      "surface": "nexora:material/ore/tin"
+    },
+    {
+      "id": "nexora:block/ore/gold",
+      "solid": true,
+      "surface": "nexora:material/ore/gold"
+    },
+    {
+      "id": "nexora:block/ore/cobalt",
+      "solid": true,
+      "surface": "nexora:material/ore/cobalt"
+    }
+  ],
+  "surfaces": [
+    {
+      "block": "nexora:block/stone",
+      "surface": "nexora:material/stone/mountain_stone"
+    },
+    {
+      "block": "nexora:block/dirt",
+      "surface": "nexora:material/soil/dry_earth"
+    },
+    {
+      "block": "nexora:block/grass",
       "surface": "nexora:material/vegetation/grass"
     }
   ]

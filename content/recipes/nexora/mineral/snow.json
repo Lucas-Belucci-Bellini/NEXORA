@@ -1,0 +1,29 @@
+{
+  "category": "mineral",
+  "contrast": 1.6,
+  "courses": null,
+  "id": "nexora:recipe/mineral/snow",
+  "levels": 5,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.0,
+    "octaves": 3,
+    "strength": 0.8
+  },
+  "ramp": [
+    "#b9c6d3",
+    "#cad5e0",
+    "#d9e2eb",
+    "#e7eef4",
+    "#f5f9fc"
+  ],
+  "relief": 0.3,
+  "schema": 1,
+  "speckle": {
+    "cells": 16,
+    "contrast": 0.12,
+    "density": 0.2
+  },
+  "strips": null
+}

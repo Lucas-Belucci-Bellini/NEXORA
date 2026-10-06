@@ -1,0 +1,33 @@
+{
+  "category": "mineral",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/ore/iron",
+  "levels": 9,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.1,
+    "octaves": 3,
+    "strength": 0.6
+  },
+  "ramp": [
+    "#2f2f33",
+    "#36363a",
+    "#3c3c41",
+    "#424248",
+    "#49494e",
+    "#505055",
+    "#56565c",
+    "#7d3524",
+    "#a5492f"
+  ],
+  "relief": 0.5,
+  "schema": 1,
+  "speckle": {
+    "cells": 8,
+    "contrast": 0.55,
+    "density": 0.34
+  },
+  "strips": null
+}

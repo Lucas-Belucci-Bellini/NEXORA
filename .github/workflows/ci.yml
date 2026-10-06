@@ -118,11 +118,19 @@ jobs:
       # including presentation, the generated world is drawn in a window, and
       # its first frame, read back from the surface, holds against the ray
       # cast. W is held for a second through XTEST and must move the camera
-      # forward; Escape must end the loop.
+      # forward; the mouse mines under the feet and builds there again at the
+      # top of a jump, and the first frame after the edit must hold against
+      # the ray cast of the edited world (ADR-0036); Escape must end the loop.
+      # Then the same world file is opened again: the world and the player go
+      # on from where they were saved.
       - name: Smoke test the runtime in client mode
         run: |
           xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
-            ./target/release/nexora-client 90 | tee "${RUNNER_TEMP}/client.txt"
+            ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-world.nxsv" \
+            | tee "${RUNNER_TEMP}/client.txt"
+          grep '^start              a new world from seed [0-9]*$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          # Without content the faces are coloured by direction (ADR-0033).
+          grep '^textures           none: faces coloured by direction$' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^lifecycle          17 phases: .* -> simulation-running -> presentation-running -> .* -> process-exit$' \
             "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^modules            .*nexora:module/renderer$' "${RUNNER_TEMP}/client.txt" > /dev/null
@@ -132,7 +140,22 @@ jobs:
           # And it was the player that moved, by walking: the camera only
           # follows its eye (ADR-0035).
           grep '^player             walked [1-9][0-9]*\.[0-9]* forward' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
+          # The drawn square follows the player through the engine's streaming
+          # (ADR-0038). On this terrain a session does not cross a column
+          # (DEBT-0054); a move is drawn and judged in `cargo test`.
+          grep '^streaming          [0-9]* moves of the drawn square, .* columns made resident' \
+            "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^moved frame        ' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
+            ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-world.nxsv" \
+            | tee "${RUNNER_TEMP}/client-resumed.txt"
+          grep '^start              resumed from .* at tick [1-9][0-9]*; the player where it was saved$' \
+            "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
+          grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
       # build if the world does not survive a save and reload.
@@ -152,12 +175,19 @@ jobs:
           # (ADR-0035).
           grep '^player             walked [1-9]\.[0-9]* in 12 ticks, rose 1\.[0-9]*, stopped 0\.30 from a wall, [0-9]* ticks in all$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # It mines and builds through the command pipeline, is refused a
+          # block where its body is, and the world and the player are saved,
+          # reloaded and go on identical to the world never saved (ADR-0036).
+          grep '^interaction        1 mined, 1 built, 1 refused, 1 aimed at nothing; fell 1\.00 into its own hole$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          grep '^save and reload    world and player in [0-9]* bytes; [1-9][0-9]* ticks on, [1-9][0-9]* edits, identical to the world never saved$' \
+            "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           # And with the first visual generation's blocks: each of the sixteen
-          # stones and five terrain materials must register, show its own surface in a mesh, and survive
+          # stones, ten terrain, five construction and five ore materials must register, show its own surface in a mesh, and survive
           # the save, the reload and the journal replay as a probe.
           ./target/release/nexora-headless --radius 2 --save "${RUNNER_TEMP}/ci-content.nxsv" \
             --content content/first-generation/blocks.json \
-            | grep '^content blocks     21 (21 surfaces in the mesh)$' > /dev/null
+            | grep '^content blocks     36 (36 surfaces in the mesh)$' > /dev/null
 
       # The benchmark harness is code too: run a minimal pass so it cannot rot.
       # Deliberately NOT gated on timings - a shared runner's numbers would
@@ -337,12 +367,12 @@ jobs:
           ./target/release/nexora-texture-forge validate nexora:material/stone/basalt \
             --out "${RUNNER_TEMP}/first-generation"
           # The build ends with the pipeline's INDEX stage: the runtime's view
-          # of what was generated -- 21 textures and 21 materials.
+          # of what was generated -- 36 textures and 36 materials.
           grep -q '"id": "nexora:texture/stone/basalt/albedo"' \
             "${RUNNER_TEMP}/first-generation/resources.json"
           ./target/release/nexora-texture-forge build content/first-generation/plan.json \
             --out "${RUNNER_TEMP}/first-generation" --recipes content/recipes \
-            | grep '^build .*: 0 written, 21 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
+            | grep '^build .*: 0 written, 36 unchanged, 0 replaced, 0 restored, 0 refused, 0 failed$' > /dev/null
 
       # The runtime reading what the forge wrote: every first-generation
       # block's texture resolved by identifier through the index the build
@@ -352,15 +382,38 @@ jobs:
           ./target/release/nexora-headless --quiet --radius 1 --save "${RUNNER_TEMP}/ci-textures.nxsv" \
             --content content/first-generation/blocks.json \
             --resources "${RUNNER_TEMP}/first-generation" > "${RUNNER_TEMP}/ci-textures.txt"
-          grep '^content textures   21 (resolved, verified and decoded)$' \
+          grep '^content textures   36 (resolved, verified and decoded)$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
           # The decoded textures are a fourth pool, and the cache that held them
           # must have given its bytes back when the stage ended -- as must the
-          # RHI, which received all twenty-one as RGBA8 in one submission.
+          # RHI, which received all thirty-six as RGBA8 in one submission.
           grep '^memory             4 pools, worst nominal, 0 suspected leaks$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
-          grep '^rhi uploads        21 textures as RGBA8, 21504 bytes, one fence$' \
+          grep '^rhi uploads        36 textures as RGBA8, 36864 bytes, one fence$' \
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
+
+      # The client drawing what the forge wrote (ADR-0037): every block's
+      # albedo goes into one atlas, and the first frame and the first frame
+      # after an edit, read back from the surface, hold texel for texel
+      # against the ray cast through the same atlas. One tile more than the
+      # materials: tile 0 is the one a block without a surface would show,
+      # and no block may show it.
+      - name: Smoke test the client drawing the first generation's textures
+        run: |
+          xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
+            ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-textured.nxsv" \
+            --content content/first-generation/blocks.json \
+            --resources "${RUNNER_TEMP}/first-generation" \
+            | tee "${RUNNER_TEMP}/client-textured.txt"
+          grep '^textures           37 tiles in a 256x48 atlas, 0 blocks without a surface$' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^result             OK$' "${RUNNER_TEMP}/client-textured.txt" > /dev/null
 
       # The bridge to a real machine (docs/validation/local/): its rules are
       # checked here, and a committed report must be well formed and must
@@ -466,11 +519,18 @@ jobs:
         shell: bash
         run: |
           ${{ matrix.python }} scripts/local-validation.py self-test
+          # The report is printed whatever the run says: a failing check's
+          # output tail is in it, and on a runner it is the only copy.
+          status=0
           ${{ matrix.python }} scripts/local-validation.py run --quick \
-            --out "${RUNNER_TEMP}/local-validation"
+            --out "${RUNNER_TEMP}/local-validation" || status=$?
           cat "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          test "${status}" -eq 0
           # The benchmark's window stage ran on this platform's window system
           # (Win32, AppKit) and its frame matched the ray cast.
           grep -q 'window.pixels_judged' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
           # And the runtime ran in client mode on it (ADR-0032).
           grep -q '^| `client_mode` | \*\*PASS\*\*' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"
+          # And drew the first generation's textures there, sRGB-encoded on
+          # this platform's adapter, holding against the ray cast (ADR-0037).
+          grep -q '^| `client_textures` | \*\*PASS\*\*' "${RUNNER_TEMP}/local-validation/NEXORA-LOCAL-VALIDATION.md"

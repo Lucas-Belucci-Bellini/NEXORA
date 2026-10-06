@@ -93,6 +93,66 @@
     {
       "definition": "vegetation/grass.json",
       "seed": null
+    },
+    {
+      "definition": "brick/nexora_brick.json",
+      "seed": null
+    },
+    {
+      "definition": "concrete/concrete.json",
+      "seed": null
+    },
+    {
+      "definition": "stone/worked_stone.json",
+      "seed": null
+    },
+    {
+      "definition": "ceramic/floor_tile.json",
+      "seed": null
+    },
+    {
+      "definition": "wood/plank_floor.json",
+      "seed": null
+    },
+    {
+      "definition": "soil/moist_earth.json",
+      "seed": null
+    },
+    {
+      "definition": "soil/wet_mud.json",
+      "seed": null
+    },
+    {
+      "definition": "mineral/snow.json",
+      "seed": null
+    },
+    {
+      "definition": "mineral/ash.json",
+      "seed": null
+    },
+    {
+      "definition": "vegetation/moss.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/iron.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/copper.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/tin.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/gold.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/cobalt.json",
+      "seed": null
     }
   ]
 }

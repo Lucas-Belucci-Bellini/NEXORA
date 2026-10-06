@@ -85,9 +85,12 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0027](docs/adr/ADR-0027-the-window-host-is-winit-and-it-owns-the-event-loop.md) | O host de janela é o winit, e ele é dono do laço de eventos | ACCEPTED |
 | [0028](docs/adr/ADR-0028-a-draw-names-its-vertex-layout-its-bindings-and-its-depth.md) | Um draw declara seu layout de vértice, seus bindings e sua profundidade | ACCEPTED |
 | [0029](docs/adr/ADR-0029-the-camera-is-reverse-z-over-a-floating-integer-origin.md) | A câmera é reverse-Z, sobre uma origem inteira flutuante | ACCEPTED |
-| [0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md) | A primeira passada de render desenha sobre o contrato do RHI, e um ray cast confere cada quadro cronometrado | ACCEPTED |
+| [0030](docs/adr/ADR-0030-the-first-render-pass-is-checked-against-a-ray-cast.md) | A primeira passada de render desenha sobre o contrato do RHI, e um ray cast confere cada quadro cronometrado | ACCEPTED (emendada pela 0037) |
 | [0031](docs/adr/ADR-0031-a-window-hands-input-in-as-hid-usages-once-per-frame.md) | A janela entrega o input como usages HID, uma vez por quadro | ACCEPTED |
-| [0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md) | O cliente é o runtime numa janela, não um segundo motor | ACCEPTED |
-| [0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | O pass descarta faces de costas e divide seus quads em todo canto | ACCEPTED |
+| [0032](docs/adr/ADR-0032-the-client-is-the-runtime-in-a-window.md) | O cliente é o runtime numa janela, não um segundo motor | ACCEPTED (emendada pela 0037, 0038) |
+| [0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | O pass descarta faces de costas e divide seus quads em todo canto | ACCEPTED (emendada pela 0037) |
 | [0034](docs/adr/ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md) | O freeze trava a linguagem do núcleo, não a de toda fronteira — o que só as Phases 7 e 8 respondem vira extensão pós-freeze | **PROPOSED** (decisão do dono do projeto) |
-| [0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md) | O player é um corpo que a simulação conduz, e a câmera só segue o olho dele | ACCEPTED |
+| [0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md) | O player é um corpo que a simulação conduz, e a câmera só segue o olho dele | ACCEPTED (emendada pela 0036) |
+| [0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | O player edita o mundo por comandos, e o save guarda o player | ACCEPTED (emendada pela 0038) |
+| [0037](docs/adr/ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md) | O pass desenha o albedo de um atlas, e o quadro continua conferido texel a texel | ACCEPTED |
+| [0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md) | O quadrado desenhado segue o player, pelo streaming do motor | ACCEPTED |

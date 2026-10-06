@@ -23,6 +23,23 @@
 //! loader refuses a block whose surface is not among them, so a typo is an
 //! error at load rather than a block drawn with [`UNMAPPED_SURFACE`].
 //!
+//! # Blocks the document does not add
+//!
+//! Schema 2 adds `surfaces`: blocks registered elsewhere — the engine's own,
+//! `nexora:block/stone`, `dirt`, `grass`, which the world generator places —
+//! given a material the document lists (ADR-0037):
+//!
+//! ```json
+//! "surfaces": [
+//!   { "block": "nexora:block/stone", "surface": "nexora:material/stone/mountain_stone" }
+//! ]
+//! ```
+//!
+//! The document does not define these blocks, so a world created without the
+//! content still has them; it only says what they look like. A block it both
+//! adds and restyles, or restyles twice, is refused, and a block no world
+//! registers is refused when the surface table is built, by name.
+//!
 //! # Why `surface` and not `material`
 //!
 //! `NEXORA NAMING AND TERMINOLOGY.md` forbids one name for two concepts, and
@@ -45,7 +62,7 @@ use nexora_world::world::{BlockDefinition, World};
 use crate::surfaces::SurfaceTable;
 
 /// The newest block content schema this build reads.
-pub const BLOCK_CONTENT_SCHEMA: u32 = 1;
+pub const BLOCK_CONTENT_SCHEMA: u32 = 2;
 
 /// Most blocks one document may add.
 ///
@@ -53,8 +70,18 @@ pub const BLOCK_CONTENT_SCHEMA: u32 = 1;
 /// to exhaust memory before that limit is reached.
 pub const MAX_CONTENT_BLOCKS: usize = 16_384;
 
-const DOCUMENT_FIELDS: [&str; 3] = ["schema", "materials", "blocks"];
+const DOCUMENT_FIELDS: [&str; 4] = ["schema", "materials", "blocks", "surfaces"];
 const BLOCK_FIELDS: [&str; 3] = ["id", "solid", "surface"];
+const SURFACE_FIELDS: [&str; 2] = ["block", "surface"];
+
+/// A block registered elsewhere, and the material the document draws it with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestyledBlock {
+    /// The block, registered by the engine or by other content.
+    pub block: Identifier,
+    /// The material it shows, one the document lists.
+    pub surface: Identifier,
+}
 
 /// One block a content document adds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +99,7 @@ pub struct ContentBlock {
 pub struct BlockContent {
     materials: Vec<SurfaceMaterial>,
     blocks: Vec<ContentBlock>,
+    restyled: Vec<RestyledBlock>,
 }
 
 impl BlockContent {
@@ -161,7 +189,45 @@ impl BlockContent {
                 surface,
             });
         }
-        Ok(Self { materials, blocks })
+        let mut restyled = Vec::new();
+        match document.optional_field("surfaces")? {
+            None => {}
+            Some(_) if schema < 2 => {
+                return Err(invalid("`surfaces` needs block content schema 2")
+                    .with_context("schema", schema.to_string()));
+            }
+            Some(node) => {
+                for entry in node.as_array()? {
+                    reject_unknown(entry, &SURFACE_FIELDS, "surfaces[]")?;
+                    let block = Identifier::parse(entry.field("block")?.as_text()?)?;
+                    let surface = Identifier::parse(entry.field("surface")?.as_text()?)?;
+                    if !material_ids.contains(&surface) {
+                        return Err(
+                            invalid("a block names a surface the document does not list")
+                                .with_context("block", block.to_string())
+                                .with_context("surface", surface.to_string()),
+                        );
+                    }
+                    if !block_ids.insert(block.clone()) {
+                        return Err(invalid("a block is listed twice")
+                            .with_context("block", block.to_string()));
+                    }
+                    restyled.push(RestyledBlock { block, surface });
+                }
+            }
+        }
+        Ok(Self {
+            materials,
+            blocks,
+            restyled,
+        })
+    }
+
+    /// The blocks registered elsewhere that the document draws, in document
+    /// order.
+    #[must_use]
+    pub fn restyled(&self) -> &[RestyledBlock] {
+        &self.restyled
     }
 
     /// The blocks, in document order.
@@ -214,6 +280,9 @@ impl BlockContent {
         let mut builder = SurfaceTable::resolved(world, materials);
         for block in &self.blocks {
             builder.assign(&block.id, &block.surface)?;
+        }
+        for restyled in &self.restyled {
+            builder.assign(&restyled.block, &restyled.surface)?;
         }
         Ok(builder.build())
     }
@@ -370,7 +439,14 @@ mod tests {
             ),
             (TWO_STONES.replace("\"slate.json\"", "\"../slate.json\""), "leaves"),
             (TWO_STONES.replace("\"slate.json\"", "\"absent.json\""), "could not be read"),
-            (TWO_STONES.replace("\"schema\": 1", "\"schema\": 2"), "schema"),
+            (TWO_STONES.replace("\"schema\": 1", "\"schema\": 3"), "schema"),
+            (
+                TWO_STONES.replace(
+                    "\"blocks\": [",
+                    "\"surfaces\": [{ \"block\": \"nexora:block/stone\", \"surface\": \"nexora:material/stone/basalt\" }], \"blocks\": [",
+                ),
+                "schema 2",
+            ),
             (
                 TWO_STONES.replace("\"solid\": true, \"surface\": \"nexora:material/stone/basalt\"",
                     "\"solid\": true, \"hardness\": 3, \"surface\": \"nexora:material/stone/basalt\""),
@@ -381,6 +457,90 @@ mod tests {
             let err = BlockContent::from_text(&text, &dir).expect_err(needle);
             assert!(err.to_string().contains(needle), "`{needle}`: {err}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const RESTYLED: &str = r#"{
+        "schema": 2,
+        "materials": ["basalt.json", "slate.json"],
+        "blocks": [
+            { "id": "nexora:block/stone/basalt", "solid": true, "surface": "nexora:material/stone/basalt" }
+        ],
+        "surfaces": [
+            { "block": "nexora:block/stone", "surface": "nexora:material/stone/slate" }
+        ]
+    }"#;
+
+    /// The engine's own stone takes the document's slate: registered by the
+    /// world, drawn by the content, and no longer unmapped.
+    #[test]
+    fn a_document_draws_a_block_the_engine_registers() {
+        let dir = scratch("restyle");
+        author(&dir, "basalt.json", "nexora:material/stone/basalt");
+        author(&dir, "slate.json", "nexora:material/stone/slate");
+        let content = BlockContent::from_text(RESTYLED, &dir).unwrap();
+        assert_eq!(content.restyled().len(), 1);
+        let materials = content.material_registry().unwrap();
+        let mut world = World::create_with(
+            WorldDescriptor::new("restyle", 9).unwrap(),
+            CalendarConfig::earthlike(),
+            &content.block_definitions(),
+        )
+        .unwrap();
+        world.bring_online().unwrap();
+        let table = content.surface_table(&world, &materials).unwrap();
+        let stone = world.block_id(&id("nexora:block/stone")).unwrap();
+        let slate = materials
+            .runtime_id_of(&id("nexora:material/stone/slate"))
+            .unwrap();
+        assert_eq!(
+            table.surface_of(stone.0),
+            Some(nexora_mesh::mesh::SurfaceId(slate.0))
+        );
+        assert!(
+            table
+                .unmapped()
+                .iter()
+                .all(|block| block.to_string() != "nexora:block/stone"),
+            "{:?}",
+            table.unmapped()
+        );
+
+        for (text, needle) in [
+            (
+                RESTYLED.replace(
+                    r#""surface": "nexora:material/stone/slate""#,
+                    r#""surface": "nexora:material/stone/granite""#,
+                ),
+                "does not list",
+            ),
+            (
+                RESTYLED.replace(
+                    r#""block": "nexora:block/stone""#,
+                    r#""block": "nexora:block/stone/basalt""#,
+                ),
+                "listed twice",
+            ),
+            (
+                RESTYLED.replace(
+                    r#""block": "nexora:block/stone""#,
+                    r#""block": "nexora:block/stone", "tint": 1"#,
+                ),
+                "tint",
+            ),
+        ] {
+            let err = BlockContent::from_text(&text, &dir).expect_err(needle);
+            assert!(err.to_string().contains(needle), "`{needle}`: {err}");
+        }
+        // A block no world registers is refused by name when the table is
+        // built.
+        let ghost = BlockContent::from_text(
+            &RESTYLED.replace(r#""nexora:block/stone""#, r#""nexora:block/obsidian""#),
+            &dir,
+        )
+        .unwrap();
+        let err = ghost.surface_table(&world, &materials).unwrap_err();
+        assert!(err.to_string().contains("nexora:block/obsidian"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -9,8 +9,9 @@
 use nexora_camera::{Camera, CameraState, Projection, RenderOrigin};
 use nexora_foundation::spatial::{BlockPos, WorldPosition, MAX_BLOCK_COORD};
 use nexora_mesh::{mesh_region, Extent, SurfaceId, VoxelView};
-use nexora_render::reference::check_frame;
-use nexora_render::{ChunkPass, Corners, FrameStats};
+use nexora_render::atlas::Atlas;
+use nexora_render::reference::{check_frame, check_frame_shaded, Shading};
+use nexora_render::{textured_vertices, ChunkPass, Corners, FrameStats};
 use nexora_rhi::{CommandList, NullRhi, Rhi, TextureDesc, TextureFormat, Usage};
 use nexora_rhi_wgpu::WgpuRhi;
 
@@ -51,6 +52,99 @@ impl VoxelView for Scene {
     fn surface_at(&self, position: BlockPos) -> Option<SurfaceId> {
         self.solid(position).then_some(SurfaceId(0))
     }
+}
+
+/// The same terrain in three surfaces: the slab, the lower layers and the
+/// rest, so a frame shows several tiles and the greedy mesher splits along
+/// them.
+struct Layered(Scene);
+
+impl VoxelView for Layered {
+    fn surface_at(&self, position: BlockPos) -> Option<SurfaceId> {
+        if !self.0.solid(position) {
+            return None;
+        }
+        let y = position.y - self.0.base.y;
+        Some(SurfaceId(match y {
+            11 => 30,
+            0..=3 => 10,
+            _ => 20,
+        }))
+    }
+}
+
+/// Tiles no rotation or mirror leaves unchanged: red counts texels across,
+/// green counts them down, blue names the tile. A texel read from the wrong
+/// place, the wrong tile or the wrong way round is a different colour.
+fn atlas() -> Atlas {
+    let mut atlas = Atlas::new();
+    for (surface, blue) in [(10, 40u8), (20, 140), (30, 240)] {
+        let mut rgba = Vec::new();
+        for y in 0..16u8 {
+            for x in 0..16u8 {
+                rgba.extend_from_slice(&[x * 16 + 8, y * 16 + 8, blue, 255]);
+            }
+        }
+        atlas.add(SurfaceId(surface), &rgba).unwrap();
+    }
+    atlas
+}
+
+/// Draw `layered` with the textured pass into an sRGB target.
+fn draw_textured(rhi: &mut WgpuRhi, layered: &Layered, atlas: &Atlas) -> (Vec<u8>, Camera) {
+    let scene = &layered.0;
+    let texture = |format, label: &str, usage| TextureDesc {
+        label: label.into(),
+        width: SIZE,
+        height: SIZE,
+        format,
+        usage,
+    };
+    let color = rhi
+        .create_texture(&texture(
+            TextureFormat::Rgba8UnormSrgb,
+            "textured",
+            Usage::RENDER_TARGET | Usage::COPY_SRC,
+        ))
+        .unwrap();
+    let depth = rhi
+        .create_texture(&texture(
+            TextureFormat::Depth32Float,
+            "textured depth",
+            Usage::RENDER_TARGET,
+        ))
+        .unwrap();
+    let mut frame = CommandList::new("textured frame");
+    let atlas_texture = atlas.upload(rhi, &mut frame).unwrap();
+    let pass = ChunkPass::textured(rhi, TextureFormat::Rgba8UnormSrgb, atlas_texture).unwrap();
+    assert!(pass.is_textured());
+    let mesh = mesh_region(layered, scene.region());
+    let bytes = textured_vertices(
+        &mesh.opaque,
+        scene.region().origin,
+        &Corners::of(&[&mesh.opaque]),
+        atlas,
+    )
+    .unwrap();
+    let chunk = pass
+        .upload_vertices(rhi, &mut frame, bytes, scene.region())
+        .unwrap();
+    let (camera, origin) = camera_for(scene);
+    let state = camera.sample(origin, SIZE, SIZE).unwrap();
+    let stats = pass
+        .record(&mut frame, &state, color, depth, &[chunk])
+        .unwrap();
+    assert_eq!(stats.drawn, 1);
+    let fence = rhi.submit(frame).unwrap();
+    rhi.wait(fence).unwrap();
+    let texels = rhi.read_texture(color).unwrap();
+    chunk.destroy(rhi).unwrap();
+    pass.destroy(rhi).unwrap();
+    for texture in [color, depth, atlas_texture] {
+        rhi.destroy_texture(texture).unwrap();
+    }
+    rhi.poll().unwrap();
+    (texels, camera)
 }
 
 fn camera_for(scene: &Scene) -> (Camera, RenderOrigin) {
@@ -176,6 +270,74 @@ fn the_same_scene_at_the_edge_of_the_world_draws_the_same_pixels() {
         &Scene {
             base: BlockPos::new(far, 0, -far),
         },
+    );
+    assert_eq!(centre, edge);
+}
+
+/// ADR-0037 on a driver: every judged pixel of a textured frame is the
+/// texel of the tile its ray reaches, lit for its face, within the sRGB
+/// rounding; only texel and face edges within a sixty-fourth of a pixel of a
+/// centre may differ.
+#[test]
+fn every_pixel_shows_the_texel_a_ray_through_it_reaches() {
+    let Some(mut rhi) = backend() else { return };
+    let layered = Layered(Scene {
+        base: BlockPos::new(32, 0, -48),
+    });
+    let atlas = atlas();
+    let (texels, camera) = draw_textured(&mut rhi, &layered, &atlas);
+    let check = check_frame_shaded(
+        &layered,
+        layered.0.region(),
+        &camera,
+        (SIZE, SIZE),
+        &texels,
+        Shading::Albedo {
+            atlas: &atlas,
+            encoded: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        check.judged * 10 >= check.pixels * 8,
+        "only {} of {} pixels were unambiguous",
+        check.judged,
+        check.pixels
+    );
+    assert_eq!(check.matching + check.snapped, check.judged, "{check:?}");
+    assert!(check.snapped * 100 <= check.judged, "{check:?}");
+    // Many texels on screen, not one colour per face.
+    let mut colours: Vec<&[u8]> = texels.chunks_exact(4).collect();
+    colours.sort_unstable();
+    colours.dedup();
+    assert!(
+        colours.len() > 100,
+        "only {} distinct colours",
+        colours.len()
+    );
+    assert_eq!(rhi.allocated_bytes(), 0);
+}
+
+/// The texels are chosen from block-relative positions, so 2^40 blocks out
+/// the textured frame is the same frame.
+#[test]
+fn the_textured_frame_is_the_same_at_the_edge_of_the_world() {
+    let Some(mut rhi) = backend() else { return };
+    let far = (MAX_BLOCK_COORD - (1 << 20)) & !15;
+    let atlas = atlas();
+    let (centre, _) = draw_textured(
+        &mut rhi,
+        &Layered(Scene {
+            base: BlockPos::new(0, 0, 0),
+        }),
+        &atlas,
+    );
+    let (edge, _) = draw_textured(
+        &mut rhi,
+        &Layered(Scene {
+            base: BlockPos::new(far, 0, -far),
+        }),
+        &atlas,
     );
     assert_eq!(centre, edge);
 }

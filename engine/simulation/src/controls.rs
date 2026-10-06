@@ -7,6 +7,10 @@
 //! into an [`Intent`], and [`Intent::walk`] keeps only the part a player
 //! consumes — so the player is handed a [`Walk`] and never sees a key.
 //!
+//! The mouse's primary and secondary buttons mine and build (ADR-0036): the
+//! same table, on the HID Button page, and the same fold — a press is one
+//! edge, so one click asks for one edit however long the button is held.
+//!
 //! This lived in the client while the keys flew a free camera. It moved here,
 //! beside the player, so the slice and the benchmark drive the player through
 //! the same table and the same sampling as the window: a scripted frame of
@@ -44,6 +48,46 @@ pub const DEFAULT_KEYS: [(&str, u16); 10] = [
     ("action/exit", 0x29),         // Escape
 ];
 
+/// The actions on the mouse and the button each is bound to by default, as a
+/// HID Button page usage (primary 1, secondary 2; ADR-0031).
+///
+/// Mine and build are PLAYER-22's *Mining Intent* and PLAYER-21's *Build
+/// Intent*: the player asks, and the command pipeline decides (ADR-0036).
+pub const DEFAULT_BUTTONS: [(&str, u16); 2] = [
+    ("action/mine", 1),  // primary
+    ("action/build", 2), // secondary
+];
+
+/// What the player asked to do to the block it looks at this frame.
+///
+/// Edges, not held states: each is true on the one frame its button went
+/// down. Nothing here names a block or a position — the authority casts the
+/// ray from its own copy of the player (ADR-0036).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BlockIntent {
+    /// Break the block looked at.
+    pub mine: bool,
+    /// Place a block against the face looked at.
+    pub build: bool,
+}
+
+impl BlockIntent {
+    /// Whether anything was asked for.
+    #[must_use]
+    pub const fn any(&self) -> bool {
+        self.mine || self.build
+    }
+
+    /// Both intents: what was asked in either.
+    #[must_use]
+    pub const fn or(self, other: Self) -> Self {
+        Self {
+            mine: self.mine || other.mine,
+            build: self.build || other.build,
+        }
+    }
+}
+
 /// What the player asked for this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Intent {
@@ -59,6 +103,10 @@ pub struct Intent {
     pub jump: bool,
     /// The exit action went down this frame.
     pub exit: bool,
+    /// The mine button went down this frame.
+    pub mine: bool,
+    /// The build button went down this frame.
+    pub build: bool,
     /// How many of the actions are held.
     pub held: u32,
 }
@@ -73,10 +121,20 @@ impl Intent {
                 .any(|axis| *axis != 0.0)
     }
 
+    /// The part of this intent that asks for a block edit.
+    #[must_use]
+    pub const fn block(&self) -> BlockIntent {
+        BlockIntent {
+            mine: self.mine,
+            build: self.build,
+        }
+    }
+
     /// The part of this intent a player consumes.
     ///
     /// `exit` and `held` belong to whoever runs the frames, not to the
-    /// player, and do not cross.
+    /// player, and do not cross; nor do `mine` and `build`, which go to the
+    /// authority for edits ([`Intent::block`]).
     #[must_use]
     pub const fn walk(&self) -> Walk {
         Walk {
@@ -97,7 +155,8 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// Register the actions in one context, bound to [`DEFAULT_KEYS`].
+    /// Register the actions in one context, bound to [`DEFAULT_KEYS`] and
+    /// [`DEFAULT_BUTTONS`].
     ///
     /// # Errors
     ///
@@ -106,14 +165,22 @@ impl Controls {
         let context = Identifier::nexora(CONTEXT)?;
         let mut system = InputSystem::new();
         system.set_context(context.clone(), 0);
-        let mut actions = Vec::with_capacity(DEFAULT_KEYS.len());
-        for (path, usage) in DEFAULT_KEYS {
+        let mut actions = Vec::with_capacity(DEFAULT_KEYS.len() + DEFAULT_BUTTONS.len());
+        let bound = DEFAULT_KEYS
+            .iter()
+            .map(|(path, usage)| (DeviceKind::Keyboard, *path, *usage))
+            .chain(
+                DEFAULT_BUTTONS
+                    .iter()
+                    .map(|(path, usage)| (DeviceKind::Mouse, *path, *usage)),
+            );
+        for (device, path, usage) in bound {
             let action = Identifier::nexora(path)?;
             system.register_action(ActionDefinition::new(action.clone(), ActionKind::Button))?;
             system.bind(Binding::new(
                 context.clone(),
                 action.clone(),
-                Source::button(DeviceKind::Keyboard, ButtonCode(usage)),
+                Source::button(device, ButtonCode(usage)),
             ))?;
             actions.push(action);
         }
@@ -134,6 +201,8 @@ impl Controls {
             look: axis(7, 8),
             jump: held(4),
             exit: snapshot.just_pressed(&self.actions[9]),
+            mine: snapshot.just_pressed(&self.actions[10]),
+            build: snapshot.just_pressed(&self.actions[11]),
             held: (0..self.actions.len()).filter(|index| held(*index)).count() as u32,
         }
     }
@@ -205,6 +274,8 @@ mod tests {
             look: -1.0,
             jump: true,
             exit: true,
+            mine: true,
+            build: true,
             held: 6,
         };
         assert_eq!(
@@ -223,6 +294,85 @@ mod tests {
             ..Intent::default()
         };
         assert_eq!(quiet.walk(), Walk::default(), "exit and held do not cross");
+    }
+
+    const MOUSE: DeviceId = DeviceId::new(DeviceKind::Mouse, 0);
+
+    fn click(button: u16, pressed: bool) -> InputFrame {
+        InputFrame::new().with(Signal::button(MOUSE, ButtonCode(button), pressed))
+    }
+
+    /// A click is one edit however long it is held: the edge, not the state.
+    #[test]
+    fn the_primary_button_mines_once_per_press() {
+        let mut controls = Controls::new().unwrap();
+        let down = controls.sample(
+            &InputFrame::new()
+                .with(Signal::Attached(MOUSE))
+                .with(Signal::button(MOUSE, ButtonCode(1), true)),
+        );
+        assert_eq!(
+            down.block(),
+            BlockIntent {
+                mine: true,
+                build: false
+            }
+        );
+        assert_eq!(down.held, 1);
+        assert!(!down.moves(), "mining is not movement");
+        assert_eq!(down.walk(), Walk::default(), "and does not reach the walk");
+        let still_held = controls.sample(&InputFrame::new());
+        assert!(!still_held.block().any(), "held is not pressed again");
+        assert_eq!(still_held.held, 1);
+        controls.sample(&click(1, false));
+        assert!(controls.sample(&click(1, true)).mine, "a second press");
+    }
+
+    #[test]
+    fn the_secondary_button_builds_and_the_middle_one_is_unbound() {
+        let mut controls = Controls::new().unwrap();
+        controls.sample(&InputFrame::new().with(Signal::Attached(MOUSE)));
+        assert_eq!(
+            controls.sample(&click(2, true)).block(),
+            BlockIntent {
+                mine: false,
+                build: true
+            }
+        );
+        let mut controls = Controls::new().unwrap();
+        controls.sample(&InputFrame::new().with(Signal::Attached(MOUSE)));
+        assert_eq!(controls.sample(&click(3, true)), Intent::default());
+    }
+
+    /// A keyboard key with the primary button's number is not the primary
+    /// button: the device kind is part of the binding.
+    #[test]
+    fn a_key_numbered_like_a_button_does_not_mine() {
+        let mut controls = Controls::new().unwrap();
+        // Keyboard usage 1 is ErrorRollOver, never a real key, but the
+        // input system must still tell the pages apart.
+        assert!(!controls.sample(&press(1)).block().any());
+    }
+
+    #[test]
+    fn block_intents_combine() {
+        let mine = BlockIntent {
+            mine: true,
+            build: false,
+        };
+        let build = BlockIntent {
+            mine: false,
+            build: true,
+        };
+        assert_eq!(
+            mine.or(build),
+            BlockIntent {
+                mine: true,
+                build: true
+            }
+        );
+        assert!(!BlockIntent::default().any());
+        assert!(mine.any());
     }
 
     #[test]

@@ -1,0 +1,40 @@
+{
+  "blend": "opaque",
+  "category": "soil",
+  "id": "nexora:material/soil/moist_earth",
+  "maps": [],
+  "name": "Moist Earth",
+  "pbr": {
+    "height_strength": 0.5,
+    "metallic": 0.0,
+    "normal_strength": 1.0,
+    "roughness": 0.85
+  },
+  "physical_scale": {
+    "metres_per_tile": 1.0
+  },
+  "provenance": {
+    "author": "NEXORA",
+    "class": "original",
+    "content_hash": "0x0000000000000000",
+    "generation": null,
+    "license": null,
+    "modification": "unmodified",
+    "notes": "First generation, issue #17 prompt 02 (Terra \u00damida). Darker earth than the dry earth, in compact damp clusters with a few darker wet spots and little cracking. Drawn procedurally by the texture forge from nexora:recipe/soil/moist_earth: a reproducible generation rule, not an image made from the prompt.",
+    "recorded_at": "2026-10-05T12:00:00Z",
+    "release": "draft",
+    "reviewed_at": null,
+    "reviewer": null,
+    "source_repository": null,
+    "source_tool": "hand-written",
+    "status": "nexora_original"
+  },
+  "recipe": "nexora:recipe/soil/moist_earth",
+  "resolution": {
+    "height": 16,
+    "width": 16
+  },
+  "revision": 1,
+  "schema": 3,
+  "seamless": true
+}

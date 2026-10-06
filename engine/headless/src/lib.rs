@@ -31,6 +31,8 @@
 //! by runtime id, so a save that came back with plausible-looking integers
 //! pointing at the wrong content still fails.
 
+mod interaction;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -184,6 +186,17 @@ pub struct SliceReport {
     /// eye — stopped, in centimetres: the body's half-width when its leading
     /// face is flush with the wall.
     pub player_stop_cm: i64,
+    /// Blocks the player broke and placed, edits refused by the pipeline,
+    /// and edits with nothing to aim at, before the interaction stage's save
+    /// (ADR-0036).
+    pub interaction_edits: [u64; 4],
+    /// How far the player fell after mining under its feet, in centimetres.
+    pub interaction_fell_cm: i64,
+    /// The interaction stage's save of the world and the player, in bytes.
+    pub interaction_save_bytes: usize,
+    /// Ticks the reloaded world ran identical to the one never saved, and
+    /// the edits that changed both.
+    pub interaction_continued: (u64, u64),
     /// Streaming ticks run while the observer walked away and back.
     pub streaming_ticks: u32,
     /// Frames the walk ran through the engine's frame loop.
@@ -483,6 +496,20 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         "player walked, jumped, stopped at a wall and turned",
     );
 
+    // --- interaction, save, reload, and on -----------------------------------
+    // ADR-0036's loop, on a world of its own from the same seed: the player
+    // mines and builds through the command pipeline, the world and the player
+    // are saved, reloaded and resumed, and the reloaded world goes on exactly
+    // as the one never saved. The main world is not touched.
+    let interaction = interaction::interact_and_resume(config.seed, config.radius, &diagnostics)?;
+    diagnostics
+        .counters()
+        .add("interaction.edits", interaction.mined + interaction.built);
+    log(
+        &diagnostics,
+        "player mined and built, was saved with the world, and both went on",
+    );
+
     // --- streaming ---------------------------------------------------------
     // Walks an observer away from the edited region and back. Everything the
     // walk touches is regenerable except the columns edited above, so this is
@@ -695,6 +722,15 @@ pub fn run_slice(config: &SliceConfig) -> Result<SliceReport> {
         player_walked_cm: walked.walked_cm,
         player_rose_cm: walked.rose_cm,
         player_stop_cm: walked.stop_cm,
+        interaction_edits: [
+            interaction.mined,
+            interaction.built,
+            interaction.refused,
+            interaction.unsent,
+        ],
+        interaction_fell_cm: interaction.fell_cm,
+        interaction_save_bytes: interaction.save_bytes,
+        interaction_continued: (interaction.continued_ticks, interaction.continued_edits),
         streaming_ticks: streaming.ticks,
         frames: streaming.frames,
         frame_steps: streaming.steps,
@@ -1056,13 +1092,13 @@ fn verify_content_surfaces(world: &World, content: &BlockContent) -> Result<usiz
     Ok(expected.len())
 }
 
-/// The decoded-texture budget the slice runs with: twenty-one first-generation
-/// albedos are 21 KiB of pixels, so this holds them all without eviction and
+/// The decoded-texture budget the slice runs with: thirty-six first-generation
+/// albedos are 36 KiB of pixels, so this holds them all without eviction and
 /// leaves no room for anything larger to hide in.
 const TEXTURE_BUDGET: u64 = 64 * 1024;
 
 /// Device memory the null backend may hold: the textures above once widened
-/// to RGBA8 (21 KiB) or the conformance suite's largest moment
+/// to RGBA8 (36 KiB) or the conformance suite's largest moment
 /// (4 KiB, measured), with room to spare and none for anything the slice did
 /// not ask for.
 const GPU_BUDGET: u64 = 64 * 1024;
@@ -1252,26 +1288,8 @@ fn load_content_textures(
 /// No backend guarantees a three-channel format, so RGB is widened here,
 /// once, rather than by each backend differently (ADR-0025).
 fn gpu_texels(map: &nexora_asset::texture::TextureMap) -> Result<(TextureFormat, Vec<u8>)> {
-    use nexora_asset::texture::{ChannelLayout, ColorSpace};
-    if map.format().bits_per_channel != 8 {
-        return Err(mismatch(
-            "only 8-bit maps have an upload path; the first generation has no other",
-        )
-        .with_context("bits", map.format().bits_per_channel.to_string()));
-    }
-    let pixels = map.pixels();
-    let texels = match map.format().channels {
-        ChannelLayout::Rgba => pixels.to_vec(),
-        ChannelLayout::Rgb => pixels
-            .chunks_exact(3)
-            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], u8::MAX])
-            .collect(),
-        ChannelLayout::GreyAlpha => pixels
-            .chunks_exact(2)
-            .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
-            .collect(),
-        ChannelLayout::Grey => pixels.iter().flat_map(|g| [*g, *g, *g, u8::MAX]).collect(),
-    };
+    use nexora_asset::texture::ColorSpace;
+    let texels = nexora_image::rgba8(map)?;
     let format = match map.color_space() {
         ColorSpace::Srgb => TextureFormat::Rgba8UnormSrgb,
         ColorSpace::Linear => TextureFormat::Rgba8Unorm,
@@ -1403,6 +1421,15 @@ pub fn format_report(report: &SliceReport) -> String {
         report.player_rose_cm as f64 / 100.0,
         report.player_stop_cm as f64 / 100.0,
         report.player_ticks
+    ));
+    let [mined, built, refused, unsent] = report.interaction_edits;
+    out.push_str(&format!(
+        "interaction        {mined} mined, {built} built, {refused} refused, {unsent} aimed at nothing; fell {:.2} into its own hole\n",
+        report.interaction_fell_cm as f64 / 100.0
+    ));
+    out.push_str(&format!(
+        "save and reload    world and player in {} bytes; {} ticks on, {} edits, identical to the world never saved\n",
+        report.interaction_save_bytes, report.interaction_continued.0, report.interaction_continued.1
     ));
     out.push_str(&format!(
         "streaming ticks    {} ({} generated, {} evicted, {} restored)\n",
