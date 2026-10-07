@@ -304,8 +304,13 @@ fn every_pixel_shows_the_texel_a_ray_through_it_reaches() {
         check.judged,
         check.pixels
     );
-    assert_eq!(check.matching + check.snapped, check.judged, "{check:?}");
+    assert_eq!(
+        check.matching + check.snapped + check.texel_snapped,
+        check.judged,
+        "{check:?}"
+    );
     assert!(check.snapped * 100 <= check.judged, "{check:?}");
+    assert!(check.texel_snapped * 500 <= check.judged, "{check:?}");
     // Many texels on screen, not one colour per face.
     let mut colours: Vec<&[u8]> = texels.chunks_exact(4).collect();
     colours.sort_unstable();
