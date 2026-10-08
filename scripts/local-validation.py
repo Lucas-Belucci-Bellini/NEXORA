@@ -54,7 +54,7 @@ REPORT_MD = "NEXORA-LOCAL-VALIDATION.md"
 
 # Paths whose change after a report makes that report stale. Documentation
 # does not: a report about the engine stays true when a README moves.
-RELEVANT = ["engine/", "tools/", "content/", "benchmarks/", "Cargo.toml", "Cargo.lock"]
+RELEVANT = ["engine/", "tools/", "content/", "benchmarks/", "scripts/local-validation.py", "Cargo.toml", "Cargo.lock"]
 
 STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 
