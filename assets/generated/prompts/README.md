@@ -94,6 +94,26 @@ This is the operational workspace for image-generation prompts. **Every source p
 | 78 | [prompt-78-school-education](prompt-78-school-education/) |
 | 79 | [prompt-79-office-props](prompt-79-office-props/) |
 | 80 | [prompt-80-market-street-vendors](prompt-80-market-street-vendors/) |
+| 81 | [prompt-81-hotel-hospitality](prompt-81-hotel-hospitality/) |
+| 82 | [prompt-82-mechanical-workshop](prompt-82-mechanical-workshop/) |
+| 83 | [prompt-83-power-plant](prompt-83-power-plant/) |
+| 84 | [prompt-84-water-treatment](prompt-84-water-treatment/) |
+| 85 | [prompt-85-agricultural-industry](prompt-85-agricultural-industry/) |
+| 86 | [prompt-86-museum-props](prompt-86-museum-props/) |
+| 87 | [prompt-87-prison-facility](prompt-87-prison-facility/) |
+| 88 | [prompt-88-emergency-station](prompt-88-emergency-station/) |
+| 89 | [prompt-89-research-outpost](prompt-89-research-outpost/) |
+| 90 | [prompt-90-baluarte-archives](prompt-90-baluarte-archives/) |
+| 91 | [prompt-91-baluarte-command](prompt-91-baluarte-command/) |
+| 92 | [prompt-92-baluarte-field-equipment](prompt-92-baluarte-field-equipment/) |
+| 93 | [prompt-93-baluarte-civilian](prompt-93-baluarte-civilian/) |
+| 94 | [prompt-94-baluarte-industrial](prompt-94-baluarte-industrial/) |
+| 95 | [prompt-95-baluarte-heraldry](prompt-95-baluarte-heraldry/) |
+| 96 | [prompt-96-vehicle-interiors](prompt-96-vehicle-interiors/) |
+| 97 | [prompt-97-cargo-logistics](prompt-97-cargo-logistics/) |
+| 98 | [prompt-98-factory-floor](prompt-98-factory-floor/) |
+| 99 | [prompt-99-utility-infrastructure](prompt-99-utility-infrastructure/) |
+| 100 | [prompt-100-complete-prop-validation](prompt-100-complete-prop-validation/) |
 
 ## Non-negotiable output rules
 
