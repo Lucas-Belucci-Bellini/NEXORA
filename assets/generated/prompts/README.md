@@ -74,6 +74,26 @@ This is the operational workspace for image-generation prompts. **Every source p
 | 58 | [prompt-58-caves](prompt-58-caves/) |
 | 59 | [prompt-59-ruins-archaeology](prompt-59-ruins-archaeology/) |
 | 60 | [prompt-60-festival-celebration](prompt-60-festival-celebration/) |
+| 61 | [prompt-61-world-markers](prompt-61-world-markers/) |
+| 62 | [prompt-62-general-decoration](prompt-62-general-decoration/) |
+| 63 | [prompt-63-doors-gates](prompt-63-doors-gates/) |
+| 64 | [prompt-64-windows-frames](prompt-64-windows-frames/) |
+| 65 | [prompt-65-rails-track-props](prompt-65-rails-track-props/) |
+| 66 | [prompt-66-roads-street-props](prompt-66-roads-street-props/) |
+| 67 | [prompt-67-bunker-props](prompt-67-bunker-props/) |
+| 68 | [prompt-68-command-center-props](prompt-68-command-center-props/) |
+| 69 | [prompt-69-sci-fi-props](prompt-69-sci-fi-props/) |
+| 70 | [prompt-70-portals-dimensions](prompt-70-portals-dimensions/) |
+| 71 | [prompt-71-magic-props](prompt-71-magic-props/) |
+| 72 | [prompt-72-underworld-props](prompt-72-underworld-props/) |
+| 73 | [prompt-73-space-props](prompt-73-space-props/) |
+| 74 | [prompt-74-robotics](prompt-74-robotics/) |
+| 75 | [prompt-75-maintenance-props](prompt-75-maintenance-props/) |
+| 76 | [prompt-76-recycling-waste](prompt-76-recycling-waste/) |
+| 77 | [prompt-77-facility-security](prompt-77-facility-security/) |
+| 78 | [prompt-78-school-education](prompt-78-school-education/) |
+| 79 | [prompt-79-office-props](prompt-79-office-props/) |
+| 80 | [prompt-80-market-street-vendors](prompt-80-market-street-vendors/) |
 
 ## Non-negotiable output rules
 
