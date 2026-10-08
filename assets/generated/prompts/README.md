@@ -67,6 +67,13 @@ This is the operational workspace for image-generation prompts. **Every source p
 | 51 | [prompt-51-signs-wayfinding](prompt-51-signs-wayfinding/) |
 | 52 | [prompt-52-security](prompt-52-security/) |
 | 53 | [prompt-53-transport-stations](prompt-53-transport-stations/) |
+| 54 | [prompt-54-docks-harbor](prompt-54-docks-harbor/) |
+| 55 | [prompt-55-desert-environment](prompt-55-desert-environment/) |
+| 56 | [prompt-56-snow-ice](prompt-56-snow-ice/) |
+| 57 | [prompt-57-underwater](prompt-57-underwater/) |
+| 58 | [prompt-58-caves](prompt-58-caves/) |
+| 59 | [prompt-59-ruins-archaeology](prompt-59-ruins-archaeology/) |
+| 60 | [prompt-60-festival-celebration](prompt-60-festival-celebration/) |
 
 ## Non-negotiable output rules
 
