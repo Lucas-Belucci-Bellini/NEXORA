@@ -1,4 +1,6 @@
 /target/
+.cargo/
+.rustup/
 **/*.rs.bk
 Cargo.lock.orig
 
