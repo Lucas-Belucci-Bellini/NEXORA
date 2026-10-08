@@ -460,7 +460,7 @@ inline constexpr BlockStateId kGrass = 3;
 
 inline std::int64_t terrain_lattice_height(std::uint64_t seed, std::int64_t cell_x,
                                            std::int64_t cell_z) {
-  Rng rng = positional_rng(seed, "terrain", x, 0, z);
+  Rng rng = positional_rng(seed, "terrain", cell_x, 0, cell_z);
   const auto span = static_cast<std::uint64_t>(kTerrainAmplitude * 2 + 1);
   return kTerrainBaseHeight + static_cast<std::int64_t>(rng.next_below(span)) - kTerrainAmplitude;
 }

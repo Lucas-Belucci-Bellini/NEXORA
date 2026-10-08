@@ -1,14 +1,11 @@
 //! Where a player can stand and walk: a run of columns found, never invented.
 //!
-//! The generated terrain is independent noise per column, 52 to 76 blocks
-//! high (`World::surface_height`), so a neighbouring column can be walked into
-//! without a jump only 349 times in 625, and a straight walk from an arbitrary
-//! point usually meets a wall within a column or two. A caller that needs the
-//! player to walk — the client's first second of W, the slice's scripted
-//! legs, the benchmark's route — asks for a **run**: consecutive columns along
-//! one cardinal direction, each at most one block above the last (the
-//! character's step height), each with room above it to stand in, ending at a
-//! wall or at the edge of the area searched.
+//! Generator version 2's fixed-point value noise keeps neighboring generated
+//! columns within the character's one-block step height. The search still
+//! matters for edited terrain, unloaded columns, and bounded areas: a caller
+//! that needs a safe path asks for a **run** of consecutive columns along one
+//! cardinal direction, each at most one block above the last, with room above
+//! it to stand in, ending at a wall or at the edge of the area searched.
 //!
 //! The search reads the terrain through the same [`VoxelSource`] the solver
 //! collides against, so an edit the world has made is respected and an

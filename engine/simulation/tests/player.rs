@@ -1,10 +1,10 @@
 //! The player against real generated worlds, through `WorldVoxels` (ADR-0035).
 //!
 //! The unit tests in `player.rs` pin the arithmetic on fixtures; these pin
-//! what only the generator can show: that a run found in white-noise terrain
-//! is really walkable, that a resting player on it is a fixed point of the
-//! solver to the bit, that an unloaded column is the wall the policy says it
-//! is, and that the player reads the world and never writes it.
+//! what only the generator can show: that generated terrain is walkable across
+//! a chunk boundary, that a resting player is a fixed point of the solver to
+//! the bit, that an unloaded column is the wall the policy says it is, and
+//! that the player reads the world and never writes it.
 
 use nexora_foundation::spatial::ChunkCoord;
 use nexora_foundation::time::{CalendarConfig, DEFAULT_TICKS_PER_SECOND};
@@ -234,6 +234,59 @@ fn the_walkable_run_is_deterministic_and_really_walkable() {
             run.length
         );
     }
+}
+
+#[test]
+fn generated_terrain_can_be_walked_across_a_chunk_boundary() {
+    let world = world(CLIENT_SEED, 2);
+    let terrain = WorldVoxels::new(&world);
+    let chunk_width = i64::from(world.descriptor().shape.size_x());
+    let min_x = chunk_width - 3;
+    let max_x = chunk_width + 4;
+    let (mut low, mut high) = (i64::MAX, i64::MIN);
+    for x in min_x..max_x {
+        let height = world.surface_height(x, 0);
+        low = low.min(height);
+        high = high.max(height);
+    }
+    let area = ColumnArea {
+        min_x,
+        min_z: 0,
+        max_x,
+        max_z: 1,
+        floor_y: low - 8,
+        ceiling_y: high + 7,
+    };
+    let run = find_walkable_run(&terrain, &area, 7).expect("seven columns across the boundary");
+    let columns: Vec<_> = run.columns().collect();
+    assert_eq!(columns.len(), 7);
+    assert!(columns.windows(2).any(|pair| {
+        pair[0].0.div_euclid(chunk_width) != pair[1].0.div_euclid(chunk_width)
+    }));
+
+    let mut player = spawn(&world, &run);
+    let start = player.state().feet;
+    let start_column = start.x.floor() as i64;
+    let (dx, dz) = run.facing.step();
+    let forward = Walk {
+        forward: 1.0,
+        ..Walk::default()
+    };
+    let ticks = (f64::from(run.length) / 0.19).ceil() as u32 + 20;
+    for tick in 0..ticks {
+        player
+            .tick(&terrain, forward)
+            .unwrap_or_else(|error| panic!("tick {tick}: {error}"));
+    }
+    let end = player.state().feet;
+    let end_column = end.x.floor() as i64;
+    assert_ne!(
+        start_column.div_euclid(chunk_width),
+        end_column.div_euclid(chunk_width),
+        "the player must physically cross the chunk boundary"
+    );
+    let walked = (end.x - start.x) * dx as f64 + (end.z - start.z) * dz as f64;
+    assert!(walked >= f64::from(run.length - 1), "walked {walked} of {run:?}");
 }
 
 /// The client refuses to start without a run of five in the drawn columns;
