@@ -40,6 +40,34 @@ This is the operational workspace for image-generation prompts. **Every source p
 | #27 | [issue-27-texture-pipeline-validation](issue-27-texture-pipeline-validation/) |
 | #28 | [issue-28-baluarte-special-armor](issue-28-baluarte-special-armor/) |
 
+| Prompt number | Prompt folder |
+|---:|---|
+| 29 | [prompt-29-workstations](prompt-29-workstations/) |
+| 30 | [prompt-30-storage](prompt-30-storage/) |
+| 31 | [prompt-31-furniture](prompt-31-furniture/) |
+| 32 | [prompt-32-industrial-machines](prompt-32-industrial-machines/) |
+| 33 | [prompt-33-energy-technology](prompt-33-energy-technology/) |
+| 34 | [prompt-34-exploration](prompt-34-exploration/) |
+| 35 | [prompt-35-urban-infrastructure](prompt-35-urban-infrastructure/) |
+| 36 | [prompt-36-construction](prompt-36-construction/) |
+| 37 | [prompt-37-household](prompt-37-household/) |
+| 38 | [prompt-38-laboratory](prompt-38-laboratory/) |
+| 39 | [prompt-39-baluarte-military](prompt-39-baluarte-military/) |
+| 40 | [prompt-40-commerce](prompt-40-commerce/) |
+| 41 | [prompt-41-tools-workshop](prompt-41-tools-workshop/) |
+| 42 | [prompt-42-alchemy-fantasy-science](prompt-42-alchemy-fantasy-science/) |
+| 43 | [prompt-43-library-knowledge](prompt-43-library-knowledge/) |
+| 44 | [prompt-44-food-kitchen](prompt-44-food-kitchen/) |
+| 45 | [prompt-45-farming](prompt-45-farming/) |
+| 46 | [prompt-46-fishing](prompt-46-fishing/) |
+| 47 | [prompt-47-mining-equipment](prompt-47-mining-equipment/) |
+| 48 | [prompt-48-medical](prompt-48-medical/) |
+| 49 | [prompt-49-communication](prompt-49-communication/) |
+| 50 | [prompt-50-lighting](prompt-50-lighting/) |
+| 51 | [prompt-51-signs-wayfinding](prompt-51-signs-wayfinding/) |
+| 52 | [prompt-52-security](prompt-52-security/) |
+| 53 | [prompt-53-transport-stations](prompt-53-transport-stations/) |
+
 ## Non-negotiable output rules
 
 - Never put generated images in a shared catch-all directory.
