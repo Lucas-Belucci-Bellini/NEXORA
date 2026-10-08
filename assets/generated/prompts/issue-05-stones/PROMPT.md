@@ -6,6 +6,31 @@
 
 Execute the complete source prompt linked above. Read it from beginning to end before generating anything. This file strengthens its execution requirements; it does not remove or silently override the source prompt's requested assets, counts, names, IDs, or constraints.
 
+## Image-generation protocol
+
+When an image-generation model is used, treat generation as a controlled production pipeline rather than a single free-form prompt.
+
+### Before generation
+- Read the source prompt and enumerate every requested asset, variant, count, identifier, material, and constraint.
+- Inspect existing NEXORA assets and manifests to prevent duplicates and accidental visual drift.
+- Decide whether the output is a tileable texture, isolated item/prop, block, UI asset, VFX element, or reference sheet before generating it.
+
+### Generation requirements
+- Generate **original NEXORA artwork**. References may guide abstract properties such as readability, material separation, voxel-scale detail, or technical clarity, but must not reproduce a specific third-party asset or distinctive design.
+- Follow the source prompt's exact dimensions. When it calls for 16×16 textures, the final texture itself must be exactly 16×16; do not submit a resized preview as the final asset.
+- Generate clean, game-ready images with intentional silhouettes, controlled pixel clusters, readable values/materials, and no accidental blur, anti-aliasing, photorealistic rendering, scene background, watermark, logo, text, or UI chrome unless explicitly requested.
+- For transparent assets, use true transparency only where required and keep the silhouette/padding intentional.
+- For tileable textures, make opposite edges compatible and test a repeated 3×3 tiling. Do not rely on a contact sheet to prove tiling.
+- For props/objects, generate an isolated asset or orthographic/reference presentation appropriate to the source prompt; do not bake unrelated scenery into the production asset.
+- If the generator returns multiple candidates, inspect all candidates and select only those that satisfy the checklist. Regenerate failures instead of silently accepting them.
+
+### Post-generation validation
+- Open the actual generated files and inspect them at native resolution and enlarged nearest-neighbor scale when pixel art is involved.
+- Validate dimensions, file format, alpha/transparency, tiling where applicable, filename/asset ID, visual readability, and duplicate risk.
+- Keep previews/contact sheets separate from production assets. Every required production asset must exist as an individual file.
+- Record model/tool, generation date, prompt/source reference, validation status, and revision/version in the manifest when available.
+- Never claim an image was generated, saved, or validated unless the actual file exists in this repository workspace.
+
 ## Mandatory workflow
 
 1. Inspect the repository's current asset catalogs, this family folder, existing texture sheets, and relevant art-direction/provenance policies before generating.
