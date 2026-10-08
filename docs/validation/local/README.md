@@ -59,22 +59,26 @@ not local evidence, and a committed one would claim hardware that was not there.
 | `input_devices` | a **real key** through a real window: the probe opens a window titled *NEXORA input probe: press W*, and you click it and press W. The key must reach the engine as HID usage 26 and come out of `runtime::input` as the bound action's press and release (ADR-0031). It needs a person, so it runs only from a terminal and never with `--quick`; `NEXORA_INPUT=none` skips it |
 | `benchmark_cpu` | the full CPU benchmark, judged against every published budget, plus the RHI, camera, frame-time and window stages on this machine's adapter and display (a window opens for a second or two; `NEXORA_DISPLAY=none` records the window stage as not measured). The first report that kept it closed DEBT-0013 (baseline Appendix I); reports 4 and 5 gave the RHI stage its first GPU numbers (Appendix K), and reports 6 to 9 the camera, frame and window stages theirs (Appendix O) |
 
-## What it cannot validate yet, and says so
+## Current hardware limits
 
-Rendering (the world, textured and streamed) is recorded as
-`NOT_IMPLEMENTED`, never as passed and never as "not tested". The
-engine has no code for it yet, and a real GPU cannot validate code
-that does not exist. When one of them is built, it gets a check here, and only
-then can a report move it. The RHI, the GPU context, shaders and texture upload
-were on this list until ADR-0026 built them; they are now the `rhi_native`
-check. The window, the swapchain and presentation were on it until ADR-0027;
-they are now the `window` check. Real input devices were on it until ADR-0031;
-they are now the `input_devices` check. Client mode was on it until ADR-0032; it
-is now the `client_mode` check. Reports 4 and 5 (2026-09-26, an RX 6650 XT
-over Vulkan on Windows 10) passed `rhi_native` and `window`, which closed
-DEBT-0046 and the freeze gate's second blocker. Reports 6 to 9 (2026-09-29,
-the same machine) passed `client_mode` all four times and `input_devices` in
-reports 7 and 9, which put Phase 1's exit criterion on local hardware.
+Rendering is implemented: `client_mode` checks the generated world against the
+CPU ray cast, `client_textures` checks the atlas-backed pass, and ADR-0038's
+streaming path is exercised by integration tests. These are not
+`NOT_IMPLEMENTED`; when a machine lacks a GPU or display, the relevant checks
+report `SKIPPED`. A live walk across multiple terrain columns remains blocked
+by the pillar-shaped terrain in DEBT-0054, not by a missing renderer; ADR-0038
+records the test evidence and the remaining limitation.
+
+The RHI, GPU context, shaders and texture upload were once absent, until
+ADR-0026 added `rhi_native`. The window and presentation were once absent,
+until ADR-0027 added `window`; input devices became `input_devices` with
+ADR-0031; client mode became `client_mode` with ADR-0032; and the textured pass
+is checked by `client_textures` under ADR-0037. Reports 4 and 5 (2026-09-26,
+an RX 6650 XT over Vulkan on Windows 10) passed `rhi_native` and `window`,
+which closed DEBT-0046 and the freeze gate's second blocker. Reports 6 to 9
+(2026-09-29, the same machine) passed `client_mode` all four times and
+`input_devices` in reports 7 and 9, which put Phase 1's exit criterion on
+local hardware.
 
 A failed check in one report and a pass in the next, on the same code, is
 still a failure to explain, not noise to average away. Reports 6 to 9 had two:

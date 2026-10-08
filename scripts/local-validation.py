@@ -17,14 +17,13 @@ the commit it ran on and nothing newer.
 Two rules this script keeps, and why:
 
 * Nothing is marked as passed that did not run. The native RHI backend is a
-  check (`rhi_native`): it opens this machine's GPU, runs the conformance
-  suite, uploads a texture and draws, reading both back (ADR-0026). The window
-  host is another (`window`): it opens a window, presents to it, and reads the
-  first frame back from the surface where the platform allows (ADR-0027). A
-  renderer, real input devices and client mode are recorded as
-  NOT_IMPLEMENTED, because the engine has no code for them yet --
-  a real GPU cannot validate code that does not exist, and a report that said
-  "not tested" would invite someone to test it.
+    check (`rhi_native`): it opens this machine's GPU, runs the conformance
+    suite, uploads a texture and draws, reading both back (ADR-0026). The window
+    host is another (`window`): it opens a window, presents to it, and reads the
+    first frame back from the surface where the platform allows (ADR-0027).
+    Rendering and client mode have executable checks too; without a GPU or
+    display they are SKIPPED, not NOT_IMPLEMENTED. The input-device check needs
+    a person at the machine.
 * Nothing personal is recorded: no hostname, user name, serial number, MAC
   address or absolute path. Command output is kept only as short tails, with
   the repository root and the home directory replaced by placeholders.
@@ -59,22 +58,10 @@ RELEVANT = ["engine/", "tools/", "content/", "benchmarks/", "Cargo.toml", "Cargo
 
 STATUSES = ("PASS", "FAIL", "SKIPPED", "NOT_IMPLEMENTED")
 
-# What a real machine is needed for, and why none of it can pass yet.
-# The window, its surface (swapchain) and presentation left this list with
-# ADR-0027: they are the `window` check now. The benchmark's GPU stages (RHI,
-# camera, frame time) left it when the first render pass existed: they run
-# inside `benchmark_cpu` on this machine's adapter. Input devices left it with
-# ADR-0031: they are the `input_devices` check, which needs a person. Client
-# mode left it with ADR-0032: it is the `client_mode` check.
-HARDWARE_GATED = [
-    ("rendering", "partly built: the first render pass (nexora-render) draws meshed chunk "
-                  "regions through the camera -- one 16^3 region into a texture and into a window "
-                  "(benchmark_cpu's frame-time and window stages) and nine chunk columns of a "
-                  "generated world in client mode (client_mode) -- every frame checked against a "
-                  "CPU ray cast, culling back faces over quads split at every corner "
-                  "(ADR-0033), drawing the first generation's albedo from one atlas (ADR-0037, "
-                  "client_textures); streaming into the pass is not built"),
-]
+# Code that is absent is listed here as NOT_IMPLEMENTED. Rendering and client
+# mode now have executable checks; missing GPU/display prerequisites produce
+# SKIPPED results in those checks instead.
+HARDWARE_GATED = []
 
 
 # --------------------------------------------------------------------------
