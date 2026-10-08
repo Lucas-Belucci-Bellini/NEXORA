@@ -114,6 +114,26 @@ This is the operational workspace for image-generation prompts. **Every source p
 | 98 | [prompt-98-factory-floor](prompt-98-factory-floor/) |
 | 99 | [prompt-99-utility-infrastructure](prompt-99-utility-infrastructure/) |
 | 100 | [prompt-100-complete-prop-validation](prompt-100-complete-prop-validation/) |
+| 101 | [prompt-101-biome-temperate-forest](prompt-101-biome-temperate-forest/) |
+| 102 | [prompt-102-biome-tropical-jungle](prompt-102-biome-tropical-jungle/) |
+| 103 | [prompt-103-biome-grassland](prompt-103-biome-grassland/) |
+| 104 | [prompt-104-biome-wetlands](prompt-104-biome-wetlands/) |
+| 105 | [prompt-105-biome-volcanic](prompt-105-biome-volcanic/) |
+| 106 | [prompt-106-biome-crystal-caves](prompt-106-biome-crystal-caves/) |
+| 107 | [prompt-107-biome-autumn](prompt-107-biome-autumn/) |
+| 108 | [prompt-108-biome-spring](prompt-108-biome-spring/) |
+| 109 | [prompt-109-biome-coastal](prompt-109-biome-coastal/) |
+| 110 | [prompt-110-biome-canyon](prompt-110-biome-canyon/) |
+| 111 | [prompt-111-flora-herbs-medicinal](prompt-111-flora-herbs-medicinal/) |
+| 112 | [prompt-112-flora-fungi](prompt-112-flora-fungi/) |
+| 113 | [prompt-113-fauna-small-wildlife](prompt-113-fauna-small-wildlife/) |
+| 114 | [prompt-114-fauna-aquatic](prompt-114-fauna-aquatic/) |
+| 115 | [prompt-115-creatures-fantasy](prompt-115-creatures-fantasy/) |
+| 116 | [prompt-116-creatures-robots](prompt-116-creatures-robots/) |
+| 117 | [prompt-117-natural-resources](prompt-117-natural-resources/) |
+| 118 | [prompt-118-environmental-effects](prompt-118-environmental-effects/) |
+| 119 | [prompt-119-weather-sky](prompt-119-weather-sky/) |
+| 120 | [prompt-120-biome-transition-kits](prompt-120-biome-transition-kits/) |
 
 ## Non-negotiable output rules
 
