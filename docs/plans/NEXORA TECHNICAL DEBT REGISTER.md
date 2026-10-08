@@ -1225,7 +1225,7 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
 - **TARGET STAGE:** Phase 2
 - **STATUS:** OPEN
 
-### DEBT-0054 — O terreno gerado é um campo de pilares que o player não atravessa a pé
+### DEBT-0054 — O terreno gerado era um campo de pilares que o player não atravessava a pé
 
 - **SYSTEM:** `engine/world` (`World::surface_height`), e quem o reproduz:
   `benchmarks/cpp` (`nexora::surface_height`, o digest `world.surface_height`)
@@ -1239,17 +1239,19 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   vizinhos diferem até 24 blocos e um pulo sobe 1,2. O cliente encontra o
   ponto de partida procurando uma sequência de 5 colunas andáveis
   (`find_walkable_run`) justamente por isso.
-- **IMPACT:** o *mundo pequeno navegável* do critério de saída da Phase 2 não
-  é navegável a pé. O streaming do cliente está provado por teste (bytes e
-  pixels), mas nenhuma sessão real passa de uma coluna para outra.
-- **PROPOSED REMEDIATION:** altura por ruído contínuo (value noise ou similar
-  em inteiros/ponto fixo, para continuar idêntico entre plataformas e entre
-  Rust e C++), com declive limitado. Muda o digest `world.surface_height` dos
-  dois lados e todo número que dependa do terreno: precisa de ADR e de um
-  ciclo próprio.
-- **TRIGGER:** o critério de saída da Phase 2 — é o próximo bloqueio dele.
+- **RESOLUTION:** [ADR-0039](../adr/ADR-0039-terrain-uses-versioned-bounded-slope-value-noise.md)
+  adds generator version 2 with integer value noise, a one-block adjacent
+  slope bound, and an identical C++ reference. Version-1 saves retain their
+  original height function. `engine/simulation/tests/player.rs` proves the
+  player crosses a real chunk boundary; the Rust/C++ conformance run matches
+  all 12 digests (`world.surface_height` = `0x55dd9effb5b05834`).
+- **IMPACT RESOLVED:** new worlds are traversable by the player step solver;
+  the client XTEST still exercises only a one-second walk, not a live streamed
+  chunk transition.
+- **IMPLEMENTATION:** commits `47fe8ccd` and `4d1ee4c5`.
+- **ORIGINAL TRIGGER:** o critério de saída da Phase 2 — era o próximo bloqueio.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** RESOLVED
 
 ### DEBT-0011 — Lookup de voxel domina o passo de física, sem cache de chunk
 

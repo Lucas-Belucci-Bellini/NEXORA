@@ -143,8 +143,8 @@ jobs:
           grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
           # The drawn square follows the player through the engine's streaming
-          # (ADR-0038). On this terrain a session does not cross a column
-          # (DEBT-0054); a move is drawn and judged in `cargo test`.
+          # (ADR-0038). This one-second XTEST hold need not cross a chunk;
+          # ADR-0039's player integration test walks across that boundary.
           grep '^streaming          [0-9]* moves of the drawn square, .* columns made resident' \
             "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^moved frame        ' "${RUNNER_TEMP}/client.txt" > /dev/null

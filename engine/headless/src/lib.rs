@@ -2201,7 +2201,7 @@ fn along(facing: Cardinal, from: &PlayerState, to: &PlayerState) -> (f64, f64) {
 /// Walk ADR-0035's player through the slice's terrain by scripted keys.
 ///
 /// This is `ENGINE ARCHITECTURE AND TECHNOLOGY DECISION.md` §17's *player
-/// movement*, proved where only the generator can show it: on white-noise
+/// movement*, proved where only the generator can show it: on versioned
 /// terrain, through the client's own key table, a frame a tick. The player
 /// spawns on the first run of four walkable columns found from the centre of
 /// the generated area — whose edge is the unloaded wall — and then:

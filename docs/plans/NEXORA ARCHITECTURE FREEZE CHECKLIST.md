@@ -126,9 +126,17 @@ anything.
 | 1 — Engine Bootstrap | **exit criterion met in CI and on local hardware; not exited** | core, modules, jobs, time, spatial, registry, events, commands, diagnostics, configuration and resources are built and run in CI. The exit asks the runtime to start *"em modo client/headless"*: headless does, and since ADR-0032 **client mode does**: `nexora-client` walks all 17 lifecycle phases in `RuntimeMode::Client` (the renderer module initializes, presentation is entered), draws a generated world in a window through the first render pass, runs `runtime::frame` against a real clock and walks a first-person player by real keys (ADR-0035). CI runs it on Xvfb (a real W through XTEST walks the player forward, and CI asserts it) and, through `local-validation.py --quick`, on Win32 and AppKit. **The operator's machine ran it in local reports 6 to 9** (2026-09-29, RX 6650 XT, Win32): `client_mode` passed in all four and is `VERIFIED_ON_LOCAL_HARDWARE`. It is not exited only because the roadmap's phases are ordered, and Phase 0 is still open |
 | 2 — Voxel Vertical Slice | partly built ahead of order; **the loop is closed** | chunk, storage, meshing, coordinates, streaming, the camera's core (view, projection, frustum, floating origin; ADR-0029), a render pass that draws meshed chunks (ADR-0030), keyboard and mouse input (ADR-0031) and the world drawn in the client (ADR-0032), without gaps (ADR-0033, DEBT-0047 closed) exist; a first-person player with gravity, collision and a jump (ADR-0035) exists; **since 2026-10-05 the player mines and builds** through the command pipeline, refused for reach and for its own body, and **the world and the player are saved, reloaded and go on** — in the client (`--world`) and in the headless slice, where the reloaded world runs 140 ticks identical to the one never saved (ADR-0036; DEBT-0050's save half resolved); **since ADR-0037 the world is drawn in the first generation's textures**, from one atlas, still checked texel for texel. **Since ADR-0038 the drawn square streams with the player** (loading and unloading through the engine's streaming, proven by test). Not built: terrain a body can walk across (DEBT-0054, the exit's *navegável*), vertical streaming (DEBT-0052), camera interpolation (DEBT-0049), the player as an entity (DEBT-0050) |
 
-Work continues on what can be verified headless — the roadmap's own rule is
-that a phase advances on its technical criteria, and the criteria that remain
-need hardware this environment does not have. Nothing here claims otherwise.
+**Phase 2 evidence update (2026-10-08):** ADR-0039 resolves DEBT-0054.
+Generator version 2 keeps adjacent surfaces within the player's one-block step,
+and `engine/simulation/tests/player.rs` walks across a real chunk boundary.
+This proves generated-terrain traversal; it does not yet prove a live client
+walk triggering chunk streaming. The Phase 2 gate remains open pending that
+integration and its remaining criteria.
+
+Work continues against the roadmap's technical gates. The local evidence below
+remains scoped to the commit and machine that produced each report; a hardware
+check can only advance when its corresponding report is current. Nothing here
+claims more than that evidence supports.
 
 **Local evidence, read again 2026-10-05: twelve reports, one machine.**
 Reports 10 to 12 (2026-09-30) ran on `61778dc`, `bb159e4` and `ca35a20`, the

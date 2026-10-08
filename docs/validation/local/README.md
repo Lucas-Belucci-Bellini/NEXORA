@@ -65,9 +65,9 @@ Rendering is implemented: `client_mode` checks the generated world against the
 CPU ray cast, `client_textures` checks the atlas-backed pass, and ADR-0038's
 streaming path is exercised by integration tests. These are not
 `NOT_IMPLEMENTED`; when a machine lacks a GPU or display, the relevant checks
-report `SKIPPED`. A live walk across multiple terrain columns remains blocked
-by the pillar-shaped terrain in DEBT-0054, not by a missing renderer; ADR-0038
-records the test evidence and the remaining limitation.
+report `SKIPPED`. DEBT-0054 is resolved by ADR-0039: the player integration test
+walks generated version-2 terrain across a chunk boundary. The one-second
+XTEST input check does not itself prove a live streamed chunk transition.
 
 The RHI, GPU context, shaders and texture upload were once absent, until
 ADR-0026 added `rhi_native`. The window and presentation were once absent,

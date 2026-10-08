@@ -1207,15 +1207,19 @@ be compared on how fast they compute it.
 | `hash.fnv1a` | `0x85cda2f59434f6cc` |
 | `hash.crc32` | `0x1c880e1b88d0cae7` |
 | `spatial.section_of` | `0xa5e5cdaa740e5ec8` |
-| `world.surface_height` | `0x5bb0ba519f4d32a6` |
-| `world.chunk_cells` | `0xc09113a274ebab66` |
-| `world.chunk_non_air` | `2,032,268 blocks` |
+| `world.surface_height` | `0x55dd9effb5b05834` |
+| `world.chunk_cells` | `0x113d5f839edae626` |
+| `world.chunk_non_air` | `2,026,454 blocks` |
 | `world.chunk_sections` | `63 sections` |
 | `physics.sweep` | `0x4f58c702db5dd49f` |
 
 `world.chunk_cells` hashes every cell of a generated chunk, and `physics.sweep`
 includes the `1.9 - 0.9 == 0.9999999999999999` case ADR-0007 exists because of.
-Three builds — Rust, g++ 13.3.0, clang++ 18.1.3 — produce all twelve bit-for-bit.
+Generator version 2's twelve digests match between Rust and the installed WinLibs
+g++ build (commits `47fe8ccd` and `4d1ee4c5`). The original version-1 comparison
+also passed on Rust, g++ 13.3.0 and clang++ 18.1.3. Timing tables below remain
+historical version-1 measurements; they were not rerun as part of this terrain
+change and are not current version-2 performance claims.
 
 ## Finding 19 — the compiler backend explains more than the language does
 

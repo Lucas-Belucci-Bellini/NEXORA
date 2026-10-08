@@ -50,9 +50,11 @@ The square of columns it draws follows the player: the engine's streaming
 makes the columns around it resident and evicts what falls behind — an edited
 column is kept and comes back with its edit — and every move is checked
 against a fresh build and against the ray cast
-([ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)). Not
-built yet: terrain a body can walk across (today a field of pillars,
-DEBT-0054), a light model, a crosshair, choosing what to build, audio.
+[ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)). The
+versioned terrain now has a bounded one-block slope and the player test walks
+across a chunk boundary ([ADR-0039](docs/adr/ADR-0039-terrain-uses-versioned-bounded-slope-value-noise.md),
+DEBT-0054). Not built yet: vertical streaming (DEBT-0052), camera interpolation
+(DEBT-0049), a light model, a crosshair, choosing what to build, audio.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
 increment built and did not.
 
