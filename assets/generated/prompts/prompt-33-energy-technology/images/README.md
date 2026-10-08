@@ -1,0 +1,1 @@
+# Generated images — Energy & Technology\n\nAll production images generated from PROMPT.md belong in this directory only.\n\nUse one file per production asset.\n
