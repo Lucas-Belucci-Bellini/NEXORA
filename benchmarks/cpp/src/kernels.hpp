@@ -458,10 +458,31 @@ inline constexpr BlockStateId kStone = 1;
 inline constexpr BlockStateId kDirt = 2;
 inline constexpr BlockStateId kGrass = 3;
 
-inline std::int64_t surface_height(std::uint64_t seed, std::int64_t x, std::int64_t z) {
+inline std::int64_t terrain_lattice_height(std::uint64_t seed, std::int64_t cell_x,
+                                           std::int64_t cell_z) {
   Rng rng = positional_rng(seed, "terrain", x, 0, z);
   const auto span = static_cast<std::uint64_t>(kTerrainAmplitude * 2 + 1);
   return kTerrainBaseHeight + static_cast<std::int64_t>(rng.next_below(span)) - kTerrainAmplitude;
+}
+
+inline std::int64_t surface_height(std::uint64_t seed, std::int64_t x, std::int64_t z) {
+  constexpr std::int64_t scale = 32;
+  const std::int64_t cell_x = div_euclid(x, scale);
+  const std::int64_t cell_z = div_euclid(z, scale);
+  const std::int64_t fraction_x = rem_euclid(x, scale);
+  const std::int64_t fraction_z = rem_euclid(z, scale);
+  const std::int64_t west = scale - fraction_x;
+  const std::int64_t north = scale - fraction_z;
+
+  const std::int64_t north_west = terrain_lattice_height(seed, cell_x, cell_z);
+  const std::int64_t north_east = terrain_lattice_height(seed, cell_x + 1, cell_z);
+  const std::int64_t south_west = terrain_lattice_height(seed, cell_x, cell_z + 1);
+  const std::int64_t south_east = terrain_lattice_height(seed, cell_x + 1, cell_z + 1);
+  const std::int64_t numerator = north_west * west * north + north_east * fraction_x * north +
+                                 south_west * west * fraction_z +
+                                 south_east * fraction_x * fraction_z;
+  const std::int64_t denominator = scale * scale;
+  return (numerator + denominator / 2) / denominator;
 }
 
 struct GeneratedChunk {

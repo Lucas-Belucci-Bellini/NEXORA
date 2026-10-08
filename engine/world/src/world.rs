@@ -28,7 +28,9 @@ use crate::voxel::{BlockStateId, Section, AIR};
 ///
 /// Bumping this is mandatory whenever generation changes: the same seed is only
 /// guaranteed to reproduce a world under the same generator version.
-pub const GENERATOR_VERSION: GeneratorVersion = GeneratorVersion(1);
+pub const GENERATOR_VERSION: GeneratorVersion = GeneratorVersion(2);
+const LEGACY_GENERATOR_VERSION: u32 = 1;
+const CURRENT_GENERATOR_VERSION: u32 = 2;
 
 pub use nexora_foundation::ident::WorldId;
 
@@ -163,6 +165,7 @@ const TERRAIN_BASE_HEIGHT: i64 = 64;
 
 /// Peak-to-trough variation of the terrain surface, in blocks.
 const TERRAIN_AMPLITUDE: i64 = 12;
+const TERRAIN_LATTICE_SPACING: i64 = 32;
 
 /// Depth of the soil layer beneath the surface block.
 const SOIL_DEPTH: i64 = 4;
@@ -222,6 +225,19 @@ impl World {
         calendar: CalendarConfig,
         content: &[(Identifier, BlockDefinition)],
     ) -> Result<Self> {
+        if !matches!(
+            descriptor.generator_version.0,
+            LEGACY_GENERATOR_VERSION | CURRENT_GENERATOR_VERSION
+        ) {
+            return Err(Error::new(
+                Domain::World,
+                "world-generator-version",
+                "the world uses an unsupported generator version",
+            )
+            .with_recovery(Recovery::Reject)
+            .with_context("version", descriptor.generator_version.0.to_string()));
+        }
+
         let mut blocks = Registry::new(Identifier::parse("nexora:registry/block")?);
 
         // Air must be runtime id 0: section storage answers "is this empty"
@@ -674,9 +690,11 @@ impl World {
     /// depend on which chunks were generated first.
     #[must_use]
     pub fn surface_height(&self, x: i64, z: i64) -> i64 {
-        let mut rng = positional_rng(self.descriptor.seed, SeedStream::Terrain, x, 0, z);
-        let span = (TERRAIN_AMPLITUDE * 2 + 1) as u64;
-        TERRAIN_BASE_HEIGHT + (rng.next_below(span) as i64) - TERRAIN_AMPLITUDE
+        match self.descriptor.generator_version.0 {
+            LEGACY_GENERATOR_VERSION => legacy_surface_height(self.descriptor.seed, x, z),
+            CURRENT_GENERATOR_VERSION => terrain_surface_height_v2(self.descriptor.seed, x, z),
+            _ => unreachable!("world creation rejects unsupported generator versions"),
+        }
     }
 
     /// Generate one chunk from the world seed.
@@ -770,6 +788,40 @@ impl World {
     }
 }
 
+fn legacy_surface_height(seed: u64, x: i64, z: i64) -> i64 {
+    let mut rng = positional_rng(seed, SeedStream::Terrain, x, 0, z);
+    let span = (TERRAIN_AMPLITUDE * 2 + 1) as u64;
+    TERRAIN_BASE_HEIGHT + (rng.next_below(span) as i64) - TERRAIN_AMPLITUDE
+}
+
+fn terrain_surface_height_v2(seed: u64, x: i64, z: i64) -> i64 {
+    let cell_x = x.div_euclid(TERRAIN_LATTICE_SPACING);
+    let cell_z = z.div_euclid(TERRAIN_LATTICE_SPACING);
+    let fraction_x = x.rem_euclid(TERRAIN_LATTICE_SPACING);
+    let fraction_z = z.rem_euclid(TERRAIN_LATTICE_SPACING);
+    let scale = TERRAIN_LATTICE_SPACING;
+    let west = scale - fraction_x;
+    let north = scale - fraction_z;
+
+    let north_west = terrain_lattice_height(seed, cell_x, cell_z);
+    let north_east = terrain_lattice_height(seed, cell_x + 1, cell_z);
+    let south_west = terrain_lattice_height(seed, cell_x, cell_z + 1);
+    let south_east = terrain_lattice_height(seed, cell_x + 1, cell_z + 1);
+
+    let numerator = north_west * west * north
+        + north_east * fraction_x * north
+        + south_west * west * fraction_z
+        + south_east * fraction_x * fraction_z;
+    let denominator = scale * scale;
+    (numerator + denominator / 2) / denominator
+}
+
+fn terrain_lattice_height(seed: u64, cell_x: i64, cell_z: i64) -> i64 {
+    let mut rng = positional_rng(seed, SeedStream::Terrain, cell_x, 0, cell_z);
+    let span = (TERRAIN_AMPLITUDE * 2 + 1) as u64;
+    TERRAIN_BASE_HEIGHT + rng.next_below(span) as i64 - TERRAIN_AMPLITUDE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +832,12 @@ mod tests {
             CalendarConfig::earthlike(),
         )
         .expect("world")
+    }
+
+    fn world_with_generator_version(seed: u64, version: u32) -> World {
+        let mut descriptor = WorldDescriptor::new("test-world", seed).expect("descriptor");
+        descriptor.generator_version = GeneratorVersion(version);
+        World::create(descriptor, CalendarConfig::earthlike()).expect("versioned world")
     }
 
     fn block(world: &World, path: &str) -> BlockStateId {
@@ -920,15 +978,58 @@ mod tests {
         }
     }
 
-    /// The range a client takes its band from is the range the generator
-    /// keeps to, and both ends of it are reached.
     #[test]
-    fn the_surface_range_is_what_the_generator_produces() {
+    fn terrain_surface_slope_is_bounded_across_negative_lattice_edges() {
+        for seed in [1, 31_337, 0xDEAD_BEEF] {
+            let world = world(seed);
+            for x in -65..65i64 {
+                for z in -65..65i64 {
+                    let height = world.surface_height(x, z);
+                    let east = world.surface_height(x + 1, z);
+                    let south = world.surface_height(x, z + 1);
+                    assert!(
+                        height.abs_diff(east) <= 1,
+                        "seed {seed}: x slope from ({x}, {z}) is {height} to {east}"
+                    );
+                    assert!(
+                        height.abs_diff(south) <= 1,
+                        "seed {seed}: z slope from ({x}, {z}) is {height} to {south}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn version_one_terrain_preserves_its_published_surface_digest() {
+        use nexora_foundation::hashing::Fnv1a64;
+
+        let world = world_with_generator_version(0x0BEEF0BEEF, LEGACY_GENERATOR_VERSION);
+        let mut hasher = Fnv1a64::new();
+        for z in -32..32 {
+            for x in -32..32 {
+                hasher.write_u64(world.surface_height(x, z) as u64);
+            }
+        }
+        assert_eq!(hasher.finish(), 0x5BB0_BA51_9F4D_32A6);
+    }
+
+    #[test]
+    fn unsupported_generator_versions_are_rejected() {
+        let mut descriptor = WorldDescriptor::new("unsupported", 42).expect("descriptor");
+        descriptor.generator_version = GeneratorVersion(CURRENT_GENERATOR_VERSION + 1);
+        assert!(World::create(descriptor, CalendarConfig::earthlike()).is_err());
+    }
+
+    /// The range a client takes its band from bounds every surface, and both
+    /// endpoints are reachable at terrain lattice coordinates.
+    #[test]
+    fn the_surface_range_bounds_terrain_and_lattice_reaches_both_ends() {
         let (low, high) = World::surface_range();
         let world = world(31_337);
         let (mut seen_low, mut seen_high) = (i64::MAX, i64::MIN);
-        for x in -50..50i64 {
-            for z in -50..50i64 {
+        for x in (-256..=256i64).step_by(TERRAIN_LATTICE_SPACING as usize) {
+            for z in (-256..=256i64).step_by(TERRAIN_LATTICE_SPACING as usize) {
                 let height = world.surface_height(x, z);
                 assert!((low..=high).contains(&height), "{height} at ({x},{z})");
                 seen_low = seen_low.min(height);
