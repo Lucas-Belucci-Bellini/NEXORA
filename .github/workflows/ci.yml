@@ -182,6 +182,14 @@ jobs:
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
           grep '^save and reload    world and player in [0-9]* bytes; [1-9][0-9]* ticks on, [1-9][0-9]* edits, identical to the world never saved$' \
             "${RUNNER_TEMP}/ci-world.txt" > /dev/null
+          # Seeds 63 and 153: a body that landed from a fall rested one unit
+          # in the last place above the floor a jump then landed on exactly,
+          # and the walk stage refused it (DEBT-0055). Field cases on
+          # generator version 2, kept; version 1's case was seed 28.
+          for seed in 63 153; do
+            ./target/release/nexora-headless --quiet --seed "${seed}" --radius 1 \
+              --save "${RUNNER_TEMP}/ci-seed${seed}.nxsv" | grep '^result             OK$' > /dev/null
+          done
           # And with the first visual generation's blocks: each of the sixteen
           # stones, ten terrain, five construction and five ore materials must register, show its own surface in a mesh, and survive
           # the save, the reload and the journal replay as a probe.
