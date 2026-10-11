@@ -126,3 +126,20 @@ resumes centred on its player.
 `nexora-client`'s report: `world … of N resident` (was `generated`), and two
 new lines, `streaming` and `moved frame`. The `start` line can no longer say
 the saved player was outside the drawn columns.
+
+## Evidence update (2026-10-11): a move in the live client
+
+The gap named under *Evidence* closed once the terrain could be walked
+(ADR-0039). CI's XTEST play (`scripts/client-xtest.sh`) now holds a real W
+for fifteen seconds; the live client walks about fifty blocks, and in each of
+CI's three client runs — a new world, the same world resumed, and the
+textured one — the square moves twice, 35 columns are made resident and 5
+evicted, and the first frame after the square moved is read back from the
+surface and judged against the ray cast of the square it moved to: 95,192 of
+95,192 judged pixels matching on the CI seed, and texel for texel through the
+atlas in the textured run (4 texel edges snapped, within the client's bound).
+CI requires a move, an eviction and a judged `moved frame`. Three runs in a
+row in a Linux container (lavapipe, Xvfb) gave the same counts. The decision
+is unchanged; what is still not covered live is an *edited* column evicted
+and brought back by walking, because the play edits after it walks — the
+tests above cover that path.

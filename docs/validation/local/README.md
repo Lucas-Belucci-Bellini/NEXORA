@@ -66,8 +66,10 @@ CPU ray cast, `client_textures` checks the atlas-backed pass, and ADR-0038's
 streaming path is exercised by integration tests. These are not
 `NOT_IMPLEMENTED`; when a machine lacks a GPU or display, the relevant checks
 report `SKIPPED`. DEBT-0054 is resolved by ADR-0039: the player integration test
-walks generated version-2 terrain across a chunk boundary. The one-second
-XTEST input check does not itself prove a live streamed chunk transition.
+walks generated version-2 terrain across a chunk boundary. Since 2026-10-11
+CI's XTEST play holds W for fifteen seconds, and the live client crosses
+columns, streams and has its moved frame judged; on a real machine that is
+`NOT_TESTED_LOCALLY` until a report runs it.
 
 The RHI, GPU context, shaders and texture upload were once absent, until
 ADR-0026 added `rhi_native`. The window and presentation were once absent,

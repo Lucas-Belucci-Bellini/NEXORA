@@ -117,8 +117,8 @@ jobs:
       # The runtime in client mode (ADR-0032): the lifecycle walks every phase
       # including presentation, the generated world is drawn in a window, and
       # its first frame, read back from the surface, holds against the ray
-      # cast. W is held for a second through XTEST and must move the camera
-      # forward; the mouse mines under the feet and builds there again at the
+      # cast. W is held for fifteen seconds through XTEST and must move the
+      # camera forward, across at least one column; the mouse mines under the feet and builds there again at the
       # top of a jump, and the first frame after the edit must hold against
       # the ray cast of the edited world (ADR-0036); Escape must end the loop.
       # Then the same world file is opened again: the world and the player go
@@ -143,11 +143,15 @@ jobs:
           grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client.txt" > /dev/null
           # The drawn square follows the player through the engine's streaming
-          # (ADR-0038). This one-second XTEST hold need not cross a chunk;
-          # ADR-0039's player integration test walks across that boundary.
-          grep '^streaming          [0-9]* moves of the drawn square, .* columns made resident' \
+          # (ADR-0038): the walk crosses a column, so the square moves at
+          # least once, and the first frame after it moved, read back from
+          # the surface, holds against the ray cast of the square it moved to.
+          # Loading and unloading both: columns come in ahead of the player
+          # and go out behind it.
+          grep '^streaming          [1-9][0-9]* moves of the drawn square, .* columns made resident, [1-9][0-9]* evicted' \
             "${RUNNER_TEMP}/client.txt" > /dev/null
-          grep '^moved frame        ' "${RUNNER_TEMP}/client.txt" > /dev/null
+          grep '^moved frame        [0-9]* of 98304 pixels judged by the ray cast' \
+            "${RUNNER_TEMP}/client.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client.txt" > /dev/null
           xvfb-run -a -s "-screen 0 640x480x24" scripts/client-xtest.sh \
             ./target/release/nexora-client 90 --world "${RUNNER_TEMP}/client-world.nxsv" \
@@ -155,6 +159,9 @@ jobs:
           grep '^start              resumed from .* at tick [1-9][0-9]*; the player where it was saved$' \
             "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
           grep '^first frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
+          # And a resumed world's square, centred on the saved player, moves
+          # with it too.
+          grep '^moved frame        [0-9]* of 98304 pixels judged by the ray cast' "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client-resumed.txt" > /dev/null
 
       # Runs the Phase 0 vertical slice against the release binary and fails the
@@ -401,9 +408,10 @@ jobs:
             "${RUNNER_TEMP}/ci-textures.txt" > /dev/null
 
       # The client drawing what the forge wrote (ADR-0037): every block's
-      # albedo goes into one atlas, and the first frame and the first frame
-      # after an edit, read back from the surface, hold texel for texel
-      # against the ray cast through the same atlas. One tile more than the
+      # albedo goes into one atlas, and the first frame, the first frame
+      # after an edit and the first after the square moved (ADR-0038), read
+      # back from the surface, hold texel for texel against the ray cast
+      # through the same atlas. One tile more than the
       # materials: tile 0 is the one a block without a surface would show,
       # and no block may show it.
       - name: Smoke test the client drawing the first generation's textures
@@ -420,6 +428,8 @@ jobs:
           grep '^edits              [1-9][0-9]* mined, [1-9][0-9]* built, ' \
             "${RUNNER_TEMP}/client-textured.txt" > /dev/null
           grep '^edited frame       [0-9]* of 98304 pixels judged by the ray cast' \
+            "${RUNNER_TEMP}/client-textured.txt" > /dev/null
+          grep '^moved frame        [0-9]* of 98304 pixels judged by the ray cast' \
             "${RUNNER_TEMP}/client-textured.txt" > /dev/null
           grep '^result             OK$' "${RUNNER_TEMP}/client-textured.txt" > /dev/null
 

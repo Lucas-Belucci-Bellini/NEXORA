@@ -5,7 +5,11 @@
 #
 # The play, in an order whose outcome the terrain cannot change:
 #
-#   1. hold W for a second: the player walks;
+#   1. hold W for fifteen seconds: the player walks about fifty blocks, so
+#      it crosses at least one 32-block column wherever in its column it
+#      started, and the drawn square follows it through the engine's
+#      streaming (ADR-0038). Generator version 2 keeps every step to one
+#      block (ADR-0039), so nothing in the way can stop the walk;
 #   2. hold the down arrow until the view is straight down (89.9 degrees
 #      clamps it; 1.5 s turns 135);
 #   3. click the primary button: the block under the feet is mined, and the
@@ -33,7 +37,7 @@ timeout "$timeout" xdotool search --sync --name '^NEXORA$' windowfocus --sync \
   > /dev/null 2>&1 || true
 sleep 1
 xdotool keydown w 2> /dev/null || true
-sleep 1
+sleep 15
 xdotool keyup w 2> /dev/null || true
 xdotool keydown Down 2> /dev/null || true
 sleep 1.5

@@ -1247,7 +1247,9 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   all 12 digests (`world.surface_height` = `0x55dd9effb5b05834`).
 - **IMPACT RESOLVED:** new worlds are traversable by the player step solver;
   the client XTEST still exercises only a one-second walk, not a live streamed
-  chunk transition.
+  chunk transition. *(2026-10-11: no longer — CI's XTEST walk is fifteen
+  seconds, crosses two columns in each client run, and requires a judged
+  frame after the square moved; see the freeze checklist's Phase 2 update.)*
 - **IMPLEMENTATION:** commits `47fe8ccd` and `4d1ee4c5`.
 - **ORIGINAL TRIGGER:** o critério de saída da Phase 2 — era o próximo bloqueio.
 - **TARGET STAGE:** Phase 2
