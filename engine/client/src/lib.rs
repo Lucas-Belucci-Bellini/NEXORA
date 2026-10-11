@@ -1728,14 +1728,13 @@ mod tests {
     }
 
     /// The block a player aims at is the block under the centre of the
-    /// frame: the eye's direction is the camera's at every facing a player
-    /// can have (yaw in `(-π, π]`, which both wrap into).
+    /// frame: the eye's direction is the camera's, to the bit, at every
+    /// facing a player can have (yaw in `(-π, π]`, which both wrap into).
     ///
-    /// Not to the bit: the camera wraps the yaw it is given again
-    /// (`rem_euclid`), which moves a negative one by a unit in the last
-    /// place, as `the_camera_is_the_players_eye` already allows for. The ray
-    /// is cast from the eye, by the authority; what differs is where the
-    /// frame's centre is, by about 1e-16 of a radian.
+    /// To the bit since the camera keeps an in-range yaw as it is given:
+    /// wrapping it again (`rem_euclid`) moved a negative one by a unit in the
+    /// last place, and the frame's centre and the ray parted by about 1e-16
+    /// of a radian.
     #[test]
     fn the_eye_aims_where_the_camera_looks() {
         let projection = Projection::perspective(1.0, 0.1, 100.0).unwrap();
@@ -1748,14 +1747,13 @@ mod tests {
                 };
                 let camera = camera_at(eye, projection).unwrap();
                 let (a, b) = (eye.forward(), camera.forward());
-                for axis in 0..3 {
-                    assert!(
-                        (a[axis] - b[axis]).abs() < 1e-15,
-                        "yaw {} pitch {}: {a:?} against {b:?}",
-                        eye.yaw,
-                        eye.pitch
-                    );
-                }
+                assert_eq!(
+                    a.map(f64::to_bits),
+                    b.map(f64::to_bits),
+                    "yaw {} pitch {}: {a:?} against {b:?}",
+                    eye.yaw,
+                    eye.pitch
+                );
             }
         }
     }
@@ -1890,7 +1888,7 @@ mod tests {
                     [from.x.to_bits(), from.y.to_bits(), from.z.to_bits()]
                 );
                 assert_eq!(camera.pitch().to_bits(), eye.pitch.to_bits());
-                assert!((camera.yaw() - eye.yaw).abs() < 1e-12);
+                assert_eq!(camera.yaw().to_bits(), eye.yaw.to_bits());
                 // Made from its own state, the camera is the camera again:
                 // nothing is lost or added on the way through.
                 let again = camera_at(

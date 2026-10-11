@@ -158,10 +158,8 @@ impl Eye {
     ///
     /// The camera's own formula (`nexora_camera::Camera::forward`), written
     /// again because the simulation does not depend on the camera; the
-    /// client checks the two agree, so the block a player aims at is the
-    /// block under the centre of the frame. They agree to about 1e-16, not to
-    /// the bit: the camera wraps the yaw again, which can move a negative one
-    /// by a unit in the last place.
+    /// client checks the two agree to the bit, so the block a player aims at
+    /// is the block under the centre of the frame.
     #[must_use]
     pub fn forward(&self) -> [f64; 3] {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
