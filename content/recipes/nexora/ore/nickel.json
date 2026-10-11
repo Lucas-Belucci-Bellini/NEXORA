@@ -1,0 +1,33 @@
+{
+  "category": "mineral",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/ore/nickel",
+  "levels": 9,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.1,
+    "octaves": 3,
+    "strength": 0.6
+  },
+  "ramp": [
+    "#1e2022",
+    "#232528",
+    "#282a2d",
+    "#2d3033",
+    "#323538",
+    "#373a3e",
+    "#3c4044",
+    "#6f9479",
+    "#9cc2a4"
+  ],
+  "relief": 0.5,
+  "schema": 1,
+  "speckle": {
+    "cells": 8,
+    "contrast": 0.55,
+    "density": 0.16
+  },
+  "strips": null
+}

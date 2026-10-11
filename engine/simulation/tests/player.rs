@@ -260,9 +260,9 @@ fn generated_terrain_can_be_walked_across_a_chunk_boundary() {
     let run = find_walkable_run(&terrain, &area, 7).expect("seven columns across the boundary");
     let columns: Vec<_> = run.columns().collect();
     assert_eq!(columns.len(), 7);
-    assert!(columns.windows(2).any(|pair| {
-        pair[0].0.div_euclid(chunk_width) != pair[1].0.div_euclid(chunk_width)
-    }));
+    assert!(columns
+        .windows(2)
+        .any(|pair| { pair[0].0.div_euclid(chunk_width) != pair[1].0.div_euclid(chunk_width) }));
 
     let mut player = spawn(&world, &run);
     let start = player.state().feet;
@@ -286,7 +286,10 @@ fn generated_terrain_can_be_walked_across_a_chunk_boundary() {
         "the player must physically cross the chunk boundary"
     );
     let walked = (end.x - start.x) * dx as f64 + (end.z - start.z) * dz as f64;
-    assert!(walked >= f64::from(run.length - 1), "walked {walked} of {run:?}");
+    assert!(
+        walked >= f64::from(run.length - 1),
+        "walked {walked} of {run:?}"
+    );
 }
 
 /// The client refuses to start without a run of five in the drawn columns;

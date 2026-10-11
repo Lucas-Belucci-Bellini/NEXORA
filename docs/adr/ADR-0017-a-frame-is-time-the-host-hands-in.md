@@ -172,3 +172,14 @@ the line; the benchmark's window stage adds `window.present_wait_chunk_16`,
 the part of each interval blocked on presentation. So the next local report
 gives the first frame work measured on a real display. The frame budget stays `doubling_from(50 ms)` until two
 machines agree on the shape of that number (DEBT-0041).
+
+## Amendment (2026-10-11): the frame says how far into the next step it is
+
+The Decision above left the interpolation factor out because nothing read
+it. Something does now: [ADR-0040](ADR-0040-a-frame-draws-the-player-between-its-last-two-ticks.md)
+draws the client's camera between the player's last two ticks. `StepPlan`
+carries the schedule's `step`, and `StepPlan::alpha()` is `carried / step`,
+in `[0, 1)`. The loop still interpolates nothing itself: it says how far real
+time has run, and the presentation decides what to draw with it. The
+simulation never reads it, so a replay that feeds the same deltas runs the
+same steps whatever a display drew in between.

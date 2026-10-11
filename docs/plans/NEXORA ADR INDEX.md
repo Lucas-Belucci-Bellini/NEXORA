@@ -72,7 +72,7 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0014](docs/adr/ADR-0014-a-region-file-is-authoritative-for-its-region.md) | Um arquivo de região é autoritativo para a sua região | ACCEPTED |
 | [0015](docs/adr/ADR-0015-a-spatial-index-is-a-loose-grid-and-a-query-may-decline-it.md) | O índice espacial é uma grade frouxa, e uma consulta pode recusá-lo | ACCEPTED |
 | [0016](docs/adr/ADR-0016-a-job-result-can-be-forgotten-and-says-so.md) | Um resultado de job pode ser esquecido, e o pool diz isso | ACCEPTED |
-| [0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md) | Um quadro é tempo que o host entrega, e os estágios prestam contas dele | ACCEPTED (emenda de 2026-09-29: o orçamento classifica o trabalho, não a espera pela apresentação) |
+| [0017](docs/adr/ADR-0017-a-frame-is-time-the-host-hands-in.md) | Um quadro é tempo que o host entrega, e os estágios prestam contas dele | ACCEPTED (emenda de 2026-09-29: o orçamento classifica o trabalho, não a espera pela apresentação; emendada pela 0040) |
 | [0018](docs/adr/ADR-0018-input-is-intent-the-host-hands-in.md) | Input é intenção que o host entrega, e um contexto consome a fonte | ACCEPTED |
 | [0019](docs/adr/ADR-0019-a-recipe-is-data-and-a-material-names-it.md) | Uma receita é dado, e um material a nomeia — schema 3 do documento de material | ACCEPTED |
 | [0020](docs/adr/ADR-0020-content-blocks-enter-through-the-api-a-mod-uses.md) | Blocos de conteúdo entram pela mesma API que um mod usa | ACCEPTED |
@@ -91,6 +91,8 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0033](docs/adr/ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | O pass descarta faces de costas e divide seus quads em todo canto | ACCEPTED (emendada pela 0037) |
 | [0034](docs/adr/ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md) | O freeze trava a linguagem do núcleo, não a de toda fronteira — o que só as Phases 7 e 8 respondem vira extensão pós-freeze | **PROPOSED** (decisão do dono do projeto) |
 | [0035](docs/adr/ADR-0035-the-player-is-a-body-the-simulation-steers.md) | O player é um corpo que a simulação conduz, e a câmera só segue o olho dele | ACCEPTED (emendada pela 0036) |
-| [0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | O player edita o mundo por comandos, e o save guarda o player | ACCEPTED (emendada pela 0038) |
+| [0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | O player edita o mundo por comandos, e o save guarda o player | ACCEPTED (emendada pela 0038, 0040) |
 | [0037](docs/adr/ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md) | O pass desenha o albedo de um atlas, e o quadro continua conferido texel a texel | ACCEPTED |
 | [0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md) | O quadrado desenhado segue o player, pelo streaming do motor | ACCEPTED |
+| [0039](docs/adr/ADR-0039-terrain-uses-versioned-bounded-slope-value-noise.md) | O terreno usa value noise versionado em ponto fixo, com inclinação limitada | ACCEPTED |
+| [0040](docs/adr/ADR-0040-a-frame-draws-the-player-between-its-last-two-ticks.md) | Um quadro desenha o player entre seus dois últimos ticks, e nunca à frente deles | ACCEPTED |

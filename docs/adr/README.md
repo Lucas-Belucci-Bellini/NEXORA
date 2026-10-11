@@ -26,7 +26,7 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0014](ADR-0014-a-region-file-is-authoritative-for-its-region.md) | A region file is authoritative for its region; the resident set is not a delete list | ACCEPTED |
 | [0015](ADR-0015-a-spatial-index-is-a-loose-grid-and-a-query-may-decline-it.md) | The spatial index is a loose grid the store maintains, and a query may decline it | ACCEPTED |
 | [0016](ADR-0016-a-job-result-can-be-forgotten-and-says-so.md) | A job result can be forgotten, and the pool says so rather than guessing | ACCEPTED |
-| [0017](ADR-0017-a-frame-is-time-the-host-hands-in.md) | A frame is time the host hands in, and the stages account for it | ACCEPTED (amended 2026-09-29: the budget classifies work, not the wait on presentation) |
+| [0017](ADR-0017-a-frame-is-time-the-host-hands-in.md) | A frame is time the host hands in, and the stages account for it | ACCEPTED (amended 2026-09-29: the budget classifies work, not the wait on presentation; amended by 0040) |
 | [0018](ADR-0018-input-is-intent-the-host-hands-in.md) | Input is intent the host hands in, and a context consumes a source | ACCEPTED |
 | [0019](ADR-0019-a-recipe-is-data-and-a-material-names-it.md) | A recipe is data, and a material names it | ACCEPTED |
 | [0020](ADR-0020-content-blocks-enter-through-the-api-a-mod-uses.md) | Content blocks enter through the API a mod uses | ACCEPTED |
@@ -45,6 +45,8 @@ updating the record or superseding it with a new one — not quietly diverging.
 | [0033](ADR-0033-the-pass-culls-back-faces-and-splits-quads-at-every-corner.md) | The pass culls back faces, and splits its quads at every corner | ACCEPTED (amended by 0037) |
 | [0034](ADR-0034-the-freeze-gates-the-cores-language-not-every-boundarys.md) | The freeze gates the core's language, not every boundary's | **PROPOSED** |
 | [0035](ADR-0035-the-player-is-a-body-the-simulation-steers.md) | The player is a body the simulation steers, and the camera only follows its eye | ACCEPTED (amended by 0036) |
-| [0036](ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | A player edits the world through commands, and a save keeps the player | ACCEPTED (amended by 0038) |
+| [0036](ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | A player edits the world through commands, and a save keeps the player | ACCEPTED (amended by 0038, 0040) |
 | [0037](ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md) | The pass draws albedo from one atlas, and a frame is still checked texel for texel | ACCEPTED |
 | [0038](ADR-0038-the-drawn-square-follows-the-player.md) | The drawn square follows the player, through the engine's streaming | ACCEPTED |
+| [0039](ADR-0039-terrain-uses-versioned-bounded-slope-value-noise.md) | Terrain uses versioned fixed-point value noise with a bounded slope | ACCEPTED |
+| [0040](ADR-0040-a-frame-draws-the-player-between-its-last-two-ticks.md) | A frame draws the player between its last two ticks, and never ahead of them | ACCEPTED |

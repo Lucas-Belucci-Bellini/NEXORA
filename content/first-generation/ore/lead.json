@@ -1,0 +1,40 @@
+{
+  "blend": "opaque",
+  "category": "mineral",
+  "id": "nexora:material/ore/lead",
+  "maps": [],
+  "name": "Lead Ore",
+  "pbr": {
+    "height_strength": 0.5,
+    "metallic": 0.0,
+    "normal_strength": 1.0,
+    "roughness": 0.85
+  },
+  "physical_scale": {
+    "metres_per_tile": 1.0
+  },
+  "provenance": {
+    "author": "NEXORA",
+    "class": "original",
+    "content_hash": "0x0000000000000000",
+    "generation": null,
+    "license": null,
+    "modification": "unmodified",
+    "notes": "First generation, issue #6 prompt 04 (Chumbo \u2014 ard\u00f3sia, cinza chumbo, m\u00e9dia). Lead-grey clusters with a cool metallic sheen, moderately common, in a dark blue-grey slate host. Drawn procedurally by the texture forge from nexora:recipe/ore/lead: a reproducible generation rule, not an image made from the prompt.",
+    "recorded_at": "2026-10-11T00:00:00Z",
+    "release": "draft",
+    "reviewed_at": null,
+    "reviewer": null,
+    "source_repository": null,
+    "source_tool": "hand-written",
+    "status": "nexora_original"
+  },
+  "recipe": "nexora:recipe/ore/lead",
+  "resolution": {
+    "height": 16,
+    "width": 16
+  },
+  "revision": 1,
+  "schema": 3,
+  "seamless": true
+}

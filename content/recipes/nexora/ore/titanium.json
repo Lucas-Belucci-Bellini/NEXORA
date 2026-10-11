@@ -1,0 +1,33 @@
+{
+  "category": "mineral",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/ore/titanium",
+  "levels": 9,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.1,
+    "octaves": 3,
+    "strength": 0.6
+  },
+  "ramp": [
+    "#2a1d19",
+    "#33241f",
+    "#3c2b25",
+    "#45322b",
+    "#4e3931",
+    "#574037",
+    "#62483e",
+    "#aab0ba",
+    "#d6dae1"
+  ],
+  "relief": 0.5,
+  "schema": 1,
+  "speckle": {
+    "cells": 8,
+    "contrast": 0.55,
+    "density": 0.16
+  },
+  "strips": null
+}

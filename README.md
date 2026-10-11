@@ -53,8 +53,11 @@ against a fresh build and against the ray cast
 [ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)). The
 versioned terrain now has a bounded one-block slope and the player test walks
 across a chunk boundary ([ADR-0039](docs/adr/ADR-0039-terrain-uses-versioned-bounded-slope-value-noise.md),
-DEBT-0054). Not built yet: vertical streaming (DEBT-0052), camera interpolation
-(DEBT-0049), a light model, a crosshair, choosing what to build, audio.
+DEBT-0054). Between its 20 Hz ticks the camera is drawn as far between the
+player's last two eyes as real time has run, never ahead of them
+([ADR-0040](docs/adr/ADR-0040-a-frame-draws-the-player-between-its-last-two-ticks.md)).
+Not built yet: vertical streaming (DEBT-0052), a light model, a crosshair,
+choosing what to build, audio.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
 increment built and did not.
 
@@ -115,7 +118,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 1,323 tests (with --all-targets)
+cargo test --workspace          # 1,345 tests (with --all-targets)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```
@@ -177,11 +180,11 @@ cargo run -p nexora-headless -- --help      # seed, radius, threads, save path
 cargo run -p nexora-headless -- --content content/first-generation/blocks.json
 ```
 
-The second run adds the first visual generation — the thirty-six 16×16 materials of
+The second run adds the first visual generation — the forty-one 16×16 materials of
 [`content/first-generation/`](content/first-generation/CATALOG.md) — as blocks,
 through the same content path a mod would use. Each one must show its own
 surface in a mesh and survive the save, the reload and the journal replay, or
-the run fails: `content blocks 36 (36 surfaces in the mesh)`, `probes verified 112`.
+the run fails: `content blocks 41 (41 surfaces in the mesh)`, `probes verified 117`.
 
 ### Prebuilt binaries
 

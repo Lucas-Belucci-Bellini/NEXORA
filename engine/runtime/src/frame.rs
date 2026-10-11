@@ -49,9 +49,10 @@
 //!
 //! ## What is deliberately absent
 //!
-//! No interpolation factor between steps: the one thing drawn so far, the
-//! client's camera (ADR-0032), moves in whole steps, and an alpha nobody
-//! reads is a number nobody checks. No thread of its own: the loop
+//! No interpolation of its own. [`StepPlan::alpha`] says how far real time
+//! has run into the next step, and what to do with it is the presentation's:
+//! the client draws its camera that far between the player's last two ticks
+//! (ADR-0040), and the simulation never reads it. No thread of its own: the loop
 //! is a value the host drives, not a `while` loop that owns the process — a
 //! loop that owned the process could not be tested without a clock.
 //!
@@ -178,6 +179,25 @@ pub struct StepPlan {
     pub discarded: u64,
     /// Time left over towards the next frame, always shorter than one step.
     pub carried: Duration,
+    /// The schedule's fixed step, so that `carried` can be read as a fraction
+    /// of it without the schedule at hand.
+    pub step: Duration,
+}
+
+impl StepPlan {
+    /// How far real time has run into the next step: `carried / step`, in
+    /// `[0, 1)`.
+    ///
+    /// What a presentation draws between the last two steps by (ADR-0040): at
+    /// 0 it shows the state before the last step, and it never reaches the
+    /// state after it, so what is drawn is never ahead of what was simulated.
+    #[must_use]
+    pub fn alpha(&self) -> f64 {
+        // `carried < step` is `advance`'s invariant, so the quotient is below
+        // one; both are whole nanoseconds, and a millisecond step keeps them
+        // far inside the 2^53 an `f64` holds exactly.
+        self.carried.as_nanos() as f64 / self.step.as_nanos() as f64
+    }
 }
 
 /// A fixed timestep, an accumulator, and a cap on catching up.
@@ -260,6 +280,7 @@ impl FrameSchedule {
             steps,
             discarded,
             carried: self.carried,
+            step: self.step,
         }
     }
 }
@@ -753,6 +774,31 @@ mod tests {
         let second = plan.advance(Duration::from_millis(30));
         assert_eq!(second.steps, 1, "60 ms owes one 50 ms step");
         assert_eq!(second.carried, Duration::from_millis(10));
+    }
+
+    #[test]
+    fn alpha_is_how_far_into_the_next_step_real_time_has_run() {
+        let mut plan = schedule(8);
+        // Nothing has run yet: the state shown is the state there is.
+        assert_eq!(
+            plan.advance(Duration::ZERO).alpha().to_bits(),
+            0.0f64.to_bits()
+        );
+        let frame = plan.advance(Duration::from_millis(120));
+        assert_eq!(frame.steps, 2);
+        assert_eq!(frame.alpha(), 0.4, "20 ms into a 50 ms step");
+        // Frames shorter than a step move alpha on without running a step.
+        let next = plan.advance(Duration::from_millis(15));
+        assert_eq!(next.steps, 0);
+        assert_eq!(next.alpha(), 0.7);
+        // And a step lands it back near zero, never on one.
+        let wrapped = plan.advance(Duration::from_millis(15));
+        assert_eq!(wrapped.steps, 1);
+        assert_eq!(wrapped.alpha(), 0.0);
+        // After a hitch the backlog is gone, and alpha is still below one.
+        let hitch = plan.advance(Duration::from_millis(10_049));
+        assert!(hitch.discarded > 0);
+        assert!((0.0..1.0).contains(&hitch.alpha()), "{}", hitch.alpha());
     }
 
     #[test]
