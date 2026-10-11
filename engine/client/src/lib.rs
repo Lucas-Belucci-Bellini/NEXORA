@@ -52,11 +52,13 @@
 //! pixels say so either. Each is judged the moment it is read back, against
 //! the world it showed, and the time spent judging is not frame time.
 //!
-//! Not built: streaming into the pass (the world is generated and meshed
-//! before the first frame), textures, pointer look and a crosshair (the
-//! player aims with the arrow keys at the centre of the frame), interpolation
-//! between ticks (DEBT-0049), the player as an entity or in the save
-//! (DEBT-0050), audio. The frame budget is the arithmetic
+//! Between ticks the camera is drawn as far between the player's last two
+//! eyes as real time has run into the next step, never ahead of them
+//! (ADR-0040).
+//!
+//! Not built: pointer look and a crosshair (the player aims with the arrow
+//! keys at the centre of the frame), the player as an entity (DEBT-0050),
+//! audio. The frame budget is the arithmetic
 //! [`FrameBudget::doubling_from`] the step, not a measured one.
 
 pub mod residency;
@@ -72,7 +74,7 @@ use nexora_camera::{Camera, Projection, RenderOrigin};
 use nexora_foundation::diagnostics::{Category, Diagnostics, Level, StderrSink};
 use nexora_foundation::error::{Domain, Error, Recovery, Result};
 use nexora_foundation::ident::Identifier;
-use nexora_foundation::spatial::ChunkCoord;
+use nexora_foundation::spatial::{ChunkCoord, WorldPosition};
 use nexora_foundation::time::{CalendarConfig, TimeScale};
 use nexora_image::TextureLoader;
 use nexora_mesh::SurfaceId;
@@ -520,6 +522,8 @@ fn run_in(
         residency,
         block_latched: BlockIntent::default(),
         capture: config.capture.clone(),
+        eyes: EyeTrack::new(player.eye()),
+        alpha: 0.0,
         player,
         projection,
         camera: start_camera,
@@ -544,6 +548,8 @@ fn run_in(
     let session = run(&spec, &mut presentation)?;
     let Presentation {
         camera,
+        eyes,
+        alpha,
         player,
         projection,
         tally,
@@ -555,9 +561,9 @@ fn run_in(
     let edits = editor.tally();
     // The handlers hold the world; they go before it is flushed.
     drop(editor);
-    // The camera is derived from the eye and never written back; a run in
+    // The camera is derived from the eyes and never written back; a run in
     // which they part ways drew something the player was not looking at.
-    if camera != camera_at(player.eye(), projection)? {
+    if eyes.after != player.eye() || camera != camera_at(eyes.shown(alpha), projection)? {
         return Err(wrong("the camera is not the player's eye"));
     }
     let now = player.state();
@@ -750,6 +756,82 @@ fn camera_at(eye: Eye, projection: Projection) -> Result<Camera> {
     let mut camera = Camera::new(eye.position, projection)?;
     camera.set_orientation(eye.yaw, eye.pitch)?;
     Ok(camera)
+}
+
+/// The two eyes a frame is drawn between (ADR-0040): the player's eye before
+/// its last tick, and after it.
+///
+/// The player moves in 20 Hz ticks and a display shows several frames per
+/// tick; drawing every frame at the eye after the last tick repeats one view
+/// until the next and moves it in steps (DEBT-0049). A frame shows the eye
+/// [`StepPlan::alpha`](nexora_runtime::frame::StepPlan::alpha) of the way from
+/// `before` to `after` instead: never ahead of the simulation, at most one
+/// tick behind it. Nothing here is authority. Edits are aimed from the
+/// player's own eye, and the simulation never reads this.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EyeTrack {
+    before: Eye,
+    after: Eye,
+}
+
+impl EyeTrack {
+    /// A player that has not ticked: both eyes are where it is.
+    const fn new(eye: Eye) -> Self {
+        Self {
+            before: eye,
+            after: eye,
+        }
+    }
+
+    /// The player ticked, and its eye is now `eye`.
+    fn ticked(&mut self, eye: Eye) {
+        self.before = self.after;
+        self.after = eye;
+    }
+
+    /// The eye a frame `alpha` of the way into the next step shows.
+    fn shown(&self, alpha: f64) -> Eye {
+        between(self.before, self.after, alpha)
+    }
+}
+
+/// `alpha` of the way from `from` to `to`.
+///
+/// Position and pitch move in a straight line; yaw takes the shorter way
+/// round, so a turn across ±π does not swing the long way back, and the
+/// result is wrapped into `(-π, π]` like the player's own. What did not
+/// change is returned as it was, to the bit, whatever `alpha` is: an eye at
+/// rest is drawn exactly where it is.
+fn between(from: Eye, to: Eye, alpha: f64) -> Eye {
+    use std::f64::consts::{PI, TAU};
+    let line = |a: f64, b: f64| if a == b { a } else { a + (b - a) * alpha };
+    let yaw = if from.yaw == to.yaw {
+        from.yaw
+    } else {
+        let mut turn = to.yaw - from.yaw;
+        if turn > PI {
+            turn -= TAU;
+        } else if turn <= -PI {
+            turn += TAU;
+        }
+        let yaw = from.yaw + turn * alpha;
+        if yaw > PI {
+            yaw - TAU
+        } else if yaw <= -PI {
+            yaw + TAU
+        } else {
+            yaw
+        }
+    };
+    Eye {
+        position: WorldPosition::new(
+            line(from.position.x, to.position.x),
+            line(from.position.y, to.position.y),
+            line(from.position.z, to.position.z),
+        ),
+        yaw,
+        pitch: line(from.pitch, to.pitch),
+    }
 }
 
 /// Pixels judged per snapped edge tolerated in the first frame.
@@ -1019,7 +1101,13 @@ struct Presentation<'a> {
     /// The player the keys steer, which owns where the view is.
     player: Player,
     projection: Projection,
-    /// The player's eye as a camera: derived each frame, never written back.
+    /// The player's eye before and after its last tick, which a frame is
+    /// drawn between (ADR-0040).
+    eyes: EyeTrack,
+    /// How far between them the last frame was drawn.
+    alpha: f64,
+    /// The eye the frame shows, as a camera: derived each frame, never
+    /// written back.
     camera: Camera,
     origin: RenderOrigin,
     frame_loop: FrameLoop,
@@ -1166,6 +1254,7 @@ impl Client for Presentation<'_> {
             let terrain = WorldVoxels::new(&world);
             for _ in 0..plan.steps {
                 let outcome = self.player.tick(&terrain, walk)?;
+                self.eyes.ticked(self.player.eye());
                 if outcome.depenetrated > 0 {
                     return Err(Error::new(
                         Domain::Physics,
@@ -1180,8 +1269,9 @@ impl Client for Presentation<'_> {
         }
 
         // Render prep: what the edits changed, meshed and uploaded again in
-        // the frame's own list; the camera is the player's eye, the origin
-        // follows it, the pass is recorded.
+        // the frame's own list; the camera is the player's eye, drawn as far
+        // between its last two ticks as real time has run into the next
+        // (ADR-0040); the origin follows it, the pass is recorded.
         let clock = Instant::now();
         let mut list = CommandList::new("client frame");
         let live = self
@@ -1218,7 +1308,8 @@ impl Client for Presentation<'_> {
                 self.tally.show_edit = true;
             }
         }
-        self.camera = camera_at(self.player.eye(), self.projection)?;
+        self.alpha = plan.alpha();
+        self.camera = camera_at(self.eyes.shown(self.alpha), self.projection)?;
         self.origin = self.origin.follow(self.camera.position())?;
         let state = self.camera.sample(self.origin, live.width, live.height)?;
         let drawn = live
@@ -1903,6 +1994,126 @@ mod tests {
                 assert_eq!(again, camera);
             }
         }
+    }
+
+    fn eye(x: f64, y: f64, z: f64, yaw: f64, pitch: f64) -> Eye {
+        Eye {
+            position: WorldPosition::new(x, y, z),
+            yaw,
+            pitch,
+        }
+    }
+
+    fn bits(eye: Eye) -> [u64; 5] {
+        [
+            eye.position.x.to_bits(),
+            eye.position.y.to_bits(),
+            eye.position.z.to_bits(),
+            eye.yaw.to_bits(),
+            eye.pitch.to_bits(),
+        ]
+    }
+
+    /// An eye that did not move is drawn exactly where it is, whatever the
+    /// fraction, signed zeros included; and at a fraction of zero a frame
+    /// shows the eye before the tick, to the bit (ADR-0040).
+    #[test]
+    fn between_keeps_what_did_not_change_and_starts_at_the_eye_before() {
+        let still = eye(-0.0, 64.62, 12.5, -0.0, -0.0);
+        for alpha in [0.0, 0.2, 0.5, 0.999] {
+            assert_eq!(bits(between(still, still, alpha)), bits(still), "{alpha}");
+        }
+        let from = eye(1.25, 65.0, -3.5, -1.9, 0.3);
+        let to = eye(1.45, 66.0, -3.75, -1.7, 0.25);
+        assert_eq!(bits(between(from, to, 0.0)), bits(from));
+        let half = between(from, to, 0.5);
+        assert!((half.position.x - 1.35).abs() < 1e-12);
+        assert!((half.position.y - 65.5).abs() < 1e-12);
+        assert!((half.position.z + 3.625).abs() < 1e-12);
+        assert!((half.yaw + 1.8).abs() < 1e-12);
+        assert!((half.pitch - 0.275).abs() < 1e-12);
+    }
+
+    /// A turn across ±π is a small turn, not nearly a whole one back.
+    #[test]
+    fn a_turn_across_pi_takes_the_short_way_and_stays_in_range() {
+        use std::f64::consts::{PI, TAU};
+        let (from, to) = (eye(0.0, 0.0, 0.0, 3.0, 0.0), eye(0.0, 0.0, 0.0, -3.0, 0.0));
+        let short = TAU - 6.0; // 0.283..., the way through π
+        for alpha in [0.25, 0.5, 0.75] {
+            let yaw = between(from, to, alpha).yaw;
+            assert!(yaw > -PI && yaw <= PI, "{yaw} is out of range");
+            let mut turned = yaw - 3.0;
+            if turned <= -PI {
+                turned += TAU;
+            }
+            assert!((turned - short * alpha).abs() < 1e-12, "{alpha}: {turned}");
+        }
+    }
+
+    /// DEBT-0049, at the frame rate it was seen at: a 100 Hz display drawing
+    /// a player that ticks at 20 Hz. Each frame runs what the schedule says,
+    /// records each tick in the track and draws the eye the track shows --
+    /// exactly what the client's frame does. While W is held no two frames
+    /// show the same place, none is ahead of the simulation or behind the
+    /// tick before it, and once the player stands still the camera is its
+    /// eye again, to the bit.
+    #[test]
+    fn frames_between_ticks_move_and_never_lead_the_simulation() {
+        let (world, scene, mut player) = the_default_scene();
+        let terrain = WorldVoxels::new(&world);
+        let mut schedule = FrameSchedule::new(STEP, MAX_STEPS).unwrap();
+        let mut eyes = EyeTrack::new(player.eye());
+        let start = camera_at(player.eye(), scene.projection).unwrap();
+        let forward_of =
+            |eye: Eye| displacement(&start, &camera_at(eye, scene.projection).unwrap())[0];
+        let frame = Duration::from_millis(10);
+        // What the last frame showed, and whether it was drawn between two
+        // ticks that moved. The first frame after the player sets off shows
+        // the eye it stood at: drawing one tick behind is the price of never
+        // drawing ahead (ADR-0040), and that frame is not a repeat.
+        let mut last: Option<(f64, bool)> = None;
+        let (mut repeated, mut moving) = (0, 0);
+        for index in 0..200 {
+            let walk = if index < 100 {
+                Walk {
+                    forward: 1.0,
+                    ..Walk::default()
+                }
+            } else {
+                Walk::default()
+            };
+            let plan = schedule.advance(frame);
+            for _ in 0..plan.steps {
+                player.tick(&terrain, walk).unwrap();
+                eyes.ticked(player.eye());
+            }
+            assert_eq!(bits(eyes.after), bits(player.eye()), "frame {index}");
+            let shown = forward_of(eyes.shown(plan.alpha()));
+            let (before, after) = (forward_of(eyes.before), forward_of(eyes.after));
+            assert!(
+                before - 1e-12 <= shown && shown <= after + 1e-12,
+                "frame {index}: shows {shown}, between ticks at {before} and {after}"
+            );
+            let walking = index < 100 && before < after;
+            if walking {
+                moving += 1;
+                if last == Some((shown, true)) {
+                    repeated += 1;
+                }
+            }
+            last = Some((shown, walking));
+        }
+        assert!(moving > 50, "the player walked in only {moving} frames");
+        assert_eq!(
+            repeated, 0,
+            "{repeated} of {moving} walking frames repeated a view"
+        );
+        // A second without W: the body has stopped and settled, so the eye
+        // before the last tick and after it are one eye, and the frame is it.
+        let plan = schedule.advance(frame);
+        let shown = camera_at(eyes.shown(plan.alpha()), scene.projection).unwrap();
+        assert_eq!(shown, camera_at(player.eye(), scene.projection).unwrap());
     }
 
     #[test]

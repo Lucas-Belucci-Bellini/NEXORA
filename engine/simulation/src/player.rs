@@ -159,7 +159,8 @@ impl Eye {
     /// The camera's own formula (`nexora_camera::Camera::forward`), written
     /// again because the simulation does not depend on the camera; the
     /// client checks the two agree to the bit, so the block a player aims at
-    /// is the block under the centre of the frame.
+    /// is the block under the centre of a frame drawn at this eye. Between
+    /// ticks the client draws a little behind it (ADR-0040), never ahead.
     #[must_use]
     pub fn forward(&self) -> [f64; 3] {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();

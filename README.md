@@ -53,8 +53,11 @@ against a fresh build and against the ray cast
 [ADR-0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md)). The
 versioned terrain now has a bounded one-block slope and the player test walks
 across a chunk boundary ([ADR-0039](docs/adr/ADR-0039-terrain-uses-versioned-bounded-slope-value-noise.md),
-DEBT-0054). Not built yet: vertical streaming (DEBT-0052), camera interpolation
-(DEBT-0049), a light model, a crosshair, choosing what to build, audio.
+DEBT-0054). Between its 20 Hz ticks the camera is drawn as far between the
+player's last two eyes as real time has run, never ahead of them
+([ADR-0040](docs/adr/ADR-0040-a-frame-draws-the-player-between-its-last-two-ticks.md)).
+Not built yet: vertical streaming (DEBT-0052), a light model, a crosshair,
+choosing what to build, audio.
 [ADR-0005](docs/adr/ADR-0005-phase-0-scope-boundary.md) lists what the first
 increment built and did not.
 

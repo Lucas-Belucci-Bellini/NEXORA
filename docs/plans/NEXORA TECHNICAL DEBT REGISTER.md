@@ -1110,7 +1110,16 @@ consciente foi tomado, ou porque metade de um contrato foi implementada.
   estados do player pela fração do passo que o `FrameSchedule` já calcula —
   sem tocar no estado autoritativo — e suavizar o step-up no olho.
 - **TARGET STAGE:** Phase 2
-- **STATUS:** OPEN
+- **STATUS:** CLOSED (2026-10-11) —
+  [ADR-0040](../adr/ADR-0040-a-frame-draws-the-player-between-its-last-two-ticks.md).
+  `StepPlan::alpha()` diz quanto do próximo passo o tempo real já andou, e o
+  cliente desenha a câmera essa fração entre o olho de antes do último tick
+  e o de depois (`EyeTrack`): nunca à frente da simulação, no máximo um tick
+  atrás. Provado por `frames_between_ticks_move_and_never_lead_the_simulation`
+  (quadros de 10 ms, player a 20 Hz): nenhum de 96 quadros andando repete a
+  vista; com a câmera antiga, 76 de 96 repetiam. O step-up agora se espalha
+  pelos quadros de um tick em vez de saltar entre dois; suavizá-lo por vários
+  ticks **não** foi construído — nada pede isso ainda.
 
 ### DEBT-0050 — O player é um corpo, não uma entidade, ~~e não é salvo~~
 
