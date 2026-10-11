@@ -115,7 +115,7 @@ Requires the toolchain pinned in `rust-toolchain.toml`; `rustup` installs it
 automatically.
 
 ```bash
-cargo test --workspace          # 1,323 tests (with --all-targets)
+cargo test --workspace          # 1,345 tests (with --all-targets)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p nexora-headless    # the vertical slice, verified end to end
 ```

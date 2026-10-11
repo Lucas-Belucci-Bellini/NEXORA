@@ -94,3 +94,4 @@ Os ADRs vivem em [`docs/adr/`](docs/adr/). Índice completo em
 | [0036](docs/adr/ADR-0036-a-player-edits-through-commands-and-a-save-keeps-the-player.md) | O player edita o mundo por comandos, e o save guarda o player | ACCEPTED (emendada pela 0038) |
 | [0037](docs/adr/ADR-0037-the-pass-draws-albedo-from-one-atlas-texel-for-texel.md) | O pass desenha o albedo de um atlas, e o quadro continua conferido texel a texel | ACCEPTED |
 | [0038](docs/adr/ADR-0038-the-drawn-square-follows-the-player.md) | O quadrado desenhado segue o player, pelo streaming do motor | ACCEPTED |
+| [0039](docs/adr/ADR-0039-terrain-uses-versioned-bounded-slope-value-noise.md) | O terreno usa value noise versionado em ponto fixo, com inclinação limitada | ACCEPTED |
