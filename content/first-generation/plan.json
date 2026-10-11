@@ -153,6 +153,26 @@
     {
       "definition": "ore/cobalt.json",
       "seed": null
+    },
+    {
+      "definition": "ore/lead.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/zinc.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/nickel.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/titanium.json",
+      "seed": null
+    },
+    {
+      "definition": "ore/chromium.json",
+      "seed": null
     }
   ]
 }

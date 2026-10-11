@@ -4,8 +4,9 @@ The **catalog mestre** of issue #27, for what exists so far: the sixteen stones
 of issue #5, ten terrain materials — dry earth, moist earth, wet mud, clay,
 gravel, snow and ash from issue #17, pale quartz sand from issue #7, grass and
 moss from issue #16 —, five construction materials from issue #15 (brick,
-concrete, worked stone, floor tile and plank floor) and five ores from
-issue #6: iron, copper, tin, gold and cobalt. Every row is a first-generation asset under the rule the operator
+concrete, worked stone, floor tile and plank floor) and ten ores from
+issue #6: iron, copper, tin, gold, cobalt, lead, zinc, nickel, titanium and
+chromium. Every row is a first-generation asset under the rule the operator
 set for 2026 — **16×16, albedo only** — and that rule is not a promise here: it
 is the `policy` of [`plan.json`](plan.json), and the forge refuses to
 generate anything from that build plan that breaks it.
@@ -101,11 +102,16 @@ failure `DEBT-0044` described — sixteen seeds of one stone share one palette.
 | `nexora:material/ore/tin` | ore | Tin Ore | tin | 16×16 | `nexora/ore/tin/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/tin` | #6 prompt 03 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 451 B | `0xead67d102f9f0c25` |
 | `nexora:material/ore/gold` | ore | Gold Ore | gold | 16×16 | `nexora/ore/gold/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/gold` | #6 prompt 12 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 406 B | `0xb20d56ae19f65223` |
 | `nexora:material/ore/cobalt` | ore | Cobalt Ore | cobalt | 16×16 | `nexora/ore/cobalt/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/cobalt` | #6 prompt 07 | 2026-10-05 | v3 | draft | block · meshed · saved · recovered · texture | 377 B | `0x1b346f4b721e89c5` |
+| `nexora:material/ore/lead` | ore | Lead Ore | lead | 16×16 | `nexora/ore/lead/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/lead` | #6 prompt 04 | 2026-10-11 | v3 | draft | block · meshed · saved · recovered · texture | 348 B | `0xd3f8e3b41c62f82a` |
+| `nexora:material/ore/zinc` | ore | Zinc Ore | zinc | 16×16 | `nexora/ore/zinc/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/zinc` | #6 prompt 05 | 2026-10-11 | v3 | draft | block · meshed · saved · recovered · texture | 320 B | `0x235e8bf4e525793e` |
+| `nexora:material/ore/nickel` | ore | Nickel Ore | nickel | 16×16 | `nexora/ore/nickel/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/nickel` | #6 prompt 06 | 2026-10-11 | v3 | draft | block · meshed · saved · recovered · texture | 393 B | `0xb7526d2fb0390161` |
+| `nexora:material/ore/titanium` | ore | Titanium Ore | titanium | 16×16 | `nexora/ore/titanium/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/titanium` | #6 prompt 08 | 2026-10-11 | v3 | draft | block · meshed · saved · recovered · texture | 320 B | `0x012aca42ec083585` |
+| `nexora:material/ore/chromium` | ore | Chromium Ore | chromium | 16×16 | `nexora/ore/chromium/albedo.png` | PNG RGBA8 | opaque | yes | `nexora:recipe/ore/chromium` | #6 prompt 09 | 2026-10-11 | v3 | draft | block · meshed · saved · recovered · texture | 348 B | `0x21e9e35d1df576d1` |
 
 `version` is the material's revision as the forge writes it: authored at v1,
 generated at v2, through the pipeline at v3. `status` is the release status
 from the provenance record; nothing here has been reviewed for release, so
-all thirty-six are `draft` and `may ship` is false.
+all forty-one are `draft` and `may ship` is false.
 
 ## The terrain set (2026-10-03)
 
@@ -169,6 +175,40 @@ ore colour was copper's. The final iron is rust-red, the copper orange.
 What they are not yet: in the ground. They are content blocks the slice
 registers, places, meshes, saves, recovers and textures, and tiles in the
 client's atlas; no generator places ore (Phase 2 has no ore distribution).
+
+## The second ore set (2026-10-11)
+
+Five more ores from issue #6, the next ones its list names that were not
+made yet: lead (prompt 04), zinc (05), nickel (06), titanium (08) and
+chromium (09). Same rule as the first set, unchanged — seven host-rock stops,
+two ore stops only the upward speckle reaches, a calm mottle (0.6), and the
+speckle's density as the abundance: 0.26 for lead and zinc (*média*), 0.16 for
+nickel, titanium and chromium (*baixa*). No new forge code. Each host rock was
+picked so that its ore does not read as one already made: zinc's limestone is
+cream where tin's host is grey-brown, and chromium is iron turned over — cold
+silver in a rust-ochre stone, where iron is rust in a grey one.
+
+Looked at enlarged and tiled 3×3 under their real identifiers
+([`docs/texture-forge/first-generation-ore-set-2.png`](../../docs/texture-forge/first-generation-ore-set-2.png),
+in this table's order), and three recipes were redrawn before any hash was
+taken:
+
+- **The validator refused the first titanium:** its horizontal seam was 1.59
+  times as sharp as the texture's own detail, past the 1.50 the forge allows.
+  Dimming the bright-grey ore only moved it to 1.53 — the check is a ratio, so
+  lowering the contrast lowers the detail along with the seam. Widening the
+  host's ramp, so the rock itself carries more detail, passed; the mottle and
+  the density stayed the rule's.
+- **The first lead was silver.** Its ore stops were as light as tin's, and a
+  "cinza chumbo" read as tin on slate; the final ones are a dull grey a step
+  above the host.
+- **The first zinc was snow.** A near-white top stop over a pale host made its
+  one large cluster read as a patch of snow — what happened to the first tin.
+  The final stops are a clearer blue.
+
+Like the first five, they are content blocks the slice registers, places,
+meshes, saves, recovers and textures, and tiles in the client's atlas; no
+generator places ore yet.
 
 ## The construction set (2026-10-05)
 
@@ -237,7 +277,7 @@ where a judged frame shows it: the three the generated terrain is made of. A
 block no world places is never on a frame a ray cast checks.
 
 ## What this catalog does not yet cover
-- **The other families.** 43 of the 48 ores (#6), the other sands (#7) and the
+- **The other families.** 38 of the 48 ores (#6), the other sands (#7) and the
   families of #15–#26 are not catalogued. Each is a directory of definitions plus a directory of
   recipes, added to the build plan.
 - **Thin veins.** At 16×16 the renderer's crack layer draws broad veins, not

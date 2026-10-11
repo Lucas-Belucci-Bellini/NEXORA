@@ -789,7 +789,7 @@ pub fn frame_holds(check: &FrameCheck) -> bool {
 }
 
 /// The decoded-texture budget the atlas is built under: 36 first-generation
-/// albedos are 36 KiB of pixels; this holds a few hundred more and nothing
+/// albedos are 41 KiB of pixels; this holds a few hundred more and nothing
 /// that is not a tile.
 const TEXTURE_BUDGET: u64 = 1024 * 1024;
 

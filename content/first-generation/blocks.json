@@ -36,7 +36,12 @@
     "ore/copper.json",
     "ore/tin.json",
     "ore/gold.json",
-    "ore/cobalt.json"
+    "ore/cobalt.json",
+    "ore/lead.json",
+    "ore/zinc.json",
+    "ore/nickel.json",
+    "ore/titanium.json",
+    "ore/chromium.json"
   ],
   "blocks": [
     {
@@ -218,6 +223,31 @@
       "id": "nexora:block/ore/cobalt",
       "solid": true,
       "surface": "nexora:material/ore/cobalt"
+    },
+    {
+      "id": "nexora:block/ore/lead",
+      "solid": true,
+      "surface": "nexora:material/ore/lead"
+    },
+    {
+      "id": "nexora:block/ore/zinc",
+      "solid": true,
+      "surface": "nexora:material/ore/zinc"
+    },
+    {
+      "id": "nexora:block/ore/nickel",
+      "solid": true,
+      "surface": "nexora:material/ore/nickel"
+    },
+    {
+      "id": "nexora:block/ore/titanium",
+      "solid": true,
+      "surface": "nexora:material/ore/titanium"
+    },
+    {
+      "id": "nexora:block/ore/chromium",
+      "solid": true,
+      "surface": "nexora:material/ore/chromium"
     }
   ],
   "surfaces": [

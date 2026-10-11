@@ -1,0 +1,33 @@
+{
+  "category": "mineral",
+  "contrast": 2.0,
+  "courses": null,
+  "id": "nexora:recipe/ore/chromium",
+  "levels": 9,
+  "mottle": {
+    "cells_x": 4,
+    "cells_y": 4,
+    "cracks": 0.1,
+    "octaves": 3,
+    "strength": 0.6
+  },
+  "ramp": [
+    "#4e3726",
+    "#583f2b",
+    "#624731",
+    "#6c4f37",
+    "#76573d",
+    "#806043",
+    "#8a6849",
+    "#a9b8c8",
+    "#d5e2ee"
+  ],
+  "relief": 0.5,
+  "schema": 1,
+  "speckle": {
+    "cells": 8,
+    "contrast": 0.55,
+    "density": 0.16
+  },
+  "strips": null
+}
